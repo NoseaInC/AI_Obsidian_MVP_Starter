@@ -2,6 +2,7 @@ filters:
   and:
     - 'file.ext == "md"'
     - 'status == "ai-draft" || status == "proposed"'
+    - 'review_state != "rejected"'
 properties:
   file.name:
     displayName: 草稿
@@ -17,6 +18,8 @@ properties:
     displayName: 模型
   generated_from:
     displayName: 来源 ID
+  review_state:
+    displayName: 审核状态
   target_note:
     displayName: 更新目标
 views:

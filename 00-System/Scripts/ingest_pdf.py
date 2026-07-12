@@ -17,6 +17,7 @@ import re
 import shutil
 import tempfile
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -26,9 +27,16 @@ from typing import Any, Callable, Iterable, Protocol
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-v4-pro"
 READ_ONLY_STATUSES = {"reviewed", "core"}
-GENERATED_BY = "ingest_pdf"
-MANAGED_START = "<!-- ingest-pdf:managed:start -->"
-MANAGED_END = "<!-- ingest-pdf:managed:end -->"
+GENERATED_BY = "obsidian-learning-agent"
+LEGACY_MANAGED_START = "<!-- ingest-pdf:managed:start -->"
+LEGACY_MANAGED_END = "<!-- ingest-pdf:managed:end -->"
+
+
+def managed_markers(block: str) -> tuple[str, str]:
+    return f"<!-- agent:managed:{block}:start -->", f"<!-- agent:managed:{block}:end -->"
+
+
+MANAGED_START, MANAGED_END = managed_markers("source-index")
 INVENTORY_FOLDERS = (
     "20-Knowledge/Concepts",
     "20-Knowledge/Topics",
@@ -643,6 +651,11 @@ SOURCE_MANAGED_FIELDS = {
     "processed_by", "processed_at", "ai_draft", "topic_drafts", "concept_drafts",
     "related_concepts", "tags",
 }
+ARTIFACT_MANAGED_FIELDS = {
+    "type", "draft_kind", "status", "review_state", "domain", "mastery",
+    "generated_from", "generated_by", "artifact_role", "artifact_id", "created", "updated",
+    "processed_by", "source_notes", "target_note", "ai_generated", "reviewed", "tags",
+}
 
 
 def _split_frontmatter_text(text: str) -> tuple[list[str], str]:
@@ -672,31 +685,46 @@ def _frontmatter_entries(lines: list[str]) -> list[tuple[str, list[str]]]:
     return entries
 
 
-def merge_source_index(existing: str, generated: str) -> str:
-    """Refresh only source-owned YAML and managed Markdown; retain human text."""
+def merge_managed_artifact(
+    existing: str, generated: str, *, block: str, managed_fields: set[str],
+    human_heading: str = "## 人工审核区",
+) -> str:
+    """Refresh owned YAML and one managed block while retaining human text."""
     old_fm, old_body = _split_frontmatter_text(existing)
     new_fm, new_body = _split_frontmatter_text(generated)
     preserved = [
         lines for key, lines in _frontmatter_entries(old_fm)
-        if key and key not in SOURCE_MANAGED_FIELDS
+        if key and key not in managed_fields
     ]
     merged_fm = [line for _, lines in _frontmatter_entries(new_fm) for line in lines]
     merged_fm.extend(line for lines in preserved for line in lines)
 
-    start = old_body.find(MANAGED_START)
-    end = old_body.find(MANAGED_END)
-    new_start = new_body.index(MANAGED_START)
-    new_end = new_body.index(MANAGED_END) + len(MANAGED_END)
+    start_marker, end_marker = managed_markers(block)
+    start = old_body.find(start_marker)
+    end = old_body.find(end_marker)
+    old_end_marker = end_marker
+    if start < 0 and block == "source-index":
+        start = old_body.find(LEGACY_MANAGED_START)
+        end = old_body.find(LEGACY_MANAGED_END)
+        old_end_marker = LEGACY_MANAGED_END
+    new_start = new_body.index(start_marker)
+    new_end = new_body.index(end_marker) + len(end_marker)
     managed = new_body[new_start:new_end]
     if start >= 0 and end >= start:
-        body = old_body[:start] + managed + old_body[end + len(MANAGED_END):]
+        body = old_body[:start] + managed + old_body[end + len(old_end_marker):]
     else:
         human = ""
-        marker = "## 人工批注"
-        if marker in old_body:
-            human = old_body.split(marker, 1)[1].lstrip("\r\n")
-        body = managed + "\n\n## 人工批注\n" + human
+        if human_heading in old_body:
+            human = old_body.split(human_heading, 1)[1].lstrip("\r\n")
+        body = managed + f"\n\n{human_heading}\n" + human
     return "---\n" + "".join(merged_fm) + "---\n" + body
+
+
+def merge_source_index(existing: str, generated: str) -> str:
+    return merge_managed_artifact(
+        existing, generated, block="source-index", managed_fields=SOURCE_MANAGED_FIELDS,
+        human_heading="## 人工批注",
+    )
 
 
 def render_paper_draft(
@@ -714,15 +742,18 @@ def render_paper_draft(
     fields = [
         ("type", "ai-draft"),
         ("draft_kind", "paper-summary" if kind == "paper" else "textbook-study"),
-        ("status", "ai-draft"),
+        ("status", "ai-draft"), ("review_state", "pending"),
         ("generated_from", source_id), ("created", today), ("updated", today),
         ("generated_by", GENERATED_BY), ("artifact_role", "paper-draft"),
         ("artifact_id", f"{source_id}:paper-draft"),
         ("processed_by", model), ("source_notes", [f"[[{source_link}]]"]),
         ("ai_generated", True), ("reviewed", False), ("tags", ["ai/draft"]),
     ]
+    managed_start, managed_end = managed_markers("paper-draft")
+    heading = "论文整理" if kind == "paper" else "教材学习"
     return _frontmatter(fields) + f"""
-# 论文整理：{result['title']}
+{managed_start}
+# {heading}：{result['title']}
 
 ## 一句话摘要
 
@@ -778,6 +809,8 @@ def render_paper_draft(
 
 - [[{source_link}]]
 
+{managed_end}
+
 ## 审核选项
 
 - [ ] 接受并拆分/合并为知识笔记
@@ -791,14 +824,16 @@ def render_paper_draft(
 
 def render_topic(topic: dict[str, Any], *, source_id: str, source_link: str, domain: str, today: str) -> str:
     fields = [
-        ("type", "topic"), ("status", "ai-draft"), ("domain", domain), ("mastery", 0),
+        ("type", "topic"), ("status", "ai-draft"), ("review_state", "pending"), ("domain", domain), ("mastery", 0),
         ("generated_from", source_id), ("created", today), ("updated", today),
         ("generated_by", GENERATED_BY), ("artifact_role", "topic"),
         ("artifact_id", f"{source_id}:topic"),
         ("source_notes", [f"[[{source_link}]]"]), ("ai_generated", True),
         ("reviewed", False), ("tags", ["knowledge/topic", "ai/draft"]),
     ]
+    managed_start, managed_end = managed_markers("topic")
     return _frontmatter(fields) + f"""
+{managed_start}
 # {topic['title']}
 
 ## 主题要解决的问题
@@ -831,6 +866,8 @@ def render_topic(topic: dict[str, Any], *, source_id: str, source_link: str, dom
 ## 来源回链
 - [[{source_link}]]（{_pages(topic['evidence_pages'])}）
 
+{managed_end}
+
 ## 人工审核区
 """
 
@@ -840,7 +877,7 @@ def render_concept(
     today: str, artifact_id: str
 ) -> str:
     fields = [
-        ("type", "concept"), ("status", "ai-draft"), ("domain", domain), ("mastery", 0),
+        ("type", "concept"), ("status", "ai-draft"), ("review_state", "pending"), ("domain", domain), ("mastery", 0),
         ("generated_from", source_id), ("created", today), ("updated", today),
         ("generated_by", GENERATED_BY), ("artifact_role", "concept"),
         ("artifact_id", artifact_id),
@@ -848,7 +885,9 @@ def render_concept(
         ("reviewed", False), ("tags", ["knowledge/concept", "ai/draft"]),
     ]
     questions = "\n".join(f"{i}. {q}" for i, q in enumerate(concept["review_questions"], 1))
+    managed_start, managed_end = managed_markers("concept")
     return _frontmatter(fields) + f"""
+{managed_start}
 # {concept['title']}
 
 ## 严谨定义
@@ -883,6 +922,8 @@ def render_concept(
 - 论文专属：{'是' if concept['paper_specific'] else '否'}
 - 选择理由：{concept['selection_reason']}
 
+{managed_end}
+
 ## 人工审核区
 """
 
@@ -894,13 +935,15 @@ def render_suggestion(
 ) -> str:
     fields = [
         ("type", "update-suggestion"), ("draft_kind", "knowledge-update"),
-        ("status", "ai-draft"), ("generated_from", source_id), ("target_note", f"[[{target}]]"),
+        ("status", "ai-draft"), ("review_state", "pending"), ("generated_from", source_id), ("target_note", f"[[{target}]]"),
         ("generated_by", GENERATED_BY), ("artifact_role", "update-suggestion"),
         ("artifact_id", artifact_id),
         ("created", today), ("source_notes", [f"[[{source_link}]]"]),
         ("ai_generated", True), ("reviewed", False), ("tags", ["ai/draft", "ai/update-suggestion"]),
     ]
+    managed_start, managed_end = managed_markers("update-suggestion")
     return _frontmatter(fields) + f"""
+{managed_start}
 # 更新建议：{title}
 
 ## 目标笔记
@@ -923,6 +966,8 @@ def render_suggestion(
 
 ## 建议操作
 {action}
+
+{managed_end}
 
 ## 人工审核区
 - [ ] 接受
@@ -954,6 +999,8 @@ def _existing_policy(path: Path, source_id: str) -> str:
     meta = parse_frontmatter(path.read_text(encoding="utf-8", errors="replace"))
     if str(meta.get("status", "")) in READ_ONLY_STATUSES:
         return "protected"
+    if str(meta.get("status", "")) == "rejected" and str(meta.get("generated_from", "")) == source_id:
+        return "rejected"
     if str(meta.get("status", "")) == "ai-draft" and str(meta.get("generated_from", "")) == source_id:
         return "update"
     if (
@@ -1068,10 +1115,22 @@ def build_plan(
                 source_id=source_id, source_link=source_link, today=today,
                 artifact_id=f"{source_id}:update-suggestion:{note_type}:{slot}",
             )
-            knowledge_writes.append(PlannedWrite(suggestion_path, content, _existing_policy(suggestion_path, source_id), "suggestion"))
+            suggestion_policy = _existing_policy(suggestion_path, source_id)
+            if suggestion_policy == "rejected":
+                plan.skipped.append(f"已拒绝，不重复生成：{suggestion_path}")
+                return
+            if suggestion_policy == "update" and suggestion_path.exists():
+                content = merge_managed_artifact(
+                    suggestion_path.read_text(encoding="utf-8"), content,
+                    block="update-suggestion", managed_fields=ARTIFACT_MANAGED_FIELDS,
+                )
+            knowledge_writes.append(PlannedWrite(suggestion_path, content, suggestion_policy, "suggestion"))
             plan.suggestions.append(str(suggestion_path))
             return
         policy = _existing_policy(path, source_id)
+        if policy == "rejected":
+            plan.skipped.append(f"已拒绝，不重复生成：{path}")
+            return
         if policy in {"protected", "conflict"}:
             conflict_path = folder / f"{title}-{short}.md"
             policy = _existing_policy(conflict_path, source_id)
@@ -1085,6 +1144,11 @@ def build_plan(
                 today=today, artifact_id=artifact_id,
             )
         )
+        if policy == "update" and path.exists():
+            content = merge_managed_artifact(
+                path.read_text(encoding="utf-8"), content, block=note_type,
+                managed_fields=ARTIFACT_MANAGED_FIELDS,
+            )
         knowledge_writes.append(PlannedWrite(path, content, policy, note_type))
         (topic_links if note_type == "topic" else concept_links).append(path.stem)
 
@@ -1107,7 +1171,16 @@ def build_plan(
             source_id=source_id, source_link=source_link, today=today,
             artifact_id=f"{source_id}:update-suggestion:{_normalized_title(target.title)}",
         )
-        knowledge_writes.append(PlannedWrite(suggestion_path, content, _existing_policy(suggestion_path, source_id), "suggestion"))
+        suggestion_policy = _existing_policy(suggestion_path, source_id)
+        if suggestion_policy == "rejected":
+            plan.skipped.append(f"已拒绝，不重复生成：{suggestion_path}")
+            continue
+        if suggestion_policy == "update" and suggestion_path.exists():
+            content = merge_managed_artifact(
+                suggestion_path.read_text(encoding="utf-8"), content,
+                block="update-suggestion", managed_fields=ARTIFACT_MANAGED_FIELDS,
+            )
+        knowledge_writes.append(PlannedWrite(suggestion_path, content, suggestion_policy, "suggestion"))
         plan.suggestions.append(str(suggestion_path))
 
     source_content = render_source(
@@ -1122,6 +1195,9 @@ def build_plan(
         (source_path, source_content, "source"), (draft_path, draft_content, "paper-draft")
     ):
         policy = _existing_policy(path, source_id)
+        if policy == "rejected":
+            plan.skipped.append(f"已拒绝，不重复生成：{path}")
+            continue
         if category == "source" and path.exists():
             meta = parse_frontmatter(path.read_text(encoding="utf-8", errors="replace"))
             if (
@@ -1134,6 +1210,11 @@ def build_plan(
             ):
                 content = merge_source_index(path.read_text(encoding="utf-8"), content)
                 policy = "update"
+        elif category == "paper-draft" and policy == "update" and path.exists():
+            content = merge_managed_artifact(
+                path.read_text(encoding="utf-8"), content, block="paper-draft",
+                managed_fields=ARTIFACT_MANAGED_FIELDS,
+            )
         if policy in {"protected", "conflict"}:
             raise RuntimeError(f"稳定生成文件存在非本来源或正式内容，拒绝覆盖：{path}")
         plan.writes.append(PlannedWrite(path, content, policy, category))
@@ -1162,6 +1243,19 @@ def atomic_write(path: Path, content: str) -> None:
         raise
 
 
+@contextmanager
+def vault_write_lock(vault: Path):
+    import fcntl
+    lock_path = vault.resolve() / "90-Local-Only/Processing-Cache/.vault-write.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def _write_journal(path: Path, data: dict[str, Any]) -> None:
     data["updated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
     atomic_write(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
@@ -1169,12 +1263,18 @@ def _write_journal(path: Path, data: dict[str, Any]) -> None:
 
 def execute_plan(
     plan: WritePlan, *, replace_func: Callable[[str | Path, str | Path], None] = os.replace,
-    transaction_id: str | None = None,
+    transaction_id: str | None = None, acquire_lock: bool = True,
 ) -> Path:
     """Commit the complete write set, rolling back every changed target on failure."""
     if not plan.vault:
         raise RuntimeError("写入计划缺少 Vault 根目录。")
     vault = plan.vault.resolve()
+    if acquire_lock:
+        with vault_write_lock(vault):
+            return execute_plan(
+                plan, replace_func=replace_func, transaction_id=transaction_id,
+                acquire_lock=False,
+            )
     seen: set[Path] = set()
     for item in plan.writes:
         target = item.path.resolve()

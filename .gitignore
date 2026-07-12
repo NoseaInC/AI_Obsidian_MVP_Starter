@@ -25,6 +25,7 @@ secrets/
 
 # Generated dependencies and build output
 node_modules/
+.npm-cache/
 dist/
 build/
 coverage/

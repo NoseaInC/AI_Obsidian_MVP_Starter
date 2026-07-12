@@ -27,7 +27,55 @@ export DEEPSEEK_API_KEY="在这里填写你的密钥"
 
 不要把上面的真实值保存到 Vault、shell 脚本或版本库。
 
-## 先 dry-run
+## Prepare → Inspect → Apply Prepared
+
+正式工作流不会在确认后重新调用模型：`prepare` 调用模型一次并把不可变 Bundle 写入 `90-Local-Only/Prepared-Bundles/`；`inspect` 只读展示；`apply-prepared` 校验 Bundle、PDF、schema 和目标状态后事务提交，且不会创建模型客户端。
+
+```bash
+python 00-System/Scripts/prepared_pdf.py prepare \
+  --pdf "/path/to/paper.pdf" --vault "/path/to/vault" \
+  --kind paper --domain-focus "因果推断" --model deepseek-v4-pro
+
+python 00-System/Scripts/prepared_pdf.py list-prepared --vault "/path/to/vault"
+python 00-System/Scripts/prepared_pdf.py inspect --vault "/path/to/vault" <prepared_id>
+python 00-System/Scripts/prepared_pdf.py apply-prepared --vault "/path/to/vault" <prepared_id>
+```
+
+也支持 `reject-prepared --reason ...` 和仅清理已应用/已拒绝 Bundle 的 `clean-prepared`。首次真实 `apply-prepared` 必须由用户确认。
+
+Bundle 至少保存 request、标准化结果、证据、Vault inventory、Change Set、预览和 manifest；提取文本及模型原响应同样只在 `90-Local-Only`。
+
+## 审核命令
+
+Prepared 内容写入后无需手工移动文件或修改 YAML：
+
+```bash
+python 00-System/Scripts/review.py --vault "/path/to/vault" list
+python 00-System/Scripts/review.py --vault "/path/to/vault" show <artifact_id>
+python 00-System/Scripts/review.py --vault "/path/to/vault" diff <artifact_id>
+python 00-System/Scripts/review.py --vault "/path/to/vault" approve <artifact_id>
+python 00-System/Scripts/review.py --vault "/path/to/vault" approve-edited <artifact_id>
+python 00-System/Scripts/review.py --vault "/path/to/vault" reject <artifact_id> --reason "..."
+python 00-System/Scripts/review.py --vault "/path/to/vault" reopen <artifact_id>
+```
+
+所有状态转换与审计记录在同一事务中提交。`reviewed/core` 不会被 reopen 降级；拒绝记录会阻止同源同 artifact 重复生成。
+
+## AI 对话与教材
+
+教材 PDF 使用相同的 `prepared_pdf.py prepare --kind textbook`，生成教材学习草稿后再 inspect/apply/review。
+
+高价值 AI 对话使用：
+
+```bash
+python 00-System/Scripts/prepared_conversation.py \
+  --input "/path/to/conversation.md" --vault "/path/to/vault" \
+  --platform ChatGPT --model deepseek-v4-pro
+```
+
+该命令只创建 Prepared Bundle。完整对话保存在 Bundle 的 `raw-conversation.txt`，助手结论强制标记 `needs-verification`；随后用通用 `prepared_pdf.py inspect/apply-prepared` 和 `review.py` 完成同一审核闭环。
+
+## 兼容 dry-run
 
 `--dry-run` 是默认模式：它会提取文本、调用模型、校验 JSON 并打印完整计划，但不写入任何文件。
 
@@ -42,7 +90,7 @@ python 00-System/Scripts/ingest_pdf.py \
   --dry-run
 ```
 
-确认计划后，把最后一个参数改为 `--apply`。`--force-regenerate` 会重新请求模型，但仍不能覆盖 `reviewed`/`core`。
+旧 `ingest_pdf.py --dry-run/--apply` 入口保留兼容，但日常正式写入应使用 Prepared 工作流，避免确认后模型结果漂移。
 
 ## 正式执行
 

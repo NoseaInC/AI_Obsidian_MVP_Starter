@@ -222,6 +222,28 @@ python 00-System/Scripts/ingest_pdf.py \
 
 旧入口 `pdf_to_obsidian.py` 仍可用，内部转到新实现。
 
+## 十一、本地 Agent 与 Obsidian 插件
+
+启动只监听本机的服务：
+
+```bash
+./scripts/start-agent.sh
+```
+
+服务默认地址为 `http://127.0.0.1:8765`，健康检查为 `/health`。运行状态保存在 `90-Local-Only/Agent/agent.sqlite3`；Markdown 仍是知识正文真相。
+
+插件构建与安装：
+
+```bash
+cd obsidian-agent-plugin
+npm install --cache .npm-cache
+npm test
+npm run typecheck
+npm run build
+```
+
+把 `manifest.json` 和 `dist/main.js` 复制到 `.obsidian/plugins/obsidian-learning-agent/` 后在 Obsidian 中启用。插件不保存密钥，只连接 localhost，也不会静默批准 Change Set。
+
 处理导出的高价值 AI 对话：
 
 ```bash
@@ -232,7 +254,9 @@ python conversation_to_obsidian.py \
   --model deepseek-v4-pro
 ```
 
-## 十一、四周内不要做的事
+这个兼容入口现在只生成 Prepared Bundle，不会直接写入知识目录。复制输出的 `prepared_id` 后使用 `prepared_pdf.py inspect`；确认后才进入 `apply-prepared`。
+
+## 十二、四周内不要做的事
 
 - 不要一次导入所有 Zotero 文献。
 - 不要让 AI 自动修改 `reviewed` 或 `core` 笔记。

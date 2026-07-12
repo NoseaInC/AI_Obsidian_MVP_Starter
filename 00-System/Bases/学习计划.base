@@ -1,0 +1,34 @@
+filters:
+  and:
+    - 'file.ext == "md"'
+    - 'type == "weekly-plan"'
+properties:
+  file.name:
+    displayName: 学习计划
+  status:
+    displayName: 状态
+  week_start:
+    displayName: 周开始
+  mainline_ratio:
+    displayName: 统计与机器学习
+  side_ratio:
+    displayName: LLM 与 Agent
+views:
+  - type: table
+    name: 待确认计划
+    filters:
+      and:
+        - 'status == "proposed"'
+    order:
+      - file.name
+      - week_start
+      - mainline_ratio
+      - side_ratio
+  - type: table
+    name: 已确认计划
+    filters:
+      and:
+        - 'status == "confirmed"'
+    order:
+      - file.name
+      - week_start

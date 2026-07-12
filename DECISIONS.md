@@ -24,3 +24,14 @@ Author-named modules, losses and local methods remain inside source summaries un
 
 Use the Python standard library for the local runtime and HTTP API where practical. Add dependencies only when they materially reduce risk or maintenance.
 
+## D-007 — One Vault-wide writer lock
+
+Prepared validation and transactional commit share an advisory file lock under `90-Local-Only`. Review and mastery transitions use the same lock, closing local process TOCTOU windows while retaining per-transaction rollback journals.
+
+## D-008 — Plugin is a localhost client
+
+The Obsidian plugin contains presentation and explicit user actions only. Policy, model calls, artifact generation, review transitions and learning state writes remain in the local Python service.
+
+## D-009 — Conversation claims are untrusted by default
+
+Full conversation exports stay in local Prepared Bundles. Any assistant-authored claim must carry `needs-verification`; user-authored context is `user-provided`. Both still require normal artifact review.

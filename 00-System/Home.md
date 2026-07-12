@@ -16,6 +16,14 @@ status: core
 
 ![[00-System/Bases/复习队列.base#未来两天]]
 
+## 今日新学习
+
+通过右侧栏“学习 Agent”查看 reviewed/core 范围内按 70% 统计与机器学习、30% LLM 与 Agent 生成的今日新学习建议。
+
+## 本周学习计划
+
+![[00-System/Bases/学习计划.base#待确认计划]]
+
 ## 待审核 AI 草稿
 
 ![[00-System/Bases/待审核.base#待审核]]

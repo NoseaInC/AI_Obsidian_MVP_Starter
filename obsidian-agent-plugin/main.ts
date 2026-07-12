@@ -1,0 +1,80 @@
+import {App, ItemView, Modal, Notice, Plugin, WorkspaceLeaf} from "obsidian";
+import {AgentClient} from "./src/api";
+
+const VIEW_TYPE = "obsidian-learning-agent-view";
+
+class TextPrompt extends Modal {
+  constructor(app: App, private titleText: string, private done: (value: string) => void) { super(app); }
+  onOpen() {
+    this.contentEl.createEl("h3", {text: this.titleText});
+    const input = this.contentEl.createEl("input", {type: "text"}); input.style.width = "100%";
+    const button = this.contentEl.createEl("button", {text: "确认"});
+    button.onclick = () => { const value = input.value.trim(); if (value) { this.close(); this.done(value); } };
+  }
+}
+
+class AgentView extends ItemView {
+  constructor(leaf: WorkspaceLeaf, private client: AgentClient) { super(leaf); }
+  getViewType() { return VIEW_TYPE; }
+  getDisplayText() { return "学习 Agent"; }
+  async onOpen() { await this.refresh(); }
+  private button(parent: HTMLElement, text: string, action: () => Promise<void>) {
+    const button = parent.createEl("button", {text}); button.onclick = () => action().catch(error => new Notice(`Agent 错误：${error.message}`));
+  }
+  async refresh() {
+    const root = this.containerEl.children[1] as HTMLElement; root.empty(); root.createEl("h2", {text: "学习 Agent"});
+    try {
+      const [health, prepared, reviews, jobs, learning] = await Promise.all([
+        this.client.get<any>("/health"), this.client.get<any>("/prepared"),
+        this.client.get<any>("/reviews"), this.client.get<any>("/jobs"), this.client.get<any>("/learning/today"),
+      ]);
+      root.createEl("p", {text: `服务：${health.status}`});
+      root.createEl("h3", {text: `待处理资料（${prepared.bundles.filter((x: any) => x.state === "prepared").length}）`});
+      for (const bundle of prepared.bundles) {
+        const row = root.createDiv(); row.createSpan({text: `${bundle.prepared_id} · ${bundle.state} `});
+        this.button(row, "查看 Change Set", async () => {
+          const data = await this.client.get<any>(`/prepared/${encodeURIComponent(bundle.prepared_id)}`);
+          new Notice(data.preview.slice(0, 1000), 10000);
+        });
+        if (bundle.state === "prepared") this.button(row, "确认并应用", async () => {
+          if (!window.confirm("确认应用这个已检查的 Prepared Bundle？此操作不会调用模型。")) return;
+          await this.client.post("/prepared/apply", {prepared_id: bundle.prepared_id}); await this.refresh();
+        });
+      }
+      root.createEl("h3", {text: `待审核草稿（${reviews.artifacts.filter((x: any) => x.review_state === "pending").length}）`});
+      for (const artifact of reviews.artifacts) {
+        const row = root.createDiv(); row.createSpan({text: `${artifact.artifact_role} · ${artifact.artifact_id} `});
+        this.button(row, "Diff", async () => { const data = await this.client.get<any>(`/reviews/${encodeURIComponent(artifact.artifact_id)}/diff`); new Notice(data.diff.slice(0, 1200), 10000); });
+        if (artifact.status === "ai-draft") {
+          this.button(row, "接受", async () => { await this.client.post("/review/transition", {artifact_id: artifact.artifact_id, action: "approve"}); await this.refresh(); });
+          this.button(row, "拒绝", async () => new TextPrompt(this.app, "拒绝原因", async reason => { await this.client.post("/review/transition", {artifact_id: artifact.artifact_id, action: "reject", reason}); await this.refresh(); }).open());
+        }
+      }
+      root.createEl("h3", {text: `当前任务（${jobs.jobs.length}）`});
+      for (const job of jobs.jobs.slice(0, 10)) root.createEl("div", {text: `${job.kind} · ${job.state}`});
+      root.createEl("h3", {text: "今日复习"});
+      for (const item of learning.review) root.createEl("div", {text: `${item.title} · mastery ${item.mastery}`});
+      root.createEl("h3", {text: "今日学习"});
+      for (const item of learning.new_learning) root.createEl("div", {text: `${item.title} · ${item.domain}`});
+      root.createEl("h3", {text: "未来两天"});
+      for (const item of learning.next_two_days) root.createEl("div", {text: `${item.title} · ${item.next_review}`});
+    } catch (error: any) {
+      root.createEl("p", {text: "本地 Agent 服务未运行。请先执行 scripts/start-agent.sh。", cls: "mod-warning"});
+    }
+  }
+}
+
+export default class LearningAgentPlugin extends Plugin {
+  client = new AgentClient();
+  async onload() {
+    this.registerView(VIEW_TYPE, leaf => new AgentView(leaf, this.client));
+    const open = async () => { let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0]; if (!leaf) { leaf = this.app.workspace.getRightLeaf(false)!; await leaf.setViewState({type: VIEW_TYPE, active: true}); } this.app.workspace.revealLeaf(leaf); };
+    this.addCommand({id: "import-pdf", name: "Agent: 导入 PDF", callback: () => new TextPrompt(this.app, "本地 PDF 路径", async pdf => { await this.client.post("/jobs", {kind: "prepare-pdf", payload: {pdf}}); new Notice("已加入处理队列"); }).open()});
+    this.addCommand({id: "view-jobs", name: "Agent: 查看任务", callback: open});
+    this.addCommand({id: "review", name: "Agent: 审核待处理内容", callback: open});
+    this.addCommand({id: "expand-idea", name: "Agent: 展开当前灵感", callback: async () => { const file = this.app.workspace.getActiveFile(); if (!file) return new Notice("请先打开一条灵感"); await this.client.post("/jobs", {kind: "expand-idea", payload: {path: file.path}}); }});
+    this.addCommand({id: "today-learning", name: "Agent: 开始今日学习", callback: open});
+    this.addCommand({id: "next-week", name: "Agent: 生成下周计划", callback: async () => { await this.client.post("/jobs", {kind: "learning-plan", payload: {period: "next-week"}}); new Notice("已加入计划队列"); }});
+    this.addRibbonIcon("brain", "学习 Agent", open);
+  }
+}

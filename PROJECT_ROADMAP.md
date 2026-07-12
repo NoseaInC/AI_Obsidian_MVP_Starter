@@ -1,5 +1,7 @@
 # Project Roadmap
 
+Implementation status: Phases 0–6 complete for the local MVP. The remaining gate is a user-confirmed first real Dragonnet `apply-prepared` after inspecting its Prepared Bundle.
+
 ## Product outcome
 
 Build a local-first Obsidian learning agent with two complete loops: source-to-reviewed-knowledge and reviewed-knowledge-to-learning-plan. Markdown remains the knowledge source of truth; local SQLite stores runtime state only.
@@ -63,4 +65,3 @@ Acceptance: both inputs have offline fake-model tests and traceable source artif
 ## Deferred backlog
 
 WeChat articles, blogs, video, notebooks, GitHub ingestion, vector databases, GraphRAG and multi-agent orchestration remain out of scope until both core loops are stable in daily use.
-
