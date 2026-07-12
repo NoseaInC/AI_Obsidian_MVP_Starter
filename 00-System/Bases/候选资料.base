@@ -1,0 +1,35 @@
+filters:
+  and:
+    - 'file.ext == "md"'
+    - 'type == "candidate-resource"'
+properties:
+  file.name:
+    displayName: 候选资源
+  status:
+    displayName: 状态
+  target_gap:
+    displayName: 对应缺口
+  resource_type:
+    displayName: 类型
+  difficulty:
+    displayName: 难度
+  estimated_minutes:
+    displayName: 预计分钟
+  url:
+    displayName: 链接
+  reason:
+    displayName: 推荐理由
+views:
+  - type: table
+    name: 待确认
+    filters:
+      and:
+        - 'status == "candidate"'
+    order:
+      - file.name
+      - target_gap
+      - resource_type
+      - difficulty
+      - estimated_minutes
+      - reason
+      - url

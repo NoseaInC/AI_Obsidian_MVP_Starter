@@ -1,0 +1,42 @@
+filters:
+  and:
+    - 'file.ext == "md"'
+    - 'type == "idea"'
+properties:
+  file.name:
+    displayName: 灵感
+  idea_type:
+    displayName: 类型
+  status:
+    displayName: 状态
+  priority:
+    displayName: 优先级
+  next_action:
+    displayName: 下一步
+  review_on:
+    displayName: 回顾日期
+  related_notes:
+    displayName: 相关知识
+views:
+  - type: table
+    name: 待处理
+    filters:
+      and:
+        - 'status == "raw"'
+    order:
+      - file.name
+      - idea_type
+      - priority
+      - created
+  - type: table
+    name: 值得发展
+    filters:
+      and:
+        - 'status == "developing" || priority >= 4'
+    order:
+      - file.name
+      - idea_type
+      - priority
+      - next_action
+      - review_on
+      - related_notes

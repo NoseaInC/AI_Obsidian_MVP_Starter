@@ -1,0 +1,65 @@
+filters:
+  and:
+    - 'file.ext == "md"'
+    - 'status == "ai-draft" || status == "proposed"'
+properties:
+  file.name:
+    displayName: 草稿
+  type:
+    displayName: 类型
+  draft_kind:
+    displayName: 草稿用途
+  source_notes:
+    displayName: 来源
+  created:
+    displayName: 创建时间
+  processed_by:
+    displayName: 模型
+  generated_from:
+    displayName: 来源 ID
+  target_note:
+    displayName: 更新目标
+views:
+  - type: table
+    name: 待审核
+    order:
+      - file.name
+      - type
+      - draft_kind
+      - source_notes
+      - created
+      - processed_by
+      - generated_from
+  - type: table
+    name: 论文整理
+    filters:
+      and:
+        - 'type == "ai-draft"'
+        - 'draft_kind == "paper-summary" || draft_kind == "textbook-study"'
+    order:
+      - file.name
+      - source_notes
+      - created
+      - processed_by
+  - type: table
+    name: 知识草稿
+    filters:
+      and:
+        - 'type == "topic" || type == "concept"'
+        - 'status == "ai-draft"'
+    order:
+      - file.name
+      - type
+      - source_notes
+      - created
+  - type: table
+    name: 更新建议
+    filters:
+      and:
+        - 'type == "update-suggestion"'
+        - 'status == "ai-draft"'
+    order:
+      - file.name
+      - target_note
+      - source_notes
+      - created

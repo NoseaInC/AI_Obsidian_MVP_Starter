@@ -1,0 +1,53 @@
+filters:
+  and:
+    - 'file.ext == "md"'
+    - 'type == "concept" || type == "topic"'
+    - 'status == "reviewed" || status == "core"'
+properties:
+  file.name:
+    displayName: 复习主题
+  domain:
+    displayName: 领域
+  mastery:
+    displayName: 掌握度
+  importance:
+    displayName: 重要度
+  last_review:
+    displayName: 上次复习
+  next_review:
+    displayName: 下次复习
+  weak_points:
+    displayName: 本次重点
+views:
+  - type: table
+    name: 今日到期
+    filters:
+      and:
+        - 'next_review && next_review <= today()'
+    order:
+      - file.name
+      - mastery
+      - importance
+      - last_review
+      - next_review
+      - weak_points
+  - type: table
+    name: 未来两天
+    filters:
+      and:
+        - 'next_review && next_review > today()'
+        - 'next_review <= today() + "2d"'
+    order:
+      - file.name
+      - mastery
+      - importance
+      - next_review
+  - type: table
+    name: 尚未排期
+    filters:
+      and:
+        - '!next_review'
+    order:
+      - file.name
+      - mastery
+      - importance

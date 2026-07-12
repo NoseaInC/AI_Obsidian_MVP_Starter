@@ -1,0 +1,72 @@
+filters:
+  and:
+    - 'file.ext == "md"'
+    - 'type == "concept" || type == "topic" || type == "moc"'
+properties:
+  file.name:
+    displayName: 知识
+  type:
+    displayName: 类型
+  status:
+    displayName: 状态
+  domain:
+    displayName: 领域
+  mastery:
+    displayName: 掌握度
+  importance:
+    displayName: 重要度
+  last_review:
+    displayName: 上次复习
+  next_review:
+    displayName: 下次复习
+  weak_points:
+    displayName: 薄弱点
+  source_notes:
+    displayName: 来源
+  generated_from:
+    displayName: 生成来源
+views:
+  - type: table
+    name: 全部知识
+    order:
+      - file.name
+      - type
+      - domain
+      - status
+      - mastery
+      - importance
+      - next_review
+  - type: table
+    name: 核心知识
+    filters:
+      and:
+        - 'status == "core"'
+    order:
+      - file.name
+      - domain
+      - mastery
+      - importance
+      - next_review
+  - type: table
+    name: 薄弱知识
+    filters:
+      and:
+        - 'mastery <= 2'
+        - 'status == "reviewed" || status == "core"'
+    order:
+      - file.name
+      - mastery
+      - importance
+      - next_review
+  - type: table
+    name: AI 知识草稿
+    filters:
+      and:
+        - 'status == "ai-draft"'
+        - 'type == "concept" || type == "topic"'
+    order:
+      - file.name
+      - type
+      - domain
+      - source_notes
+      - generated_from
