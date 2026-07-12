@@ -71,8 +71,27 @@ artifact_id: "source:concept:0"
         thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/health", timeout=2) as response:
-                payload = json.loads(response.read())
+                payload = json.loads(response.read()); cors = response.headers["Access-Control-Allow-Origin"]
             self.assertEqual(payload["status"], "ok")
+            self.assertIs(payload["ok"], True)
+            self.assertEqual(payload["service"], "obsidian-learning-agent")
+            self.assertEqual(payload["protocol_version"], 1)
+            self.assertEqual(cors, "*")
+        finally:
+            server.shutdown(); server.server_close(); server.RequestHandlerClass.service.store.close(); thread.join(timeout=2)
+
+    def test_cors_preflight(self):
+        server = serve(self.vault, port=0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{server.server_port}/health", method="OPTIONS",
+                headers={"Origin": "app://obsidian.md", "Access-Control-Request-Method": "GET"},
+            )
+            with urllib.request.urlopen(request, timeout=2) as response:
+                self.assertEqual(response.status, 204)
+                self.assertEqual(response.headers["Access-Control-Allow-Origin"], "*")
+                self.assertIn("OPTIONS", response.headers["Access-Control-Allow-Methods"])
         finally:
             server.shutdown(); server.server_close(); server.RequestHandlerClass.service.store.close(); thread.join(timeout=2)
 

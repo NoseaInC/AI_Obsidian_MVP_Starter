@@ -35,12 +35,19 @@ class AgentView extends ItemView {
   }
   async refresh() {
     const root = this.containerEl.children[1] as HTMLElement; root.empty(); root.createEl("h2", {text: "学习 Agent"});
+    let health: any;
     try {
-      const [health, prepared, reviews, jobs, learning] = await Promise.all([
-        this.client.get<any>("/health"), this.client.get<any>("/prepared"),
-        this.client.get<any>("/reviews"), this.client.get<any>("/jobs"), this.client.get<any>("/learning/today"),
+      health = await this.client.health();
+      root.createEl("p", {text: `服务：在线 · 协议 v${health.protocol_version}`});
+    } catch (error: any) {
+      root.createEl("p", {text: `本地 Agent 服务未运行：${error.message}`, cls: "mod-warning"});
+      return;
+    }
+    try {
+      const [prepared, reviews, jobs, learning] = await Promise.all([
+        this.client.get<any>("/prepared"), this.client.get<any>("/reviews"),
+        this.client.get<any>("/jobs"), this.client.get<any>("/learning/today"),
       ]);
-      root.createEl("p", {text: `服务：${health.status}`});
       root.createEl("h3", {text: `待处理资料（${prepared.bundles.filter((x: any) => x.state === "prepared").length}）`});
       for (const bundle of prepared.bundles) {
         const row = root.createDiv(); row.createSpan({text: `${bundle.prepared_id} · ${bundle.state} `});
@@ -72,7 +79,7 @@ class AgentView extends ItemView {
       root.createEl("h3", {text: "未来两天"});
       for (const item of learning.next_two_days) root.createEl("div", {text: `${item.title} · ${item.next_review}`});
     } catch (error: any) {
-      root.createEl("p", {text: "本地 Agent 服务未运行。请先执行 scripts/start-agent.sh。", cls: "mod-warning"});
+      root.createEl("p", {text: `服务在线，但面板数据加载失败：${error.message}`, cls: "mod-warning"});
     }
   }
 }
@@ -81,7 +88,7 @@ export default class LearningAgentPlugin extends Plugin {
   client = new AgentClient();
   async onload() {
     this.registerView(VIEW_TYPE, leaf => new AgentView(leaf, this.client));
-    const open = async () => { let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0]; if (!leaf) { leaf = this.app.workspace.getRightLeaf(false)!; await leaf.setViewState({type: VIEW_TYPE, active: true}); } this.app.workspace.revealLeaf(leaf); };
+    const open = async () => { let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0]; if (!leaf) { leaf = this.app.workspace.getRightLeaf(false)!; await leaf.setViewState({type: VIEW_TYPE, active: true}); } else if (leaf.view instanceof AgentView) { await leaf.view.refresh(); } this.app.workspace.revealLeaf(leaf); };
     this.addCommand({id: "import-pdf", name: "Agent: 导入 PDF", callback: () => new TextPrompt(this.app, "本地 PDF 路径", async pdf => { await this.client.post("/jobs", {kind: "prepare-pdf", payload: {pdf}}); new Notice("已加入处理队列"); }).open()});
     this.addCommand({id: "view-jobs", name: "Agent: 查看任务", callback: open});
     this.addCommand({id: "review", name: "Agent: 审核待处理内容", callback: open});

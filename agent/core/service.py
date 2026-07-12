@@ -38,7 +38,14 @@ class AgentService:
 
     def health(self) -> dict[str, Any]:
         self.sync_indexes()
-        return {"status": "ok", "vault": str(self.vault), "jobs": len(self.store.list_jobs())}
+        return {
+            "ok": True,
+            "status": "ok",
+            "service": "obsidian-learning-agent",
+            "protocol_version": 1,
+            "vault": str(self.vault),
+            "jobs": len(self.store.list_jobs()),
+        }
 
     def list_jobs(self) -> list[dict[str, Any]]: return self.store.list_jobs()
     def list_prepared(self) -> list[dict[str, str]]:

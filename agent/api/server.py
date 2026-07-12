@@ -13,10 +13,25 @@ from agent.core.service import AgentService
 class Handler(BaseHTTPRequestHandler):
     service: AgentService
 
+    def _cors(self) -> None:
+        # The service is localhost-only and uses no cookies or credentials.
+        # A wildcard allows Obsidian's Electron origins (app://, file:// / null)
+        # without granting network access beyond the loopback-bound server.
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Max-Age", "600")
+
     def _send(self, status: int, payload: object) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status); self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+        self.send_header("Content-Length", str(len(data))); self._cors(); self.end_headers(); self.wfile.write(data)
+
+    def do_OPTIONS(self) -> None:
+        self.send_response(204)
+        self._cors()
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _body(self) -> dict:
         length = int(self.headers.get("Content-Length", "0")); raw = self.rfile.read(length) if length else b"{}"

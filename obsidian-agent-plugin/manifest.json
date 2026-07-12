@@ -1,7 +1,7 @@
 {
   "id": "obsidian-learning-agent",
   "name": "Obsidian Learning Agent",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "minAppVersion": "1.5.0",
   "description": "Local-first prepared ingestion, review and learning dashboard.",
   "author": "Local Vault",
