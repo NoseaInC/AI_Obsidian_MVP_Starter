@@ -91,7 +91,7 @@ def target_snapshot(path: Path, category: str) -> dict[str, Any]:
     }
 
 
-def _preview(plan: ingest.WritePlan, prepared_id: str) -> str:
+def _preview(plan: ingest.WritePlan, prepared_id: str, result: dict[str, Any] | None = None) -> str:
     lines = [f"# Prepared Bundle {prepared_id}", "", f"source_id: `{plan.source_id}`", "", "## Change Set", ""]
     for item in plan.writes:
         lines.append(f"- **{item.action}** `{item.category}` — `{item.path}`")
@@ -99,6 +99,10 @@ def _preview(plan: ingest.WritePlan, prepared_id: str) -> str:
         lines.extend(["", "## Reused / skipped", *[f"- {item}" for item in plan.skipped]])
     if plan.warnings:
         lines.extend(["", "## Warnings", *[f"- {item}" for item in plan.warnings]])
+    if result and isinstance(result.get("evidence"), list):
+        lines.extend(["", "## Evidence pages"])
+        for item in result["evidence"]:
+            lines.append(f"- {item.get('claim', '')} — pages {', '.join(map(str, item.get('pages', [])))} — {item.get('kind', '')}")
     lines.extend(["", "This bundle has not changed knowledge files. Inspect before apply-prepared.", ""])
     return "\n".join(lines)
 
@@ -160,7 +164,7 @@ def prepare_bundle(
         "evidence.json": _json({"evidence": result["evidence"], "inferences": result["inferences"]}),
         "vault-inventory.json": _json(ingest.inventory_for_prompt(inventory)),
         "change-set.json": _json({"source_id": plan.source_id, "writes": changes, "skipped": plan.skipped, "warnings": plan.warnings}),
-        "preview.md": _preview(plan, prepared_id),
+        "preview.md": _preview(plan, prepared_id, result),
         "extracted-text.txt": "\n".join(pages),
         "model-responses.json": _json({"response": raw}),
     }

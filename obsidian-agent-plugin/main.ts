@@ -13,6 +13,18 @@ class TextPrompt extends Modal {
   }
 }
 
+class ContentModal extends Modal {
+  constructor(app: App, private titleText: string, private content: string, private confirmText?: string, private confirmed?: () => Promise<void>) { super(app); }
+  onOpen() {
+    this.contentEl.createEl("h2", {text: this.titleText});
+    const pre = this.contentEl.createEl("pre", {text: this.content}); pre.style.maxHeight = "60vh"; pre.style.overflow = "auto"; pre.style.whiteSpace = "pre-wrap";
+    if (this.confirmText && this.confirmed) {
+      const button = this.contentEl.createEl("button", {text: this.confirmText});
+      button.onclick = async () => { if (!window.confirm("确认执行该操作？")) return; await this.confirmed!(); this.close(); };
+    }
+  }
+}
+
 class AgentView extends ItemView {
   constructor(leaf: WorkspaceLeaf, private client: AgentClient) { super(leaf); }
   getViewType() { return VIEW_TYPE; }
@@ -34,7 +46,7 @@ class AgentView extends ItemView {
         const row = root.createDiv(); row.createSpan({text: `${bundle.prepared_id} · ${bundle.state} `});
         this.button(row, "查看 Change Set", async () => {
           const data = await this.client.get<any>(`/prepared/${encodeURIComponent(bundle.prepared_id)}`);
-          new Notice(data.preview.slice(0, 1000), 10000);
+          new ContentModal(this.app, `Change Set · ${bundle.prepared_id}`, data.preview, bundle.state === "prepared" ? "确认并应用" : undefined, bundle.state === "prepared" ? async () => { await this.client.post("/prepared/apply", {prepared_id: bundle.prepared_id}); await this.refresh(); } : undefined).open();
         });
         if (bundle.state === "prepared") this.button(row, "确认并应用", async () => {
           if (!window.confirm("确认应用这个已检查的 Prepared Bundle？此操作不会调用模型。")) return;
@@ -44,9 +56,10 @@ class AgentView extends ItemView {
       root.createEl("h3", {text: `待审核草稿（${reviews.artifacts.filter((x: any) => x.review_state === "pending").length}）`});
       for (const artifact of reviews.artifacts) {
         const row = root.createDiv(); row.createSpan({text: `${artifact.artifact_role} · ${artifact.artifact_id} `});
-        this.button(row, "Diff", async () => { const data = await this.client.get<any>(`/reviews/${encodeURIComponent(artifact.artifact_id)}/diff`); new Notice(data.diff.slice(0, 1200), 10000); });
+        this.button(row, "Diff", async () => { const data = await this.client.get<any>(`/reviews/${encodeURIComponent(artifact.artifact_id)}/diff`); new ContentModal(this.app, `Diff · ${artifact.artifact_id}`, data.diff).open(); });
         if (artifact.status === "ai-draft") {
           this.button(row, "接受", async () => { await this.client.post("/review/transition", {artifact_id: artifact.artifact_id, action: "approve"}); await this.refresh(); });
+          this.button(row, "修改后接受", async () => { await this.client.post("/review/transition", {artifact_id: artifact.artifact_id, action: "approve-edited"}); await this.refresh(); });
           this.button(row, "拒绝", async () => new TextPrompt(this.app, "拒绝原因", async reason => { await this.client.post("/review/transition", {artifact_id: artifact.artifact_id, action: "reject", reason}); await this.refresh(); }).open());
         }
       }
