@@ -1,0 +1,271 @@
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import urllib.error
+import urllib.request
+import uuid
+from dataclasses import dataclass
+from typing import Any, Iterator, Protocol
+from urllib.parse import urlparse
+
+
+PROVIDER_TYPES = {"deepseek", "openai", "openai-compatible", "custom"}
+PROTECTED_HEADERS = {"authorization", "host", "content-length"}
+ROUTING_TASKS = {
+    # Agent Brain V1 routes.
+    "brain_orchestrator", "orchestrator", "intent_router", "material_analysis",
+    "research_synthesis", "capture_organize", "curriculum_planner", "daily_knowledge_generator",
+    "claim_extractor", "claim_verifier", "lesson_generator",
+    "tutor", "quiz", "evaluation", "pdf_prepare", "assistant_chat",
+    # Backward-compatible V2 routes retained for existing plugin settings.
+    "assistant", "prepare", "review", "weekly-plan", "fast",
+}
+KEY_REFERENCE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+
+
+class KeyStore(Protocol):
+    def set(self, reference: str, secret: str) -> None: ...
+    def get(self, reference: str) -> str | None: ...
+    def delete(self, reference: str) -> None: ...
+    def configured(self, reference: str) -> bool: ...
+
+
+class FakeKeyStore:
+    def __init__(self) -> None: self.values: dict[str, str] = {}
+    def set(self, reference: str, secret: str) -> None: self.values[reference] = secret
+    def get(self, reference: str) -> str | None: return self.values.get(reference)
+    def delete(self, reference: str) -> None: self.values.pop(reference, None)
+    def configured(self, reference: str) -> bool: return bool(self.values.get(reference))
+
+
+class MacKeychainStore:
+    """Fixed-argv Keychain adapter. No shell and no secret-bearing logs."""
+    service = "com.zhixu.obsidian.model-provider"
+
+    def set(self, reference: str, secret: str) -> None:
+        if not secret: raise ValueError("API key must not be empty")
+        try:
+            subprocess.run(
+                ["/usr/bin/security", "add-generic-password", "-U", "-a", reference, "-s", self.service, "-w", secret],
+                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.CalledProcessError):
+            # CalledProcessError stringifies argv, which contains the secret.
+            raise RuntimeError("Unable to save API key in macOS Keychain") from None
+
+    def get(self, reference: str) -> str | None:
+        env_name = reference.removeprefix("env:") if reference.startswith("env:") else ""
+        if env_name: return os.environ.get(env_name)
+        result = subprocess.run(
+            ["/usr/bin/security", "find-generic-password", "-a", reference, "-s", self.service, "-w"],
+            check=False, capture_output=True, text=True,
+        )
+        return result.stdout.strip() if result.returncode == 0 else None
+
+    def delete(self, reference: str) -> None:
+        if reference.startswith("env:"): return
+        subprocess.run(
+            ["/usr/bin/security", "delete-generic-password", "-a", reference, "-s", self.service],
+            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+
+    def configured(self, reference: str) -> bool:
+        if reference.startswith("env:"):
+            return bool(os.environ.get(reference.removeprefix("env:")))
+        result = subprocess.run(
+            ["/usr/bin/security", "find-generic-password", "-a", reference, "-s", self.service],
+            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        return result.returncode == 0
+
+
+def validate_base_url(value: str) -> str:
+    value = value.strip().rstrip("/")
+    parsed = urlparse(value)
+    local = parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+    if not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("Base URL must be an absolute service URL without credentials, query or fragment")
+    if parsed.scheme != "https" and not (parsed.scheme == "http" and local):
+        raise ValueError("Base URL must use HTTPS; HTTP is allowed only for localhost")
+    return value
+
+
+def validate_headers(headers: dict[str, Any]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for raw_name, raw_value in headers.items():
+        name = str(raw_name).strip()
+        if not name or name.lower() in PROTECTED_HEADERS: raise ValueError(f"Protected or invalid header: {name}")
+        if any(char in name + str(raw_value) for char in "\r\n"): raise ValueError("Header names and values cannot contain newlines")
+        result[name] = str(raw_value)
+    return result
+
+
+@dataclass
+class OpenAICompatibleProvider:
+    base_url: str
+    api_key: str
+    headers: dict[str, str]
+    timeout: float = 30.0
+    opener: Any = urllib.request.urlopen
+    provider_type: str = "openai-compatible"
+
+    def _request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
+        data = None if payload is None else json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.base_url}{path}", method=method, data=data,
+            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json", **self.headers},
+        )
+        with self.opener(request, timeout=self.timeout) as response: return json.loads(response.read())
+
+    def list_models(self) -> list[str]:
+        payload = self._request("GET", "/models")
+        return sorted(str(item["id"]) for item in payload.get("data", []) if item.get("id"))
+
+    def test_connection(self, model: str = "") -> dict[str, Any]:
+        try:
+            models = self.list_models()
+            if model and models and model not in models:
+                return {"ok": False, "code": "model_not_found", "message": "连接成功，但未找到所选模型", "models": models}
+            return {"ok": True, "code": "connected", "message": "连接成功", "models": models}
+        except urllib.error.HTTPError as exc:
+            code = "authentication_failed" if exc.code in {401, 403} else "rate_limited" if exc.code == 429 else "provider_error"
+            return {"ok": False, "code": code, "message": {"authentication_failed": "认证失败", "rate_limited": "请求受到速率限制"}.get(code, f"服务返回 HTTP {exc.code}")}
+        except (TimeoutError, urllib.error.URLError) as exc:
+            timeout = isinstance(getattr(exc, "reason", None), TimeoutError)
+            return {"ok": False, "code": "timeout" if timeout else "unreachable", "message": "连接超时" if timeout else "无法连接服务地址"}
+        except (ValueError, json.JSONDecodeError, KeyError):
+            return {"ok": False, "code": "incompatible", "message": "服务响应不兼容 OpenAI API"}
+
+    def chat(self, model: str, messages: list[dict[str, str]], **options: Any) -> dict[str, Any]:
+        return self._request("POST", "/chat/completions", {"model": model, "messages": messages, **options})
+
+    def stream_chat(self, model: str, messages: list[dict[str, str]], **options: Any) -> Iterator[dict[str, Any]]:
+        """Yield normalized events from a real OpenAI-compatible SSE stream.
+
+        The caller owns the iterator lifetime. Closing it also closes the HTTP
+        response, which lets an aborted Obsidian request stop upstream work.
+        No completed response is sliced into fake chunks here.
+        """
+        payload = {"model": model, "messages": messages, **options, "stream": True}
+        request = urllib.request.Request(
+            f"{self.base_url}/chat/completions", method="POST",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json", **self.headers},
+        )
+        with self.opener(request, timeout=self.timeout) as response:
+            for raw_line in response:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line or line.startswith(":"):
+                    continue
+                data = line.removeprefix("data:").strip() if line.startswith("data:") else line
+                if data == "[DONE]":
+                    yield {"type": "done"}
+                    return
+                try:
+                    item = json.loads(data)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError("Model stream returned invalid SSE JSON") from exc
+                choice = (item.get("choices") or [{}])[0]
+                delta = choice.get("delta") or {}
+                content = delta.get("content")
+                if isinstance(content, str) and content:
+                    yield {"type": "delta", "content": content}
+                finish_reason = choice.get("finish_reason")
+                if finish_reason:
+                    yield {"type": "finish", "finishReason": str(finish_reason), "usage": item.get("usage") or {}}
+
+    def structured_output(self, model: str, messages: list[dict[str, str]], schema: dict[str, Any], **options: Any) -> dict[str, Any]:
+        if self.provider_type == "deepseek":
+            # DeepSeek's OpenAI-compatible Chat Completion API currently
+            # accepts json_object, not OpenAI's json_schema response type.
+            # Preserve the same local validation contract by placing the
+            # requested schema in the bounded prompt and validating the
+            # returned object in BrainModelGateway.
+            schema_text = json.dumps(schema.get("schema", schema), ensure_ascii=False, separators=(",", ":"))
+            instruction = f"只输出 JSON 对象，不要使用 Markdown。输出必须符合以下 JSON Schema：{schema_text}"
+            adapted = [dict(item) for item in messages]
+            if adapted and adapted[0].get("role") == "system":
+                adapted[0]["content"] = f"{adapted[0].get('content', '')}\n{instruction}"
+            else:
+                adapted.insert(0, {"role": "system", "content": instruction})
+            return self.chat(
+                model,
+                adapted,
+                response_format={"type": "json_object"},
+                thinking={"type": "disabled"},
+                **options,
+            )
+        return self.chat(model, messages, response_format={"type": "json_schema", "json_schema": schema}, **options)
+
+
+class ModelProfileService:
+    def __init__(self, store: Any, key_store: KeyStore | None = None) -> None:
+        self.store, self.key_store = store, key_store or MacKeychainStore()
+
+    def _public(self, profile: dict[str, Any]) -> dict[str, Any]:
+        configured = self.key_store.configured(profile["apiKeyReference"])
+        return {**profile, "configured": configured, "keyHint": "••••••••" if configured else "未配置"}
+
+    def list(self) -> list[dict[str, Any]]: return [self._public(item) for item in self.store.list_model_profiles()]
+
+    def save(self, data: dict[str, Any], profile_id: str | None = None) -> dict[str, Any]:
+        provider_type = str(data.get("providerType", "openai-compatible"))
+        if provider_type not in PROVIDER_TYPES: raise ValueError("Unsupported provider type")
+        profile_id = profile_id or uuid.uuid4().hex
+        existing = next((item for item in self.store.list_model_profiles() if item["id"] == profile_id), None)
+        requested_reference = str(data.get("apiKeyReference", "")).strip()
+        reference = requested_reference or (existing["apiKeyReference"] if existing else f"zhixu:{profile_id}")
+        if not KEY_REFERENCE.fullmatch(reference):
+            raise ValueError("API Key Reference may contain only letters, numbers, dot, underscore, colon and hyphen")
+        settings = dict(data.get("settings", {})); settings["customHeaders"] = validate_headers(dict(settings.get("customHeaders", {})))
+        profile = {
+            "id": profile_id, "displayName": str(data.get("displayName", "未命名配置")).strip() or "未命名配置",
+            "providerType": provider_type, "baseUrl": validate_base_url(str(data.get("baseUrl", ""))),
+            "apiKeyReference": reference, "defaultModel": str(data.get("defaultModel", "")).strip(),
+            "availableModels": [str(item) for item in data.get("availableModels", [])], "enabled": bool(data.get("enabled", True)),
+            "settings": {"temperature": float(settings.get("temperature", .3)), "maxTokens": int(settings.get("maxTokens", 2000)),
+                         "timeout": float(settings.get("timeout", 30)), "streaming": bool(settings.get("streaming", True)),
+                         "jsonSchema": bool(settings.get("jsonSchema", True)), "toolCalling": bool(settings.get("toolCalling", False)),
+                         "organizationId": str(settings.get("organizationId", "")), "customHeaders": settings["customHeaders"]},
+        }
+        api_key = str(data.get("apiKey", ""))
+        if api_key: self.key_store.set(reference, api_key)
+        self.store.upsert_model_profile(profile)
+        return self._public(next(item for item in self.store.list_model_profiles() if item["id"] == profile_id))
+
+    def delete(self, profile_id: str) -> None:
+        profile = next((item for item in self.store.list_model_profiles() if item["id"] == profile_id), None)
+        if not profile: raise RuntimeError("Model profile not found")
+        # A Profile may point at a pre-existing or shared Keychain item such as
+        # `deepseek-main`. Removing UI configuration must never destroy that
+        # external secret implicitly.
+        self.store.delete_model_profile(profile_id)
+
+    def provider(self, profile_id: str) -> OpenAICompatibleProvider:
+        profile = next((item for item in self.store.list_model_profiles() if item["id"] == profile_id), None)
+        if not profile: raise RuntimeError("Model profile not found")
+        key = self.key_store.get(profile["apiKeyReference"])
+        if not key: raise RuntimeError("API key is not configured")
+        settings = profile["settings"]
+        return OpenAICompatibleProvider(
+            profile["baseUrl"], key, settings.get("customHeaders", {}),
+            float(settings.get("timeout", 30)), provider_type=profile["providerType"],
+        )
+
+    def test(self, profile_id: str) -> dict[str, Any]:
+        profile = next((item for item in self.store.list_model_profiles() if item["id"] == profile_id), None)
+        return self.provider(profile_id).test_connection(profile["defaultModel"] if profile else "")
+
+    def models(self, profile_id: str) -> list[str]: return self.provider(profile_id).list_models()
+
+    def routing(self) -> dict[str, dict[str, str | None]]: return self.store.model_routing()
+
+    def set_routing(self, routes: dict[str, dict[str, Any]]) -> dict[str, dict[str, str | None]]:
+        if not set(routes).issubset(ROUTING_TASKS): raise ValueError("Unsupported model routing task")
+        known = {item["id"] for item in self.store.list_model_profiles()}
+        for route in routes.values():
+            if route.get("profileId") and route["profileId"] not in known: raise ValueError("Unknown model profile in routing")
+        self.store.set_model_routing(routes); return self.routing()

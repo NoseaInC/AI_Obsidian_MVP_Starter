@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zhixu.local/schema/lesson-verification-v1.json",
+  "title": "LessonVerification",
+  "type": "object",
+  "required": ["schemaVersion", "grade", "score", "claims", "verifiedAt"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "grade": {"enum": ["A", "B", "C"]},
+    "score": {"type": "number", "minimum": 0, "maximum": 1},
+    "claims": {"type": "array"},
+    "verifiedAt": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": true
+}

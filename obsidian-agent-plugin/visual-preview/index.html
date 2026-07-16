@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>知序 Agent Brain V1 Visual Preview</title>
+  <link rel="stylesheet" href="../styles.css">
+  <style>
+    :root {
+      --background-primary: #ffffff;
+      --background-primary-alt: #fbfcfe;
+      --background-secondary: #f7f8fa;
+      --background-modifier-border: #e5e7eb;
+      --background-modifier-border-hover: #cfd5df;
+      --background-modifier-hover: #f1f4f8;
+      --interactive-accent: #3478f6;
+      --interactive-accent-hover: #2467df;
+      --text-normal: #202938;
+      --text-muted: #727b8c;
+      --text-on-accent: #ffffff;
+      --text-accent: #2868dd;
+      --color-green: #16a567;
+      --color-blue: #3478f6;
+      --color-purple: #805ad5;
+      --color-orange: #e98a20;
+      --color-red: #d9485f;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    body.dark {
+      --background-primary: #17191d;
+      --background-primary-alt: #1b1e23;
+      --background-secondary: #202329;
+      --background-modifier-border: #343941;
+      --background-modifier-border-hover: #4a515d;
+      --background-modifier-hover: #292e35;
+      --text-normal: #e7e9ee;
+      --text-muted: #9ca4b1;
+      --text-on-accent: #fff;
+      background: #101216;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #eef1f5; color: var(--text-normal); }
+    button, input, select, textarea { color: inherit; font: inherit; }
+    .preview-window {
+      width: min(1440px, 100vw);
+      height: min(900px, 100vh);
+      margin: 0 auto;
+      overflow: hidden;
+      border: 1px solid var(--background-modifier-border);
+      border-radius: 14px;
+      background: var(--background-primary);
+      box-shadow: 0 18px 54px rgba(27, 36, 50, .16);
+    }
+    body.narrow .preview-window { width: min(820px, 100vw); }
+    .la-app { height: 100%; display: flex; flex-direction: column; overflow: hidden; container-type: inline-size; }
+    .la-preview-icon { width: 16px; text-align: center; }
+    .la-preview-chip { display: inline-flex; align-items: center; gap: 5px; }
+    .la-preview-source { color: var(--text-muted); font-size: 11px; }
+    .la-preview-question { display: grid; gap: 7px; }
+    .la-preview-answer { padding: 7px 10px; border: 1px solid var(--background-modifier-border); border-radius: 6px; }
+    .la-preview-answer.correct { border-color: color-mix(in srgb, var(--color-green) 55%, var(--background-modifier-border)); color: var(--color-green); }
+    .la-review-document .formula { padding: 14px; margin: 16px 0; text-align: center; border: 1px solid var(--background-modifier-border); border-radius: 8px; background: var(--background-primary-alt); font-family: Georgia, serif; font-size: 17px; }
+  </style>
+</head>
+<body>
+  <main class="preview-window">
+    <section class="view-content la-app">
+      <div class="la-workspace">
+        <nav class="la-module-nav">
+          <div class="la-nav-identity"><span class="la-nav-identity__mark">序</span><div><strong>知序</strong><small>在线 · 协议 v1</small></div></div>
+          <div class="la-nav-modules" id="module-nav"></div>
+          <div class="la-nav-stats">
+            <div class="la-nav-progress"><span>今日进度</span><strong>68%</strong><div class="la-job-progress"><div style="width:68%"></div></div></div>
+            <div class="la-nav-stat"><span>今日复习</span><strong>3</strong></div>
+            <div class="la-nav-stat"><span>今日学习</span><strong>2</strong></div>
+            <div class="la-nav-stat"><span>待确认资料</span><strong>2</strong></div>
+            <div class="la-nav-stat"><span>待审核知识</span><strong>4</strong></div>
+            <div class="la-nav-stat"><span>运行任务</span><strong>1</strong></div>
+            <div class="la-nav-stat"><span>失败任务</span><strong>0</strong></div>
+          </div>
+          <div class="la-nav-runtime la-nav-runtime--footer"><span>✓</span><span><strong>Agent 已连接</strong><small>本地运行 · 正常</small></span></div>
+        </nav>
+        <section class="la-module-stage"><div class="la-module-content" id="content"></div></section>
+      </div>
+    </section>
+  </main>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const view = params.get("view") || "today";
+    const drawer = params.get("drawer") === "1";
+    if (params.get("theme") === "dark") document.body.classList.add("dark");
+    if (params.get("narrow") === "1") document.body.classList.add("narrow");
+    const modules = [
+      ["today", "今日", "▣"], ["materials", "资料", "▤"], ["review", "审核", "▧"], ["plan", "计划", "▦"], ["assistant", "助手", "◉"],
+    ];
+    document.querySelector("#module-nav").innerHTML = modules.map(([id, label, icon]) => `<button class="la-module-nav__item ${id === view ? "is-active" : ""}"><span class="la-module-nav__icon">${icon}</span><span class="la-module-nav__label">${label}</span></button>`).join("");
+    const heading = (title, description, action = "") => `<header class="la-module-heading"><div><h1>${title}</h1><p>${description}</p></div>${action ? `<div class="la-module-heading__tools">${action}</div>` : ""}</header>`;
+    const badge = (text, kind = "neutral") => `<span class="la-badge la-badge--${kind}">${text}</span>`;
+    const filters = labels => `<div class="la-filter-row">${labels.map((x, index) => `<button class="${index === 0 ? "is-active" : ""}">${x}</button>`).join("")}</div>`;
+    const recommendations = [
+      ["倾向得分充分性", "学习", "learn", 92, 15, "掌握倾向得分的条件与应用场景，提升数据分析中的推断能力。", "主线"],
+      ["回归分析的假设检验", "复习", "review", 88, 18, "巩固显著性检验方法与统计推断流程。", "主线"],
+      ["P 值与显著性水平", "复习", "review", 85, 12, "避免常见统计误区，强化判断边界。", "主线"],
+      ["中心极限定理直观理解", "探索", "explore", 82, 16, "从直观角度理解抽样分布与近似。", "支线"],
+      ["似然函数的构建方法", "学习", "learn", 80, 20, "学习如何为参数估计构造似然函数。", "主线"],
+    ];
+    const recommendationRows = recommendations.map((item, index) => `<article class="la-rec-row ${index === 0 ? "is-selected" : ""}"><span class="la-kind-icon la-kind-icon--${item[2]}">${item[1] === "复习" ? "↻" : "▣"}</span><div class="la-rec-row__content"><div class="la-rec-row__headline"><strong>${item[0]}</strong>${index === 0 ? badge("热门", "source") : ""}</div><div class="la-rec-row__meta">${badge(item[1], item[2])}<span>${item[4]} 分钟</span><span>评分 ${item[3]}</span></div><p>${item[5]}</p><div class="la-row-tags">${badge(item[6], item[6] === "主线" ? "learn" : "explore")} ${badge(index < 2 ? "概念理解" : "方法技巧")}</div></div><button class="la-icon-button">☆</button></article>`).join("");
+
+    const today = `${heading("推荐中心", "根据掌握度、学习路线与可用时间，给出可解释的今日建议")}<div class="la-three-pane la-today-layout"><section class="la-pane la-pane--list"><header class="la-pane-header"><div class="la-pane-title"><h2>为你推荐</h2><span>智能排序</span></div><div class="la-search">⌕<input placeholder="搜索推荐内容…"></div><div class="la-toolbar-row">${filters(["全部", "复习", "学习", "探索", "资料"])}<select><option>智能排序</option></select></div></header><div class="la-pane-scroll la-recommendation-list">${recommendationRows}</div><footer class="la-pane-footer la-list-footer"><span>共 5 项建议</span><button>刷新</button></footer></section><article class="la-pane la-pane--detail"><header class="la-pane-header la-detail-header"><div><h1>倾向得分充分性</h1><div class="la-rec-row__meta">${badge("学习", "learn")}<span>评分 92</span><span>15 分钟</span></div></div><button class="la-icon-button">☆</button></header><div class="la-pane-scroll la-detail-scroll"><section class="la-detail-section"><h2>推荐理由</h2><p>你已完成最大似然估计与 Score 函数相关内容，正处于统计推断方法的深化阶段。本内容帮助你：</p><ul class="la-reason-list"><li>理解倾向得分的定义与充分性条件</li><li>掌握其在样本选择与因果推断中的应用</li><li>为后续学习双重稳健估计打下基础</li></ul></section><section class="la-detail-section"><h2>先修知识</h2><div class="la-chips"><button>最大似然估计</button><button>Score 函数</button><button>条件期望</button></div></section><section class="la-detail-section"><h2>相关笔记</h2><div class="la-reference-list"><button><span>▧</span><span>倾向得分定义与性质</span><span>›</span></button><button><span>▧</span><span>条件期望与投影定理</span><span>›</span></button><button><span>▧</span><span>因果推断基础框架</span><span>›</span></button></div></section><section class="la-detail-section"><h2>随堂小测（预览）</h2><div class="la-quiz la-preview-question"><strong>下面哪项正确描述倾向得分 e(X)？</strong><div class="la-preview-answer correct">A. e(X)=P(T=1|X)，与结果变量无关　✓</div><div class="la-preview-answer">B. e(X)=P(Y=1|T,X)</div></div></section><section class="la-detail-section"><h2>相关微知识</h2><div class="la-chips"><button>可忽略性假设</button><button>共同支持条件</button><button>IPW 权重</button><button>平衡性检验</button></div></section></div><footer class="la-pane-footer la-action-bar"><button>稍后学习</button><button>加入计划</button><button class="mod-cta">开始学习 · 15 分钟</button></footer></article></div>`;
+
+    const materialRows = [["Dragonnet 论文整理", "处理中", "learn", 87], ["图深推理教材 Ch.3", "待确认", "source", 55], ["与导师对话记录导入", "已应用", "review", 100], ["RAG 最新进展综述", "待确认", "source", 35], ["机器学习实战（第2版）", "已应用", "review", 100], ["与同学讨论：扩散模型", "失败", "error", 0]].map((item, index) => `<button class="la-material-row ${index === 0 ? "is-selected" : ""}"><div class="la-material-row__top"><span class="la-kind-icon la-kind-icon--${item[2]}">▤</span><strong>${item[0]}</strong>${badge(item[1], item[2])}</div><small>来源 · ${index % 2 ? "本地 PDF" : "arxiv.org"}</small><div class="la-material-row__meta"><span>${item[1]}</span><span>${item[3]}%</span><span>10 分钟前</span></div><div class="la-job-progress"><div style="width:${item[3]}%"></div></div></button>`).join("");
+    const materialInspector = `<aside class="la-pane la-pane--inspector la-material-inspector"><header class="la-pane-header"><h2>处理状态</h2></header><div class="la-pane-scroll la-inspector-scroll"><div class="la-material-progress"><div class="la-progress-ring la-progress-ring--medium" style="--la-progress:313deg"><strong>87%</strong><small>处理中</small></div></div><div class="la-process-steps"><div class="is-done"><span>✓</span><span>解析文档</span></div><div class="is-done"><span>✓</span><span>提取与理解</span></div><div class="is-done"><span>✓</span><span>生成 Change Set</span></div><div class="is-current"><span>◉</span><span>应用到知识库</span></div><div><span>○</span><span>完成</span></div></div><div class="la-inspector-card"><h3>资料信息</h3><div class="la-evidence-row"><small>类型</small><strong>论文 / PDF</strong></div><div class="la-evidence-row"><small>语言</small><strong>英文</strong></div><div class="la-evidence-row"><small>页数</small><strong>28</strong></div><div class="la-evidence-row"><small>模型</small><strong>DeepSeek V3</strong></div></div><details class="la-inspector-card la-technical"><summary>技术详情</summary><p>内部 ID 和哈希只在这里展示。</p></details></div></aside>`;
+    const materials = `${heading("资料管理", "从导入、研究、Change Set 到应用确认的完整材料状态", "<button class=\"mod-cta\">导入资料</button>")}<div class="la-page-toolbar">${filters(["待确认 2", "处理中 1", "研究包 1", "已应用 2", "失败 1", "历史"])}<div class="la-search">⌕<input placeholder="搜索资料或研究包…"></div></div><div class="la-three-pane la-material-layout"><section class="la-pane la-pane--list"><header class="la-pane-header"><h2>处理中</h2><span>6 条材料记录</span></header><div class="la-pane-scroll la-material-list">${materialRows}</div><footer class="la-pane-footer la-list-footer"><span>共 6 项</span><button>刷新</button></footer></section><article class="la-pane la-pane--detail"><header class="la-pane-header la-detail-header"><div><h1>Dragonnet 论文整理</h1><div class="la-rec-row__meta">${badge("处理中", "learn")}<span>PDF</span>${badge("研究包已关联", "explore")}</div></div><button class="la-icon-button">•••</button></header><div class="la-pane-scroll la-detail-scroll"><section class="la-detail-section"><h2>Change Set 概览</h2><div class="la-change-facts"><div class="la-change-fact"><small>创建</small><strong>32 项</strong></div><div class="la-change-fact la-change-fact--learn"><small>更新</small><strong>24 项</strong></div><div class="la-change-fact la-change-fact--explore"><small>建议</small><strong>18 项</strong></div><div class="la-change-fact la-change-fact--source"><small>跳过</small><strong>7 项</strong></div></div><p>分析已完成，等待检查来源、变更和目标位置后确认。</p></section><section class="la-detail-section"><h2>研究包</h2><div class="la-inspector-card"><strong>因果推断中的表示学习</strong><p>问题定义、来源候选、冲突点与待验证结论已结构化保存；正式知识仍需审核。</p><div class="la-row-tags">${badge("3 个来源", "source")} ${badge("2 个待验证结论", "explore")}</div></div></section><section class="la-detail-section"><h2>关键变更</h2><ul class="la-change-list"><li>新增概念：28 个新概念已创建</li><li>更新笔记：24 条笔记内容已补充</li><li>建议修订：18 处内容需人工确认</li><li>跳过条目：与现有内容重复或置信度低</li></ul></section><section class="la-detail-section"><h2>目标位置</h2><div class="la-reference-list"><button><span>▤</span><span>20-Knowledge / Topics / 因果推断</span><span>18 项</span></button><button><span>▤</span><span>20-Knowledge / Concepts</span><span>12 项</span></button></div></section><section class="la-detail-section"><h2>证据支持</h2><div class="la-evidence-list"><div><span>✓</span><span>第 3 页 · 方法论框架 · 置信度 92%</span></div><div><span>✓</span><span>第 6 页 · 训练数据与规模 · 置信度 88%</span></div><div><span>✓</span><span>第 12 页 · 性能评估结果 · 置信度 90%</span></div></div></section></div><footer class="la-pane-footer la-action-bar"><button>查看详情</button><button>重试</button><button>查看日志</button><button class="mod-cta">应用确认</button></footer></article>${materialInspector}</div>`;
+
+    const reviewRows = [["梯度下降法（Gradient Descent）", "概念更新", "explore"], ["注意力机制的实现细节", "论文片段", "source"], ["过拟合（Overfitting）", "概念创建", "review"], ["线性回归模型", "主题更新", "explore"], ["随机梯度下降（SGD）", "概念更新", "learn"]].map((item, index) => `<button class="la-review-row ${index === 0 ? "is-selected" : ""}"><div class="la-review-row__top">${badge(item[1], item[2])}<span>•••</span></div><strong>${item[0]}</strong><small>来源 · DeepSeek R1 论文精读</small><div class="la-row-tags">${badge(index < 2 ? "高优先级" : "低优先级", index < 2 ? "explore" : "review")} ${badge("机器学习")}</div></button>`).join("");
+    const review = `${heading("知识质量控制中心", "检查 Markdown、Diff、来源证据与 Agent 理由，再决定接受或拒绝")}<div class="la-page-toolbar">${filters(["全部 16", "论文 6", "教材 3", "主题 2", "概念 2", "更新建议 1", "待审核 16", "已接受 8", "已拒绝 2"])}</div><div class="la-three-pane la-review-layout"><section class="la-pane la-pane--list"><header class="la-pane-header"><h2>待处理草稿</h2><span>按来源筛选</span></header><div class="la-pane-scroll la-review-list">${reviewRows}</div><footer class="la-pane-footer la-list-footer"><span>16 项</span><span>1 / 2</span></footer></section><article class="la-pane la-pane--detail"><header class="la-pane-header la-review-tabs"><div class="la-segmented"><button class="is-active">预览</button><button>Diff</button><button>源文件</button><button>用户编辑</button></div><div><button class="la-icon-button">⛶</button><button class="la-icon-button">▣</button></div></header><div class="la-pane-scroll la-review-document markdown-rendered"><h1>梯度下降法（Gradient Descent）</h1><p>${badge("概念", "learn")} ${badge("优化算法")} ${badge("数学")} ${badge("机器学习")}</p><h2>定义</h2><p>梯度下降法是一种一阶优化算法，用于最小化可微函数。它通过沿着目标函数梯度的反方向迭代更新参数，从而逐步逼近函数的局部最小值。</p><h2>数学表达式</h2><div class="formula">θ⁽ᵗ⁺¹⁾ = θ⁽ᵗ⁾ − η∇J(θ⁽ᵗ⁾)</div><ul><li>θ：第 t 次迭代的参数</li><li>η：学习率</li><li>∇J：目标函数在当前参数处的梯度</li></ul><h2>直观理解</h2><p>梯度指出函数在当前点上升最快的方向，沿着负梯度方向前进可以使函数值下降最快。</p><h2>算法步骤</h2><ol><li>初始化参数</li><li>计算当前梯度</li><li>更新参数</li><li>重复直到满足停止条件</li></ol></div><footer class="la-pane-footer la-action-bar"><button class="la-danger-button">拒绝</button><button>稍后</button><button>修改后接受</button><button class="mod-cta">接受</button></footer></article><aside class="la-pane la-pane--inspector"><header class="la-pane-header"><h2>来源与证据</h2></header><div class="la-pane-scroll la-inspector-scroll"><div class="la-inspector-card"><h3>来源信息</h3><div class="la-evidence-row"><small>资料</small><strong>DeepSeek R1 技术报告.pdf</strong></div><div class="la-evidence-row"><small>位置</small><strong>第 23 页（共 98 页）</strong></div><div class="la-evidence-row"><small>范围</small><strong>第 2.3 节 梯度下降法</strong></div></div><div class="la-inspector-card"><h3>Agent 理由</h3><p>原文系统性介绍定义、公式与收敛性分析，适合作为独立概念条目。</p><div class="la-confidence"><span>证据强度</span><strong>92%（高）</strong></div></div><div class="la-inspector-card"><h3>主脑质量门</h3><div class="la-evidence-row"><small>Policy</small><strong>通过 · reviewed/core 只读</strong></div><div class="la-evidence-row"><small>Verifier</small><strong>通过 · 来源与页码完整</strong></div><div class="la-evidence-row"><small>Change Set</small><strong>待用户确认</strong></div></div><div class="la-inspector-card"><h3>相关知识</h3><div class="la-chips"><button>优化算法</button><button>凸优化</button><button>学习率</button></div></div><div class="la-inspector-card"><h3>审核历史</h3><p>10:30 · 提交待审</p><p>10:29 · 从 PDF 第 23 页提取</p></div></div></aside></div>`;
+
+    const planTask = (title, meta, state = "开始") => `<div class="la-plan-task"><div><strong>${title}</strong><div class="la-rec-row__meta"><span>${meta}</span><span>15 分钟</span></div></div><button class="la-compact-button">${state}</button></div>`;
+    const planSection = (title, icon, rows) => `<section class="la-plan-section"><header class="la-plan-section__header"><span>${icon}</span><h2>${title}</h2>${badge(String(rows.length))}</header>${rows.join("")}</section>`;
+    const plan = `${heading("学习计划", "在工作日与周末节奏中平衡主线和支线学习", "<button>计划设置</button>")}<div class="la-plan-ratios">${badge("主线 70%", "learn")} ${badge("支线 30%", "explore")} ${badge("候选计划 3", "source")} ${badge("待确认方案 1", "explore")}</div><div class="la-plan-board-v3"><div class="la-plan-column-v3 la-pane-scroll">${planSection("未来两天", "▦", [planTask("阅读论文：Transformer 架构演进", "支线 · 明天"), planTask("刷题：动态规划专题训练", "主线 · 后天")])}${planSection("明天队列", "◉", [planTask("RLHF 技术原理与实现", "主线 · DeepSeek 系列"), planTask("Chain-of-Thought 研究综述", "支线 · 论文阅读"), planTask("复习：强化学习基础概念", "主线 · 强化学习")])}${planSection("周末队列", "☕", [planTask("动手实验：PPO 算法实现", "主线 · DeepSeek 系列", "移到明天"), planTask("整理笔记：RL 核心公式推导", "主线 · 强化学习", "移到明天")])}</div><div class="la-plan-column-v3 la-pane-scroll">${planSection("AI 候选计划 · 待确认", "✦", [planTask("因果推断主线复习", "主线 · 主脑建议", "确认"), planTask("Dragonnet 论文复盘", "主线 · 来源驱动", "确认"), planTask("Agent Runtime 设计阅读", "支线 · 兴趣探索", "确认")])}${planSection("本周计划", "▦", [planTask("DeepSeek 论文研读", "主线 · DeepSeek 系列"), planTask("强化学习基础梳理", "主线 · 强化学习"), planTask("LLM 训练流程总结", "主线 · 大模型训练"), planTask("论文阅读：Scaling Laws", "支线 · 论文阅读"), planTask("动手实验：DPO 实现", "支线 · DeepSeek 系列")])}</div><div class="la-plan-column-v3 la-pane-scroll">${planSection("已完成", "✓", [planTask("Transformer 基础概念梳理", "主线 · 5 月 22 日", "完成"), planTask("RL 基础概念与环境搭建", "主线 · 5 月 22 日", "完成"), planTask("Attention Is All You Need", "支线 · 5 月 21 日", "完成")])}${planSection("延期任务", "◷", [planTask("模型微调实践（LoRA）", "主线 · 原计划 5 月 20 日", "延后"), planTask("参数高效微调方法对比", "支线 · 原计划 5 月 21 日", "延后")])}</div></div><footer class="la-plan-summary-v3"><div><small>本周任务数</small><strong>8 项</strong></div><div><small>预计分钟</small><strong>720 分钟</strong></div><div><small>已完成分钟</small><strong>315 分钟</strong></div><div><small>完成比例</small><strong>43.8%</strong></div><div><small>连续学习天数</small><strong>5 天</strong></div><div><small>实际比例</small><strong>68% / 32%</strong></div></footer>`;
+
+    const provider = `<aside class="la-provider-drawer ${drawer ? "is-open" : ""}"><header class="la-pane-header la-inspector-head"><div><h2>模型与 API 设置</h2><span>Key 只保存到 macOS Keychain</span></div><button class="la-icon-button">×</button></header><div class="la-pane-scroll la-provider-scroll"><div class="la-provider-section-head"><h3>提供商</h3><select><option>DeepSeek · 已配置</option></select></div><div class="la-provider-form"><div class="la-form-field"><label>配置名称</label><input value="DeepSeek 主配置"></div><div class="la-form-field"><label>服务类型</label><select><option>DeepSeek</option><option>OpenAI-compatible</option><option>Custom</option></select></div><div class="la-form-field"><label>Base URL</label><input value="https://api.deepseek.com/v1"></div><div class="la-form-field"><label>API Key Reference</label><input value="deepseek-main"></div><div class="la-form-field"><label>模型名称</label><input value="deepseek-chat"></div><details open><summary>高级设置</summary><input value="Organization ID（可选）"><input value="Temperature 0.3"><input value="Max Tokens 2000"><textarea>自定义 Headers JSON</textarea><div class="la-provider-capabilities"><label class="la-provider-capability"><input type="checkbox" checked> 流式输出</label><label class="la-provider-capability"><input type="checkbox" checked> JSON Schema</label><label class="la-provider-capability"><input type="checkbox"> 工具调用</label></div></details></div><div class="la-provider-actions"><button class="mod-cta">保存</button><button>测试连接</button><button>获取模型</button></div><h3>任务模型路由</h3>${["AI 助手", "PDF Prepare", "教材 Prepare", "审核辅助", "推荐解释", "短测生成", "周计划", "研究综合", "快速低成本"].map(x => `<div class="la-routing-row"><span>${x}</span><select><option>DeepSeek 主配置</option></select></div>`).join("")}</div></aside>`;
+    const assistant = `<div class="la-assistant-shell-v3 ${drawer ? "has-drawer" : ""}"><section class="la-assistant-main"><header class="la-assistant-head"><div><h1>助手</h1><p>理解意图，调用受限能力；任何知识写入都先生成 Change Set</p></div><select><option>DeepSeek · deepseek-chat</option></select><button>新会话</button><button class="la-icon-button">⚙</button></header><div class="la-segmented la-brain-modes"><button class="is-active">对话</button><button>整理</button><button>研究</button><button>规划</button></div><div class="la-context-chips">${badge("当前笔记 · Dragonnet 论文", "learn")} ${badge("Dragonnet 来源", "review")} ${badge("反向链接 8", "explore")}</div><div class="la-message-list"><div class="la-message la-message--user"><p>研究 Dragonnet 应该放在因果推断知识主线的什么位置，并准备更新建议。</p></div><div class="la-message la-message--assistant"><span class="la-message-avatar">序</span><div><strong>已理解：研究并整理</strong><p>我会先检索 Vault 与已索引来源，构造 Research Bundle，再把主线主题、可复用概念和更新建议放入 Change Set。</p><div class="la-inspector-card"><h3>Brain Run</h3><div class="la-process-steps"><div class="is-done"><span>✓</span><span>理解意图 · research + organize</span></div><div class="is-done"><span>✓</span><span>检索 Vault 与来源索引</span></div><div class="is-done"><span>✓</span><span>Policy：reviewed/core 只读</span></div><div class="is-current"><span>◉</span><span>等待确认 Change Set</span></div></div></div><p class="la-preview-source">来源：Künzel et al. (2019) · PAGE 3, 6, 12</p><button>查看 Research Bundle</button> <button>查看 Change Set</button></div></div></div><div class="la-assistant-dock"><div class="la-chips la-command-chips">${["/解释当前笔记", "/生成短测", "/检查我的复述", "/关联知识", "/展开灵感", "/研究主题", "/生成更新建议", "/生成周计划"].map(x => `<button>${x}</button>`).join("")}</div><div class="la-assistant-composer"><textarea placeholder="输入问题或使用 / 唤起命令…"></textarea><button class="la-icon-button">➤</button></div><div class="la-assistant-safety"><span>✓</span><span>所有写入操作先生成 Change Set，确认后才应用到笔记。</span></div></div></section>${provider}</div>`;
+
+    const content = document.querySelector("#content");
+    content.className = `la-module-content la-module-content--${view} ${view === "assistant" ? "la-assistant-page" : "la-page-frame"} ${view === "plan" ? "la-plan-page" : ""}`;
+    content.innerHTML = ({today, materials, review, plan, assistant}[view] || today);
+
+    // Deterministic acceptance states. These never call a model or network service;
+    // they exercise the same production CSS and component contracts for screenshots.
+    const scenario = params.get("scenario") || "";
+    const assistantList = content.querySelector(".la-message-list");
+    const brainSteps = (current, finalLabel = "等待确认 Change Set") => `<div class="la-inspector-card"><h3>Brain Run</h3><div class="la-process-steps"><div class="is-done"><span>✓</span><span>理解意图</span></div><div class="${current === "context" ? "is-current" : "is-done"}"><span>${current === "context" ? "◉" : "✓"}</span><span>构建最小上下文</span></div><div class="${current === "execute" ? "is-current" : current === "context" ? "" : "is-done"}"><span>${current === "execute" ? "◉" : current === "context" ? "○" : "✓"}</span><span>执行受限 Skill</span></div><div class="${current === "verify" ? "is-current" : ["context", "execute"].includes(current) ? "" : "is-done"}"><span>${current === "verify" ? "◉" : ["context", "execute"].includes(current) ? "○" : "✓"}</span><span>Policy 与 Verifier</span></div><div class="${current === "proposal" ? "is-current" : ""}"><span>${current === "proposal" ? "◉" : "○"}</span><span>${finalLabel}</span></div></div></div>`;
+    const assistantScenario = body => {
+      if (assistantList) assistantList.innerHTML = body;
+    };
+    if (view === "assistant" && scenario === "default") {
+      assistantScenario(`<div class="la-message la-message--assistant"><span class="la-message-avatar">序</span><div><strong>今天想从哪里开始？</strong><p>我可以解释当前笔记、整理一段原文、研究一个主题，或生成一份待确认的学习计划。没有模型时，本地推荐和 Vault 检索仍然可用。</p></div></div>`);
+    }
+    if (view === "assistant" && scenario === "find-sources") {
+      assistantScenario(`<div class="la-message la-message--user"><p>帮我找出 Vault 中所有与 Dragonnet 和目标学习有关的资料。</p></div><div class="la-message la-message--assistant"><span class="la-message-avatar">序</span><div><strong>找到 3 个本地来源</strong>${brainSteps("verify", "生成 Research Bundle")}<div class="la-reference-list"><button><span>▧</span><span>Dragonnet 论文 · PAGE 3, 6, 12</span><span>›</span></button><button><span>▧</span><span>观测数据中的平均处理效应估计</span><span>›</span></button><button><span>▧</span><span>倾向得分与目标学习</span><span>›</span></button></div></div></div>`);
+    }
+    if (view === "assistant" && ["capture", "capture-proposal"].includes(scenario)) {
+      assistantScenario(`<div class="la-message la-message--user"><p>存下这段想法：把因果推断的学习路径按识别、估计和诊断三个层次组织。</p></div><div class="la-message la-message--assistant"><span class="la-message-avatar">序</span><div><strong>Capture Proposal · 等待确认</strong><p>原文将逐字保留在 Local-Only；下面是建议标题、位置与标签。确认前不会写入 Vault。</p><div class="la-inspector-card"><div class="la-evidence-row"><small>标题</small><strong>因果推断学习路径：识别、估计与诊断</strong></div><div class="la-evidence-row"><small>目标</small><strong>01-Inbox / Ideas</strong></div><div class="la-evidence-row"><small>标签</small><strong>因果推断 · 学习路线</strong></div></div><button>修改提案</button> <button class="mod-cta">查看 Change Set</button></div></div>`);
+    }
+    if (view === "assistant" && scenario === "brain-running") {
+      assistantScenario(`<div class="la-message la-message--user"><p>研究 Dragonnet 与双重稳健估计的关系。</p></div><div class="la-message la-message--assistant"><span class="la-message-avatar">序</span><div><strong>正在研究</strong>${brainSteps("execute", "生成 Research Bundle")}<p class="la-preview-source">当前只检索 Vault 与已导入来源；外部 Provider 未隐式启用。</p><button disabled>停止后生成阶段报告</button></div></div>`);
+    }
+    if (view === "assistant" && scenario === "research-bundle") {
+      assistantScenario(`<div class="la-message la-message--assistant"><span class="la-message-avatar">序</span><div><strong>Research Bundle · 因果推断中的表示学习</strong><div class="la-inspector-card"><h3>问题与结论</h3><p>Dragonnet 是观测数据处理效应估计主线下的方法节点；目标正则化应作为其机制而非知识主线。</p><div class="la-row-tags">${badge("3 个来源", "source")} ${badge("2 个冲突点", "explore")} ${badge("1 个待验证结论")}</div></div><div class="la-evidence-list"><div><span>✓</span><span>PAGE 3 · 问题定义</span></div><div><span>✓</span><span>PAGE 6 · 模型结构</span></div><div><span>✓</span><span>PAGE 12 · 评估结果</span></div></div><button>加入计划</button> <button class="mod-cta">生成知识建议</button></div></div>`);
+    }
+    if (view === "assistant" && scenario === "change-set") {
+      assistantScenario(`<div class="la-message la-message--assistant"><span class="la-message-avatar">序</span><div><strong>Change Set · 等待确认</strong>${brainSteps("proposal")}<div class="la-change-facts"><div class="la-change-fact"><small>新建草稿</small><strong>2</strong></div><div class="la-change-fact la-change-fact--learn"><small>管理区更新</small><strong>1</strong></div><div class="la-change-fact la-change-fact--explore"><small>正式知识建议</small><strong>1</strong></div><div class="la-change-fact la-change-fact--source"><small>跳过</small><strong>1</strong></div></div><p>reviewed/core 未被列入直接写入目标。所有目标已校验 base hash。</p><button>查看 Diff</button> <button class="mod-cta">进入确认</button></div></div>`);
+    }
+    if (view === "assistant" && scenario === "write-result") {
+      assistantScenario(`<div class="la-message la-message--user"><p>把这个方法带上推导整理到 Obsidian 中。</p></div><div class="la-message la-message--assistant"><span class="la-message-avatar">序</span><div><strong>已整理《Delta Method》</strong><p>已按方法笔记规范写入一个低风险 draft；写入前已创建快照，并保存 Diff 与审计记录。</p><div class="la-inspector-card"><div class="la-evidence-row"><small>路径</small><strong>20-Knowledge/Concepts/Delta Method.md</strong></div><div class="la-evidence-row"><small>新增</small><strong>动机、成立条件、一阶推导、多元形式、示例与局限</strong></div><div class="la-evidence-row"><small>保护边界</small><strong>reviewed/core 未修改</strong></div></div><button>打开笔记</button> <button>查看变化</button> <button class="mod-cta">撤销</button></div></div>`);
+    }
+    if (view === "assistant" && scenario === "undo") {
+      assistantScenario(`<div class="la-message la-message--assistant"><span class="la-message-avatar">序</span><div><strong>已撤销最近修改</strong><p>文件仍与写入后的哈希一致，因此已从快照安全恢复；未覆盖任何后续人工编辑。</p><div class="la-inspector-card"><div class="la-evidence-row"><small>目标</small><strong>20-Knowledge/Concepts/Delta Method.md</strong></div><div class="la-evidence-row"><small>结果</small><strong style="color:var(--color-green)">恢复成功</strong></div><div class="la-evidence-row"><small>审计</small><strong>Undo action 已记录</strong></div></div><button>查看变化</button> <button>打开审计记录</button></div></div>`);
+    }
+    if (view === "assistant" && scenario === "diagnostics") {
+      assistantScenario(`<div class="la-message la-message--assistant"><span class="la-message-avatar">序</span><div><strong>诊断中心</strong><div class="la-inspector-card"><div class="la-evidence-row"><small>本地 Runtime</small><strong style="color:var(--color-green)">在线 · 协议 v1</strong></div><div class="la-evidence-row"><small>主脑状态</small><strong>就绪</strong></div><div class="la-evidence-row"><small>模型配置</small><strong>Keychain 引用已配置</strong></div><div class="la-evidence-row"><small>最近任务</small><strong>1 个失败 · 可重试</strong></div><div class="la-evidence-row"><small>安全门</small><strong>Policy / Verifier 正常</strong></div></div><button>复制脱敏诊断</button> <button>查看本地日志</button></div></div>`);
+    }
+    if (view === "assistant" && scenario === "error") {
+      assistantScenario(`<div class="la-message la-message--assistant"><span class="la-message-avatar">序</span><div class="la-inline-error" style="width:min(680px,80vw);align-items:flex-start"><div><strong>请求被安全策略阻止</strong><p>模型建议的目标路径不在允许的 Vault 范围内。没有文件被写入。</p><details><summary>技术详情</summary><pre>code: policy_path_rejected\nretryable: false</pre></details></div><button>返回修改请求</button></div></div>`);
+    }
+    if (view === "assistant" && scenario === "loading") {
+      assistantScenario(`<div class="la-message la-message--assistant"><span class="la-message-avatar">序</span><div style="width:min(680px,80vw)"><strong>正在准备最小上下文…</strong><div class="la-skeleton" style="height:16px;width:82%;margin-top:16px"></div><div class="la-skeleton" style="height:16px;width:65%;margin-top:10px"></div><div class="la-skeleton" style="height:92px;width:100%;margin-top:12px"></div><button disabled style="margin-top:12px">处理中</button></div></div>`);
+    }
+    if (view === "assistant" && scenario === "empty") {
+      assistantScenario(`<div class="la-empty"><strong>还没有主脑任务</strong><p>选择“整理”“研究”或“规划”，也可以直接输入一句自然语言请求。</p><button class="mod-cta">从当前笔记开始</button></div>`);
+    }
+    if (view === "today" && scenario === "ai-completion") {
+      content.querySelector(".la-page-frame");
+      const list = content.querySelector(".la-recommendation-list");
+      if (list) list.insertAdjacentHTML("afterbegin", `<article class="la-rec-row is-selected"><span class="la-kind-icon la-kind-icon--explore">✦</span><div class="la-rec-row__content"><div class="la-rec-row__headline"><strong>AI 补全：可忽略性与可识别性</strong>${badge("候选", "explore")}</div><div class="la-rec-row__meta">${badge("学习", "learn")}<span>10 分钟</span><span>未创建正式笔记</span></div><p>来自主脑对当前知识前置缺口的解释性补全，需确认后才加入计划。</p></div></article>`);
+    }
+    if (view === "today" && scenario === "no-model") {
+      const headingEl = content.querySelector(".la-module-heading");
+      if (headingEl) headingEl.insertAdjacentHTML("afterend", `<div class="la-inline-error"><strong>尚未选择模型</strong><span>本地确定性推荐仍正常工作；AI 补全、短测与解释需要先配置 Provider。</span><button>打开模型设置</button></div>`);
+    }
+    if (view === "review" && scenario === "capture-draft") {
+      const title = content.querySelector(".la-review-document h1");
+      if (title) title.textContent = "因果推断学习路径：识别、估计与诊断";
+      const reason = content.querySelector(".la-review-layout .la-pane--inspector .la-inspector-card:nth-child(2) p");
+      if (reason) reason.textContent = "用户原文已逐字保留；这里展示的是从灵感提炼出的待审结构，不会自动成为正式知识。";
+    }
+  </script>
+</body>
+</html>

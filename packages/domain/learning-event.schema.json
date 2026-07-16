@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zhixu.local/schema/learning-event-v1.json",
+  "title": "LearningEvent",
+  "type": "object",
+  "required": ["id", "eventType", "subjectType", "subjectId", "createdAt", "schemaVersion"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "eventType": {"type": "string"},
+    "subjectType": {"type": "string", "maxLength": 64},
+    "subjectId": {"type": "string", "maxLength": 256},
+    "recommendationId": {"type": "string", "maxLength": 256},
+    "sessionId": {"type": "string", "maxLength": 256},
+    "durationMs": {"type": "integer", "minimum": 0, "maximum": 86400000},
+    "payload": {"type": "object"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "schemaVersion": {"const": 1}
+  },
+  "additionalProperties": false
+}

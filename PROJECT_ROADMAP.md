@@ -1,6 +1,6 @@
 # Project Roadmap
 
-Implementation status: Phases 0–6 complete for the local MVP. The remaining gate is a user-confirmed first real Dragonnet `apply-prepared` after inspecting its Prepared Bundle.
+Implementation status: Phases 0–10 are complete at the offline/build/install gates. The only knowledge-write gate remains the first real Dragonnet `apply-prepared` after inspection.
 
 ## Product outcome
 
@@ -62,6 +62,48 @@ Acceptance: ranking, dates, transitions, reviewed-only filters and Bases/Home vi
 
 Acceptance: both inputs have offline fake-model tests and traceable source artifacts.
 
+## Phase 7 — Agent Brain V1
+
+- One request entry with deterministic intent routing and optional strictly-structured model assistance.
+- Registered Skills and restricted tools only; policy, verification, audit and cancellation are mandatory lifecycle stages.
+- Capture, research, curriculum candidates and learning plans remain proposals until explicit user confirmation.
+- Research Bundles retain source ordering, provenance, confidence and provider failures without silently inventing results.
+- Five Obsidian modules share Brain Runs, proposals and diagnostics; model configuration supports Keychain references and per-task routing.
+
+Acceptance: tamper protection, idempotency, reviewed/core policy, Key redaction, SSRF controls, schema migration, Brain API, all five plugin modules, typecheck and build pass offline; no real model or real PDF apply is required for this phase.
+
+## Phase 8 — Interaction intelligence and bounded autonomy
+
+- Private summaries/signals, per-conversation controls and retention/export/delete APIs.
+- Explainable learning directions, exact local weighting, persisted Today constraints and Undo.
+- Traceable non-PDF Materials and cached untrusted public-source Research Bundles.
+- Shared Obsidian Markdown/formula rendering.
+- High/balanced/cautious Vault autonomy with first-use summary, snapshots, audit, change inspection and conflict-safe Undo.
+- Expanded diagnostics and adversarial free-text/prompt-injection corpus.
+
+Acceptance: `./scripts/check.sh`, plugin tests/typecheck/build and installed-artifact hashes pass; no real model, real external web call, real PDF or first `apply-prepared` is required.
+
+## Phase 9 — Today Study Workspace V1
+
+- Strict `curriculum_candidates` → `validated_directions` → `daily_plan` separation with A/B/C admission and bounded long-topic splitting.
+- Four-part Today workspace: module navigation, category/direction pane, executable daily list and recommendation/study detail.
+- In-place resumable Study Workspace with five sections, Obsidian Markdown/math, quiz, related knowledge, notes, route, sources and contextual assistant drawer.
+- Runtime-backed pause/resume/progress/completion/undo. Mastery remains an explicit user confirmation and learning-note output remains a governed Change Set.
+- Property/random regression coverage for 1,000 plans, 10,000 state actions, 1,000 lesson blueprints, 110 responsive widths and 20 reproducible seeds.
+
+Acceptance: offline checks, plugin tests/typecheck/build/install pass; real Obsidian verifies Today, learning, pause/resume, quiz persistence, completion/Undo, dark/narrow layouts and offline recovery without real model calls, PDF application or reviewed/core writes.
+
+## Phase 10 — Assistant Runtime V2
+
+- One canonical interactive Run Coordinator for ordinary assistant turns: Brain Run lifecycle, bounded context, plan, restricted tools, verification, answer and audit.
+- Provider-neutral typed tool contracts with strict payload validation and model-visible read-only subsets only.
+- Optional native OpenAI-compatible tool calling plus a deterministic restricted-tool fallback for providers without function calling.
+- Real plan/tool/approval NDJSON events rendered by the Obsidian execution Trace.
+- Secret-shaped context redaction, bounded model inputs, partial-output cancellation and honest interrupted-run recovery.
+- Keep the efficient language boundary: Python for policy/model/storage/transactions and TypeScript for Obsidian interaction/rendering.
+
+Acceptance: fake-provider integration proves a registered Vault tool is actually called and observed by the final model; invented mutating tools are blocked; secrets never reach model context or persistence; interrupted runs recover honestly; all backend/plugin/type/build/install gates pass; installed Obsidian health reports Assistant Runtime V2 without a real model call or knowledge write.
+
 ## Deferred backlog
 
-WeChat articles, blogs, video, notebooks, GitHub ingestion, vector databases, GraphRAG and multi-agent orchestration remain out of scope until both core loops are stable in daily use.
+WeChat articles, blogs, video, notebooks, GitHub ingestion, vector databases, GraphRAG, background multi-agent orchestration and cancellable SSE remain out of scope until both core loops are stable in daily use.

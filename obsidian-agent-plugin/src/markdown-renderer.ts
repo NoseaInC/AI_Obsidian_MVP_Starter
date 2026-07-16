@@ -1,0 +1,100 @@
+import {App, Component, MarkdownRenderer} from "obsidian";
+import {normalizeAssistantMarkdown} from "./markdown-normalize";
+
+export interface AssistantMarkdownRenderer {
+  render(container: HTMLElement, markdown: string, sourcePath?: string, owner?: Component): Promise<void>;
+}
+
+export class ObsidianAssistantMarkdownRenderer implements AssistantMarkdownRenderer {
+  constructor(private app: App, private defaultOwner: Component) {}
+
+  async render(container: HTMLElement, markdown: string, sourcePath = "", owner: Component = this.defaultOwner): Promise<void> {
+    container.addClass("markdown-rendered", "la-native-markdown");
+    await MarkdownRenderer.render(this.app, normalizeAssistantMarkdown(markdown), container, sourcePath, owner);
+  }
+
+  async renderAtomic(
+    container: HTMLElement,
+    markdown: string,
+    sourcePath = "",
+    owner: Component = this.defaultOwner,
+    shouldCommit: () => boolean = () => true,
+  ): Promise<boolean> {
+    const staging = container.ownerDocument.createElement("div");
+    await this.render(staging, markdown, sourcePath, owner);
+    if (!shouldCommit()) return false;
+    container.classList.add("markdown-rendered", "la-native-markdown");
+    container.replaceChildren(...Array.from(staging.childNodes));
+    return true;
+  }
+}
+
+/**
+ * Renders cumulative stream output at a human-readable cadence. Rendering is
+ * staged off-DOM and committed atomically, so the user never sees the empty
+ * gap caused by clearing a message before Obsidian finishes Markdown parsing.
+ */
+export class ProgressiveAssistantMarkdown {
+  private latest = "";
+  private revision = 0;
+  private committedRevision = 0;
+  private timer = 0;
+  private chain: Promise<void> = Promise.resolve();
+  private disposed = false;
+
+  constructor(
+    private renderer: ObsidianAssistantMarkdownRenderer,
+    private container: HTMLElement,
+    private cadenceMs = 90,
+  ) {}
+
+  push(markdown: string): void {
+    if (this.disposed || markdown === this.latest) return;
+    this.latest = markdown;
+    this.revision += 1;
+    if (this.timer) return;
+    this.timer = window.setTimeout(() => {
+      this.timer = 0;
+      void this.queueLatest();
+    }, this.cadenceMs);
+  }
+
+  private queueLatest(): Promise<void> {
+    const revision = this.revision;
+    const markdown = this.latest;
+    this.chain = this.chain.then(async () => {
+      if (this.disposed || revision < this.revision) return;
+      const committed = await this.renderer.renderAtomic(
+        this.container,
+        markdown,
+        "",
+        undefined,
+        () => !this.disposed && revision === this.revision,
+      );
+      if (committed) this.committedRevision = revision;
+    }).finally(() => {
+      if (!this.disposed && this.committedRevision < this.revision && !this.timer) {
+        this.timer = window.setTimeout(() => {
+          this.timer = 0;
+          void this.queueLatest();
+        }, this.cadenceMs);
+      }
+    });
+    return this.chain;
+  }
+
+  async flush(markdown = this.latest): Promise<void> {
+    this.push(markdown);
+    if (this.timer) { window.clearTimeout(this.timer); this.timer = 0; }
+    while (!this.disposed && this.committedRevision < this.revision) {
+      await this.queueLatest();
+    }
+    if (this.timer) { window.clearTimeout(this.timer); this.timer = 0; }
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    if (this.timer) window.clearTimeout(this.timer);
+    this.timer = 0;
+  }
+}

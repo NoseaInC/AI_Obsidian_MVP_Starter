@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zhixu.local/schema/lesson-v1.json",
+  "title": "LessonVersion",
+  "type": "object",
+  "required": ["schemaVersion", "id", "candidateId", "version", "title", "learningOutcomes", "verificationGrade"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "id": {"type": "string"},
+    "candidateId": {"type": "string"},
+    "version": {"type": "integer", "minimum": 1},
+    "title": {"type": "string"},
+    "learningOutcomes": {"type": "array", "items": {"type": "string"}},
+    "verificationGrade": {"enum": ["A", "B", "C"]}
+  },
+  "additionalProperties": true
+}

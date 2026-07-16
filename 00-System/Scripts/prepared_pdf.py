@@ -12,7 +12,7 @@ import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import ingest_pdf as ingest
 
@@ -110,14 +110,19 @@ def _preview(plan: ingest.WritePlan, prepared_id: str, result: dict[str, Any] | 
 def prepare_bundle(
     args: argparse.Namespace, *, client: ingest.ModelClient | None = None,
     pages: list[str] | None = None, now: datetime | None = None,
+    progress: Callable[[str, int], None] | None = None,
 ) -> Path:
+    report = progress or (lambda _stage, _percent: None)
     vault = Path(args.vault).expanduser().resolve()
     pdf = Path(args.pdf).expanduser().resolve()
     if not vault.is_dir() or not pdf.is_file():
         raise RuntimeError("Vault 或 PDF 不存在。")
+    report("reading_file", 10)
     pages = pages if pages is not None else ingest.extract_pages(pdf)
+    report("extracting_pages", 25)
     digest = ingest.file_sha256(pdf)
     inventory = ingest.scan_vault(vault)
+    report("scanning_vault", 35)
     if client is None:
         key = os.getenv("DEEPSEEK_API_KEY")
         if not key:
@@ -126,14 +131,17 @@ def prepare_bundle(
 
     prompt = ingest.result_contract(args.domain_focus, args.kind, ingest.inventory_for_prompt(inventory))
     prompt += "\n\n带 PAGE 标记的完整本地提取文本：\n" + "\n".join(pages)
+    report("calling_model", 50)
     raw = client.create_json(model=args.model, system=ingest.SYNTHESIS_SYSTEM, user=prompt)
     result = ingest.parse_and_validate_json(raw, len(pages))
+    report("validating_result", 70)
     now = now or datetime.now().astimezone()
     plan = ingest.build_plan(
         vault, pdf_path=pdf, digest=digest, result=result, model=args.model,
         kind=args.kind, domain_focus=args.domain_focus, max_concepts=args.max_concepts,
         inventory=inventory, now=now,
     )
+    report("generating_change_set", 85)
 
     prepared_id = f"{now.strftime('%Y%m%dT%H%M%S%z')}-{digest[:12]}-{uuid.uuid4().hex[:8]}"
     root = vault / PREPARED_REL
@@ -180,6 +188,7 @@ def prepare_bundle(
         "file_hashes": file_hashes, "status": "prepared",
     }), encoding="utf-8", newline="\n")
     os.replace(temp, final)
+    report("prepared", 95)
     return final
 
 

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zhixu.local/schema/learner-profile-v1.json",
+  "title": "LearnerProfile",
+  "type": "object",
+  "required": ["schemaVersion", "eventCount", "coveredDays", "behaviorWeight", "features"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "eventCount": {"type": "integer", "minimum": 0},
+    "coveredDays": {"type": "integer", "minimum": 0},
+    "behaviorWeight": {"type": "number", "minimum": 0, "maximum": 0.15},
+    "features": {"type": "array"}
+  },
+  "additionalProperties": false
+}

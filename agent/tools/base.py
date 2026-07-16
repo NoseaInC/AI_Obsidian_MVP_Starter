@@ -1,0 +1,34 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Callable
+
+
+@dataclass(frozen=True)
+class ToolDefinition:
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+    output_schema: dict[str, Any]
+    uses_network: bool = False
+    mutates_state: bool = False
+    timeout_seconds: int = 20
+
+    def model_spec(self) -> dict[str, Any]:
+        """Return the provider-neutral OpenAI function-tool contract.
+
+        The model only receives this public contract. Runtime-only authority
+        such as mutation flags and timeouts remains local to ToolBroker.
+        """
+
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.input_schema,
+            },
+        }
+
+
+ToolHandler = Callable[[dict[str, Any]], dict[str, Any]]

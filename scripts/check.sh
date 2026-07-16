@@ -18,13 +18,12 @@ cd "$ROOT"
   00-System/Scripts/conversation_to_obsidian.py
 
 if [[ -f agent/pyproject.toml || -d agent/tests ]]; then
+  "$PYTHON" -m compileall -q agent
   "$PYTHON" -m unittest discover -s agent/tests -v
 fi
 
 if [[ -f obsidian-agent-plugin/package.json ]]; then
-  npm --prefix obsidian-agent-plugin test
-  npm --prefix obsidian-agent-plugin run typecheck
-  npm --prefix obsidian-agent-plugin run build
+  "$ROOT/scripts/build-plugin.sh"
 fi
 
 echo "All offline checks passed."

@@ -1,11 +1,16 @@
 {
   "name": "obsidian-learning-agent",
-  "version": "0.1.1",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "node esbuild.config.mjs",
     "test": "node --test tests/*.test.mjs",
+    "test:assistant": "node --test tests/assistant-stream.test.mjs tests/assistant-thread.test.mjs",
+    "test:assistant:random": "node --test tests/assistant-random.test.mjs",
+    "test:property": "node --test tests/study-workspace.test.mjs",
+    "test:random": "node scripts/run-random-test.mjs",
+    "test:random:many": "node scripts/run-random-tests.mjs",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

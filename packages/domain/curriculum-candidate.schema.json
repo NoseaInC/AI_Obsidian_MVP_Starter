@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zhixu.local/schema/curriculum-candidate-v1.json",
+  "title": "CurriculumCandidate",
+  "type": "object",
+  "required": ["schemaVersion", "id", "title", "canonicalTitle", "kind", "domain", "route", "whyNow", "learningOutcomes", "estimatedMinutes", "status"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "id": {"type": "string"},
+    "title": {"type": "string"},
+    "canonicalTitle": {"type": "string"},
+    "kind": {"enum": ["prerequisite", "bridge", "comparison", "core", "application", "exploration"]},
+    "domain": {"type": "string"},
+    "route": {"enum": ["mainline", "branch"]},
+    "whyNow": {"type": "array", "items": {"type": "string"}},
+    "learningOutcomes": {"type": "array", "items": {"type": "string"}},
+    "estimatedMinutes": {"type": "integer", "minimum": 3, "maximum": 60},
+    "verificationGrade": {"enum": ["A", "B", "C"]},
+    "status": {"type": "string"}
+  },
+  "additionalProperties": true
+}
