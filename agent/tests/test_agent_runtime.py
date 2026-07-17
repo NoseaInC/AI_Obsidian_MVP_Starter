@@ -38,6 +38,43 @@ class _ToolCallingProvider:
         yield {"type": "delta", "content": "基于本地工具结果的回答"}
         yield {"type": "finish", "finishReason": "stop"}
 
+    def structured_output(self, model, messages, schema, **options):
+        self.planner_messages = list(messages)
+        context = json.loads(str(messages[-1]["content"]))
+        request = str(context.get("request") or "")
+        observations = list(context.get("observations") or [])
+        completed = [item.get("tool") for item in observations if item.get("status") == "completed"]
+        active_note = str(context.get("active_note") or "")
+
+        tool_name = ""
+        arguments = {}
+        if "读取一下现在我的 Obsidian" in request and "get_vault_overview" not in completed:
+            tool_name, arguments = "get_vault_overview", {"recent_limit": 8}
+        elif active_note and "只根据这篇实际笔记" in request:
+            sequence = ["read_note_metadata", "read_note_excerpt", "get_related_notes"]
+            tool_name = next((name for name in sequence if name not in completed), "")
+            if tool_name:
+                arguments = {"path": active_note}
+                if tool_name == "read_note_excerpt": arguments["max_chars"] = 4000
+        elif "实际搜索 Vault" in request:
+            if "search_vault" not in completed:
+                tool_name, arguments = "search_vault", {"query": "因果推断", "limit": 5}
+            elif "read_note_excerpt" not in completed:
+                search = next(item for item in observations if item.get("tool") == "search_vault")
+                items = ((search.get("result") or {}).get("items") or [])
+                if items:
+                    tool_name = "read_note_excerpt"
+                    arguments = {"path": items[0]["path"], "max_chars": 4000}
+
+        value = {
+            "action": "tool" if tool_name else "respond",
+            "tool_name": tool_name,
+            "arguments": arguments,
+            "purpose": f"执行 {tool_name}" if tool_name else "",
+            "clarification": "",
+        }
+        return {"choices": [{"message": {"content": json.dumps(value, ensure_ascii=False)}}]}
+
 
 class AgentRuntimeTests(unittest.TestCase):
     def setUp(self):

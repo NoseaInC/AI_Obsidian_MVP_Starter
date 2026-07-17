@@ -351,7 +351,38 @@ CREATE TABLE IF NOT EXISTS organization_actions (
 );
 """
 
-SCHEMA_VERSION = 7
+AGENT_RUNTIME_V3_SCHEMA = """
+CREATE TABLE IF NOT EXISTS agent_run_events (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  sequence INTEGER NOT NULL,
+  event_type TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  schema_version INTEGER NOT NULL DEFAULT 1,
+  UNIQUE(run_id, sequence),
+  FOREIGN KEY(run_id) REFERENCES brain_runs(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_agent_run_events_run_sequence
+  ON agent_run_events(run_id, sequence);
+
+CREATE TABLE IF NOT EXISTS agent_run_checkpoints (
+  run_id TEXT PRIMARY KEY,
+  checkpoint_version INTEGER NOT NULL,
+  phase TEXT NOT NULL,
+  state_json TEXT NOT NULL,
+  pending_approval_id TEXT,
+  last_event_sequence INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  schema_version INTEGER NOT NULL DEFAULT 1,
+  FOREIGN KEY(run_id) REFERENCES brain_runs(id) ON DELETE CASCADE
+);
+"""
+
+
+
+SCHEMA_VERSION = 8
 
 
 def _now() -> str:
@@ -370,8 +401,184 @@ class StateStore:
         self._migrate_daily_intelligence()
         self._migrate_assistant_chat_first()
         self._migrate_learning_brain()
+        self._migrate_agent_runtime_v3()
         self._record_schema_version()
         self.connection.commit()
+
+    def _migrate_agent_runtime_v3(self) -> None:
+        self.connection.executescript(AGENT_RUNTIME_V3_SCHEMA)
+
+
+    def append_agent_run_event(
+        self,
+        run_id: str,
+        sequence: int,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if sequence < 1:
+            raise ValueError("agent_event_sequence_invalid")
+        event_id = f"agent-event-{uuid.uuid4().hex}"
+        now = _now()
+        with self.lock:
+            existing = self.connection.execute(
+                "SELECT payload_json FROM agent_run_events "
+                "WHERE run_id=? AND sequence=?",
+                (run_id, sequence),
+            ).fetchone()
+            if existing:
+                saved = json.loads(existing["payload_json"])
+                if saved != payload:
+                    raise RuntimeError("agent_event_sequence_conflict")
+                return saved
+            self.connection.execute(
+                """INSERT INTO agent_run_events(
+                     id, run_id, sequence, event_type, payload_json,
+                     created_at, schema_version
+                   ) VALUES (?, ?, ?, ?, ?, ?, 1)""",
+                (
+                    event_id,
+                    run_id,
+                    sequence,
+                    event_type,
+                    json.dumps(payload, ensure_ascii=False),
+                    now,
+                ),
+            )
+            self.connection.execute(
+                """UPDATE agent_run_checkpoints
+                   SET last_event_sequence=?, updated_at=?
+                   WHERE run_id=?""",
+                (sequence, now, run_id),
+            )
+            self.connection.commit()
+        return payload
+
+
+    def list_agent_run_events(
+        self,
+        run_id: str,
+        after_sequence: int = 0,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        with self.lock:
+            rows = self.connection.execute(
+                """SELECT sequence, event_type, payload_json, created_at
+                   FROM agent_run_events
+                   WHERE run_id=? AND sequence>?
+                   ORDER BY sequence
+                   LIMIT ?""",
+                (
+                    run_id,
+                    max(0, int(after_sequence)),
+                    max(1, min(2000, int(limit))),
+                ),
+            ).fetchall()
+        return [
+            {
+                "sequence": row["sequence"],
+                "type": row["event_type"],
+                "payload": json.loads(row["payload_json"]),
+                "createdAt": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    def append_agent_run_event_next(
+        self,
+        run_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT COALESCE(MAX(sequence), 0) AS last_sequence "
+                "FROM agent_run_events WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+            sequence = int(row["last_sequence"]) + 1
+            value = {
+                **payload,
+                "schemaVersion": 2,
+                "seq": sequence,
+                "type": event_type,
+                "runId": run_id,
+            }
+            return self.append_agent_run_event(
+                run_id,
+                sequence,
+                event_type,
+                value,
+            )
+
+
+    def save_agent_run_checkpoint(
+        self,
+        run_id: str,
+        phase: str,
+        state: dict[str, Any],
+        *,
+        pending_approval_id: str | None = None,
+    ) -> dict[str, Any]:
+        now = _now()
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT checkpoint_version, created_at, last_event_sequence "
+                "FROM agent_run_checkpoints WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+            version = int(row["checkpoint_version"]) + 1 if row else 1
+            created_at = str(row["created_at"]) if row else now
+            last_sequence = int(row["last_event_sequence"]) if row else 0
+            self.connection.execute(
+                """INSERT INTO agent_run_checkpoints(
+                     run_id, checkpoint_version, phase, state_json,
+                     pending_approval_id, last_event_sequence,
+                     created_at, updated_at, schema_version
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+                   ON CONFLICT(run_id) DO UPDATE SET
+                     checkpoint_version=excluded.checkpoint_version,
+                     phase=excluded.phase,
+                     state_json=excluded.state_json,
+                     pending_approval_id=excluded.pending_approval_id,
+                     updated_at=excluded.updated_at""",
+                (
+                    run_id,
+                    version,
+                    str(phase)[:80],
+                    json.dumps(state, ensure_ascii=False),
+                    pending_approval_id,
+                    last_sequence,
+                    created_at,
+                    now,
+                ),
+            )
+            self.connection.commit()
+        return self.get_agent_run_checkpoint(run_id) or {}
+
+
+    def get_agent_run_checkpoint(
+        self,
+        run_id: str,
+    ) -> dict[str, Any] | None:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT * FROM agent_run_checkpoints WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "runId": row["run_id"],
+            "checkpointVersion": row["checkpoint_version"],
+            "phase": row["phase"],
+            "state": json.loads(row["state_json"] or "{}"),
+            "pendingApprovalId": row["pending_approval_id"],
+            "lastEventSequence": row["last_event_sequence"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+            "schemaVersion": row["schema_version"],
+        }
 
     def _migrate_jobs(self) -> None:
         """Add runtime columns without invalidating an existing local state DB."""

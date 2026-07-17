@@ -47,7 +47,9 @@ All business endpoints are under `/api/v1`, require the in-memory bearer token, 
 - `POST /api/v1/conversations/{id}/retain-summary` with `{confirmed:true}` — remove raw messages after a summary exists.
 - `DELETE /api/v1/conversations/{id}?confirm=true` — explicit single deletion.
 - `DELETE /api/v1/conversations?scope=recent-7-days|all&confirm=true` — explicit bulk deletion.
-- `POST /api/v1/assistant/stream` — canonical interactive Agent Run as versioned NDJSON. It resolves context, executes allow-listed read-only Tools, audits the Brain Run, then streams the grounded model answer. Additive events include plan, Tool lifecycle and approval state.
+- `POST /api/v1/assistant/stream` — canonical Runtime V3 Agent loop as schema-v2 NDJSON: model decision, one typed Tool, real Observation, replan, answer/clarification/Change Set proposal.
+- `GET /api/v1/assistant/runs/{id}/events?after=&limit=` — ordered event reconnect plus latest checkpoint.
+- `POST /api/v1/assistant/runs/{id}/resume|reject` — explicitly confirm or reject an awaiting Change Set; Apply is never exposed to the model.
 
 ## Directions, web and Vault autonomy
 

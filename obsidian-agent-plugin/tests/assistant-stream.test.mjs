@@ -12,7 +12,7 @@ async function moduleUnderTest() {
 }
 
 function event(seq, type, extra = {}) {
-  return {schemaVersion: 1, seq, type, runId: "run-1", conversationId: "conv-1", ...extra};
+  return {schemaVersion: 2, seq, type, runId: "run-1", conversationId: "conv-1", ...extra};
 }
 
 test("five thousand real token chunks preserve exact order and Unicode", async () => {
@@ -82,7 +82,7 @@ test("real agent plan and tool events become visible execution steps", async () 
   state = mod.reduceAssistantStream(state, event(6, "run.completed", {brainRunId: "run-1"}));
   assert.equal(state.runtimeMode, "model-tools");
   assert.deepEqual(state.allowedTools, ["search_vault"]);
-  assert.deepEqual(state.toolCalls, [{id: "call-1", tool: "search_vault", status: "completed", summary: "返回 2 项"}]);
+  assert.deepEqual(state.toolCalls, [{id: "call-1", tool: "search_vault", status: "completed", summary: "返回 2 项", purpose: undefined}]);
   assert.equal(state.steps.find(item => item.id === "tool:call-1").label, "搜索知识库");
   assert.equal(state.steps.find(item => item.id === "tool:call-1").status, "completed");
 });
@@ -108,6 +108,22 @@ test("completed message metadata survives the stream without a full view refresh
   assert.equal(state.completedMessage.id, "msg-final");
   assert.equal(state.completedMessage.content, state.content);
   assert.equal(state.status, "completed");
+});
+
+test("approval-only completion renders the persisted proposal message", async () => {
+  const mod = await moduleUnderTest();
+  let state = mod.initialAssistantLiveRun();
+  state = mod.reduceAssistantStream(state, event(1, "run.started"));
+  state = mod.reduceAssistantStream(state, event(2, "proposal.created", {
+    proposalId: "brain-cs-1", title: "补充笔记", writes: [], requiresConfirmation: true,
+  }));
+  state = mod.reduceAssistantStream(state, event(3, "message.completed", {
+    message: {id: "msg-proposal", role: "assistant", content: "修改提案已生成，文件尚未变化。"},
+  }));
+  state = mod.reduceAssistantStream(state, event(4, "run.awaiting_approval", {proposalId: "brain-cs-1"}));
+  assert.equal(state.status, "awaiting_approval");
+  assert.equal(state.content, "修改提案已生成，文件尚未变化。");
+  assert.equal(state.completedMessage.id, "msg-proposal");
 });
 
 test("assistant production surface uses stream endpoint, stop and three inspector tabs", async () => {

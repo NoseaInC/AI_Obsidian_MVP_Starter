@@ -21,7 +21,13 @@ def create_study_plan(tools: Any, store: Any, payload: dict[str, Any], context: 
     for item in candidates[:3]:
         tasks.append({"id": f"task-{uuid.uuid4().hex[:12]}", "title": item["title"], "date": (date.today() + timedelta(days=2)).isoformat(), "minutes": item["estimated_minutes"], "route": item["route"], "state": "proposed", "source": "curriculum"})
     proposal = {"id": f"plan-{uuid.uuid4().hex}", "run_id": run_id, "title": "学习计划提案", "state": "proposed", "tasks": tasks}
-    tools.call("create_plan_proposal", proposal, run_id=run_id, step_id=step_id)
+    tools.call(
+        "create_plan_proposal",
+        proposal,
+        run_id=run_id,
+        step_id=step_id,
+        allowed_permissions=("read_only", "proposal"),
+    )
     return {"kind": "plan-proposal", "proposal": proposal, "requires_confirmation": True}
 
 
@@ -33,5 +39,11 @@ def save_to_obsidian(tools: Any, payload: dict[str, Any], context: dict[str, Any
     writes = payload.get("writes")
     if not isinstance(writes, list) or not writes:
         return {"kind": "save-proposal", "state": "needs-content", "requires_confirmation": True}
-    change_set = tools.call("create_change_set", {"run_id": run_id, "title": str(payload.get("title", "保存到 Obsidian")), "writes": writes}, run_id=run_id, step_id=step_id)
+    change_set = tools.call(
+        "create_change_set",
+        {"run_id": run_id, "title": str(payload.get("title", "保存到 Obsidian")), "writes": writes},
+        run_id=run_id,
+        step_id=step_id,
+        allowed_permissions=("read_only", "proposal"),
+    )
     return {"kind": "save-proposal", "change_set": change_set, "requires_confirmation": True}

@@ -1,10 +1,10 @@
 # Project Status
 
-Last updated: 2026-07-16
+Last updated: 2026-07-17
 
 ## Current phase
 
-Assistant Runtime V2 is implemented, installed and active in Obsidian. Interactive turns now use a persisted Brain Run, bounded context, restricted Tool Broker, real execution events and grounded provider response; governed writes still require Change Set, Diff and confirmation. Real DeepSeek smoke tests now cover Vault overview, natural-language knowledge search with note-body retrieval, and explicit current-note grounding. Offline, type, build, installed-hash and real Obsidian health gates are green. The separate first Dragonnet `apply-prepared` gate remains untouched.
+Assistant Runtime V3 is implemented and verified. Each turn now follows a bounded model decision → one restricted tool → real Observation → model replan loop. Profiles with native Tool Calling use function calls; DeepSeek and other profiles with `toolCalling=false` use the same Tool Registry through a strict JSON Planner. Write intent can create a real Change Set, but Apply is never model-visible and Vault files remain unchanged until explicit confirmation. Persisted schema-v2 events, checkpoints, reconnect, Resume and Reject complete the approval lifecycle. The separate first Dragonnet `apply-prepared` gate remains untouched.
 
 ## Completed before autonomous run
 
@@ -50,7 +50,7 @@ Assistant Runtime V2 is implemented, installed and active in Obsidian. Interacti
 - DeepSeek structured output uses its supported `json_object` mode with an explicit bounded schema instruction and thinking disabled. Generic OpenAI-compatible providers retain `json_schema` mode.
 - The Brain tutor path now calls the routed `assistant_chat` model with only bounded reviewed-note excerpts; when no reviewed evidence exists, the response is explicitly marked `needs-verification`.
 - A minimal real connection and Obsidian end-to-end request using the user-configured `deepseek-v4-pro` succeeded. The prompt was only `你好`; no Vault note, PDF, secret or private source text was transmitted.
-- The current runtime schema is 7; health remains protocol 1 and excludes secrets.
+- The current runtime schema is 8; health remains protocol 1 and excludes secrets.
 - Daily Intelligence V2 uses TypeScript as the Today ranking/event authority, while the Python Worker remains the secure Keychain/model/SQLite/PDF/transaction adapter.
 - Today now has five categories, model-backed Daily Knowledge with A/B/C admission, direct Study Sessions, automatic review scheduling and privacy-controlled learning events.
 - Assistant Chat-first V1 now persists five-step Task Threads and Artifact Groups. A learning request produces one deduplicated Learning Pack with one embedded quiz, explicit recovery actions and a real Today add/undo link.
@@ -87,8 +87,10 @@ Assistant Runtime V2 is implemented, installed and active in Obsidian. Interacti
 - The redundant lower-left “输入问题或命令 / 设置 / 帮助” shortcut stack has been removed from every module and from the visual preview. The compact Agent connection status remains as the only footer content.
 - The 22-state Assistant matrix is stored under `artifacts/assistant-real-product-v1-screenshots/`. Twenty states were captured from the current installed plugin; Apply and Undo are explicitly labeled offline component previews because no real Vault write was authorized.
 - The latest plugin was rebuilt and installed. Installed/build hashes are identical: `main.js` `22fe88c32f61d968a7c9fe20b6be904254d2f8c55a692e98be5c83853489cfeb`; `styles.css` `27ad672becd4a2892bb57e12f7c1bf21df19d1275d28d4f0224729a12fdfc7db`.
-- Assistant Runtime V2 replaces the former direct provider chat path. Every interactive assistant turn now creates a persisted Brain Run, builds bounded conversation/note/material context, selects an allowlisted tool plan, records tool audit events, verifies the result and then streams the grounded answer.
-- Model-native tool calling is supported for capable OpenAI-compatible profiles. Profiles without tool calling use a deterministic intent-aware plan against the same restricted Tool Registry, so Vault context access does not silently disappear when a model lacks function calling.
+- Assistant Runtime V3 replaces fixed single-pass planning. Every interactive turn creates a persisted Brain Run, builds bounded conversation/note/material context, asks the model for one allowed action, executes one typed tool, returns the real Observation and replans until it can answer, clarify or propose a Change Set.
+- Model-native tool calling is supported for capable OpenAI-compatible profiles. Profiles without tool calling use strict structured-output Planner decisions against the same restricted Tool Registry; the former deterministic-tool main path is removed.
+- `create_change_set` is the only model-visible write proposal tool. `apply_confirmed_change_set` is filtered from all model schemas and can run only through the authenticated explicit-confirmation API. Proposal, approval, apply, reject and cancellation states are persisted as schema-v2 events.
+- Runtime schema 8 adds ordered Agent Run events and checkpoints. Reconnect supports sequence cursors; awaiting runs support idempotent Resume/Reject. Checkpoints retain only state, paths, counts and content fingerprints—note excerpts and Change Set prose remain local files outside SQLite.
 - The model receives concrete tool contracts and observations but cannot select mutating tools, filesystem paths, shell commands, SQLite access or transaction behavior. Unknown or mutating calls are rejected before handler execution and recorded as `brain.tool-blocked`.
 - Assistant NDJSON now exposes real `plan.created`, `tool.requested`, `tool.started`, `tool.completed`, `step.updated` and `approval.required` events. The Obsidian Trace renders these events rather than a fabricated progress sequence.
 - Context and conversation persistence now redact secret-shaped values before model dispatch or local archival. Runtime restart marks interrupted Brain Runs failed/recoverable instead of leaving false-running state.
@@ -105,13 +107,14 @@ Assistant Runtime V2 is implemented, installed and active in Obsidian. Interacti
 - reviewed/core inherited targets produce only a local update suggestion. A second Change Set guard rejects command-only artifacts such as `01-Inbox/写入.md`, including the historical bad proposal left by the previous implementation.
 - Real installed-Obsidian DeepSeek smoke on 2026-07-16 passed inline Markdown list rendering and a ten-item streamed response. A live bare `写入` safety smoke left the Change Set count unchanged at 5 and created no `01-Inbox/写入.md`; no real Change Set was applied.
 - Latest installed/build hashes are identical: `main.js` `599864272b08dca8b9d54b5da4ec2192ce13a788203a0deb65bd5f79882232b7`; `styles.css` `f632f3ea547b5f51bc2d0b52debfa758dbe6529c7774e7f8ea5a2d927aacf7ec`.
+- Assistant Runtime V3 installed/build hashes are identical: `main.js` `703b6f5af0762b0ea35cf43c161a8c2e5213c14c3e727102ffa14dccb946df61`; `styles.css` `f632f3ea547b5f51bc2d0b52debfa758dbe6529c7774e7f8ea5a2d927aacf7ec`.
 
 ## Test status
 
 - Python ingestion/review/conversation: 40 tests passed.
-- Runtime/learning/provider/Brain/Intake/Daily Intelligence/context-material/assistant streaming: 135 tests passed.
-- Plugin: 51 logic/security/lifecycle/chat-first/context-material/daily-intelligence/study-workspace/privacy/autonomy/streaming/random tests passed; strict TypeScript check and production build passed.
-- Unified `./scripts/check.sh`: passed on 2026-07-16. The latest build was installed to the current Vault.
+- Runtime/learning/provider/Brain/Intake/Daily Intelligence/context-material/assistant streaming: 140 tests passed.
+- Plugin: 52 logic/security/lifecycle/chat-first/context-material/daily-intelligence/study-workspace/privacy/autonomy/streaming/random tests passed; strict TypeScript check and production build passed.
+- Unified `./scripts/check.sh`: passed on 2026-07-17.
 - Right-sidebar retirement gate: 40 ingestion/review/conversation tests, 113 Runtime tests and 36 plugin tests passed; TypeScript and production build passed on 2026-07-15.
 - Today randomized gates passed for 1,000 plans, 10,000 state actions, 1,000 lesson blueprints, 110 responsive widths and 20 reproducible regression seeds.
 - Daily ranking performance with 1,000 candidates: median 0.436 ms, P95 0.559 ms; localhost health response measured 0.018 s.
@@ -124,7 +127,7 @@ Assistant Runtime V2 is implemented, installed and active in Obsidian. Interacti
 
 - External Arxiv/Crossref/generic-search adapters are named but disabled until explicitly configured; local/imported research remains available.
 - Governed write-intent intake still returns one synchronous result after its Brain/Change Set transaction; ordinary interactive assistant work uses cancellable NDJSON streaming with persisted partial output.
-- Native model-selected tools require a provider profile with tool calling enabled; deterministic restricted-tool planning is the always-available fallback.
+- Native model-selected tools require a provider profile with tool calling enabled; strict structured-output planning is the fallback for profiles such as DeepSeek with native Tool Calling disabled.
 - Agent Artifact revision/versioning is exposed through continued assistant dialogue; immutable Prepared Bundle application remains a separately gated workflow.
 - Runtime launch is plugin-owned rather than a persistent macOS LaunchAgent by design.
 - Heading-aware field-level Diff editing and cancellable model streaming remain P2; V1 existing-draft updates use a bounded managed block.
@@ -136,4 +139,4 @@ Assistant Runtime V2 is implemented, installed and active in Obsidian. Interacti
 
 ## Resume point
 
-Assistant Runtime V2 is installed and active in Obsidian. Continue by expanding restricted tool coverage and background execution without replacing the canonical Run Coordinator or weakening the Change Set boundary. The deliberate first real Dragonnet Apply gate remains separate and untouched.
+Assistant Runtime V3 is the canonical Run Coordinator. Continue by adding crash-time model-loop continuation and richer approval editing without weakening typed tool permissions, persisted observations or the Change Set boundary. The deliberate first real Dragonnet Apply gate remains separate and untouched.

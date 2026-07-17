@@ -53,9 +53,9 @@ class BrainSkillTests(unittest.TestCase):
         run_id = self.store.create_job("quiz", {})  # not a brain FK; create a real brain run below
         brain_run = self.brain().submit(BrainRequest(text="只读解释"))
         with self.assertRaises(ValueError):
-            tools.call("create_change_set", {"run_id": brain_run["id"], "writes": [{"path": "20-Knowledge/Concepts/formal.md", "content": "overwrite"}]}, run_id=brain_run["id"])
+            tools.call("create_change_set", {"run_id": brain_run["id"], "title": "test", "writes": [{"path": "20-Knowledge/Concepts/formal.md", "content": "overwrite"}]}, run_id=brain_run["id"], allowed_permissions=("read_only", "proposal"))
         with self.assertRaises(ValueError):
-            tools.call("create_change_set", {"run_id": brain_run["id"], "writes": [{"path": "../escape.md", "content": "x"}]}, run_id=brain_run["id"])
+            tools.call("create_change_set", {"run_id": brain_run["id"], "title": "test", "writes": [{"path": "../escape.md", "content": "x"}]}, run_id=brain_run["id"], allowed_permissions=("read_only", "proposal"))
 
     def test_bare_write_command_can_never_become_a_note(self):
         tools = build_tool_registry(self.vault, self.store)
@@ -67,8 +67,9 @@ class BrainSkillTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ambiguous_write_command_content"):
             tools.call(
                 "create_change_set",
-                {"run_id": brain_run["id"], "writes": [{"path": "01-Inbox/写入.md", "content": mistaken_note}]},
+                {"run_id": brain_run["id"], "title": "test", "writes": [{"path": "01-Inbox/写入.md", "content": mistaken_note}]},
                 run_id=brain_run["id"],
+                allowed_permissions=("read_only", "proposal"),
             )
 
     def test_research_deduplicates_and_labels_static_sources(self):

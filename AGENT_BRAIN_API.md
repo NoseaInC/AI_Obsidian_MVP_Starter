@@ -13,14 +13,17 @@
 - `POST /brain/capture`、`/brain/organize`、`/brain/research`、`/brain/tutor`：显式意图快捷入口。
 - `GET /brain/capabilities`、`/brain/health`、`/brain/diagnostics`：能力、版本和脱敏诊断。
 
-## Interactive Assistant Runtime V2
+## Interactive Assistant Runtime V3
 
 - `POST /assistant/stream`：唯一普通助手流入口；返回 `application/x-ndjson`。
+- `GET /assistant/runs/{id}/events?after=&limit=`：读取有序 schema-v2 事件和最新 Checkpoint，用于断线重连。
+- `POST /assistant/runs/{id}/resume`：仅在正文 `{confirmed:true}` 时应用等待审批的 Change Set；重复调用幂等。
+- `POST /assistant/runs/{id}/reject`：拒绝等待审批的 Proposal，Vault 保持不变；重复调用幂等。
 - 每轮创建持久化 Brain Run，并先解析 Conversation Focus、当前笔记、附件和 reviewed/core 检索上下文。
-- 新增兼容事件：`plan.created`、`tool.requested`、`tool.started`、`tool.completed`、`approval.required`。
-- Tool Calling Profile 使用模型选择的只读 Tool 循环；未启用 Tool Calling 时使用确定性只读检索，最终回答仍基于真实 Tool 结果。
+- 事件包括 `plan.decision`、Tool 生命周期、`observation.recorded`、`proposal.created`、`approval.required`、`run.awaiting_approval`、`change.applied` 和终态事件。
+- Tool Calling Profile 使用原生 Function Calling；未启用 Tool Calling 时使用严格结构化 Planner。两种模式都只允许一个动作/轮，并把真实 Observation 返回模型重新规划。
 - `run.completed.brainRunId` 可用于读取 `/brain/runs/{id}` 的完整审计状态。
-- 普通助手接口永不暴露 mutation Tool；写请求继续进入 Intake、Change Set、Diff 和明确确认链路。
+- `create_change_set` 可由模型选择，但只创建本地 Proposal。`apply_confirmed_change_set` 永不进入模型 Tool Schema，只能走明确确认 API。
 
 ## Research / Curriculum
 

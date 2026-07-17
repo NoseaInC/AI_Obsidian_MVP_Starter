@@ -1,7 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Literal
+
+
+ToolPermission = Literal[
+    "read_only",
+    "proposal",
+    "approval_required",
+    "forbidden",
+]
 
 
 @dataclass(frozen=True)
@@ -13,14 +21,13 @@ class ToolDefinition:
     uses_network: bool = False
     mutates_state: bool = False
     timeout_seconds: int = 20
+    permission_level: ToolPermission = "read_only"
+    idempotent: bool = True
+    cancellable: bool = False
+    max_result_bytes: int = 16_000
 
     def model_spec(self) -> dict[str, Any]:
-        """Return the provider-neutral OpenAI function-tool contract.
-
-        The model only receives this public contract. Runtime-only authority
-        such as mutation flags and timeouts remains local to ToolBroker.
-        """
-
+        """Return the provider-neutral OpenAI function-tool contract."""
         return {
             "type": "function",
             "function": {
