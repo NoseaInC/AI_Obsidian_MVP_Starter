@@ -659,13 +659,18 @@ class PydanticAssistantRuntime:
         )
         intent = prepared.get("intent") or {}
         write_requested = bool(intent.get("writeRequested"))
-        commit_required = write_requested and not any(
+        proposal_only = any(
             marker in message
             for marker in (
                 "只创建修改提案", "仅创建修改提案", "只创建提案", "仅创建提案",
                 "不要执行", "不要应用", "不执行保存", "不应用修改",
             )
         )
+        # Once the model has built a concrete Change Set, the Harness—not a
+        # brittle keyword classifier—must decide whether to auto-apply, ask in
+        # the current conversation, or block. Only an explicit proposal-only
+        # request suppresses the commit/authorization step.
+        commit_required = not proposal_only
         autonomy = self.service.autonomy_status()
         autonomy_mode = str(
             autonomy.get("mode")
@@ -685,6 +690,7 @@ class PydanticAssistantRuntime:
             "attachments": sources,
             "write_requested": write_requested,
             "commit_required": commit_required,
+            "proposal_only": proposal_only,
             "autonomy_mode": autonomy_mode,
         })
         prompt = (
@@ -708,6 +714,7 @@ class PydanticAssistantRuntime:
             "sources": sources,
             "write_requested": write_requested,
             "commit_required": commit_required,
+            "proposal_only": proposal_only,
             "autonomy_mode": autonomy_mode,
             "assistant_message_id": assistant_message_id,
             "prompt": prompt,
@@ -943,6 +950,15 @@ class PydanticAssistantRuntime:
                     "action": str(item.get("action") or ""),
                     "category": str(item.get("category") or ""),
                 })
+        verification = value.get("verification") if isinstance(value.get("verification"), dict) else {}
+        verification_files = []
+        for item in list(verification.get("files") or [])[:10]:
+            if isinstance(item, dict):
+                verification_files.append({
+                    "path": str(item.get("path") or ""),
+                    "sha256": str(item.get("sha256") or "")[:64],
+                    "match": item.get("match") is True,
+                })
         return {
             "proposalId": proposal_id,
             "title": str(value.get("title") or ""),
@@ -950,6 +966,10 @@ class PydanticAssistantRuntime:
             "writes": writes,
             "state": str(value.get("state") or ""),
             "transactionId": str(value.get("transaction_id") or ""),
+            "verification": {
+                "verified": verification.get("verified") is True,
+                "files": verification_files,
+            } if verification else {},
         }
 
     @staticmethod

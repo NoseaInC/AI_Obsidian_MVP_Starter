@@ -86,12 +86,14 @@ test("retired right sidebar is detached and can no longer be opened", () => {
   assert.doesNotMatch(views, /class LearningAgentSidebarView|la-sidebar|renderStatsInspector|inspectorOpen|la-stats-inspector/);
 });
 
-test("chat-first UI includes five modules, Artifact surfaces, provider drawer and strict scroll ownership", () => {
+test("chat-first UI uses four outcome modules with confirmations kept in the assistant", () => {
   const views = readFileSync(new URL("../src/views.ts", import.meta.url), "utf8");
   const css = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
   for (const surface of ["la-material-center","la-review-layout","la-plan-focus","la-today-focus","la-assistant-shell-v3","la-provider-drawer","la-artifact-card"]) assert.match(views + css, new RegExp(surface));
   for (const field of ["Base URL","API Key","模型名称","任务模型路由","OpenAI-compatible","Custom"]) assert.match(views, new RegExp(field));
-  for (const module of ["today", "sources", "review", "plan", "assistant"]) assert.match(views, new RegExp(`id: "${module}"`));
+  for (const module of ["today", "sources", "plan", "assistant"]) assert.match(views, new RegExp(`id: "${module}"`));
+  assert.doesNotMatch(views, /\{id: "review", label: "审核"/);
+  assert.doesNotMatch(views, /setTab\("review"\)/);
   assert.doesNotMatch(views, /学习 Agent/);
   assert.doesNotMatch(views, /renderGlobalHeader|la-global-header|全局快速搜索/);
   assert.doesNotMatch(views, /createDiv\(\{cls: "la-history-nav"\}\)/);

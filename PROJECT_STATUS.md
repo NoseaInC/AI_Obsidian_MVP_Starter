@@ -1,10 +1,10 @@
 # Project Status
 
-Last updated: 2026-07-17
+Last updated: 2026-07-18
 
 ## Current phase
 
-PydanticAI is now the sole Assistant model–tool runtime. The plugin consumes a provider-neutral `AgentRuntime` contract, while the only adapter is `PydanticAgentRuntime` over authenticated localhost schema-v3 NDJSON. Real model, tool, Diff, approval, usage and lifecycle events remain in occurrence order. Existing-note writes suspend the same Run and render confirmation inside the conversation; confirm/cancel resumes that Run and the standalone approval bar is gone. The separate first Dragonnet `apply-prepared` gate remains untouched.
+PydanticAI is the sole Assistant model–tool runtime. The primary Obsidian workspace now has four outcome modules—Today, Materials, Plan and Assistant—and no standalone daily Review module. The local Harness owns every write decision: explicit low-risk new Draft/Inbox files may auto-apply, medium/high-risk or inherited requests pause inline in the current conversation, and protected operations are blocked. Applied files are hash-verified against the immutable Change Set before a Run can complete. The separate first Dragonnet `apply-prepared` gate remains untouched.
 
 ## Completed before autonomous run
 
@@ -31,14 +31,14 @@ PydanticAI is now the sole Assistant model–tool runtime. The plugin consumes a
 ## Current work
 
 - Chat-first V1 implemented: unified conversations, binary/URL/path/folder attachments, deterministic multi-Intent routing, idempotent submit and seven versioned Artifact types.
-- Assistant is the only universal input. Materials is a one-column status center; Review is list/preview/evidence; Plan is today blocks plus weekend preview; Today is five queues plus a single learning detail.
+- Assistant is the only universal input and authorization surface. Materials is a one-column status center; Plan is today blocks plus weekend preview; Today is five queues plus a single learning detail. The former standalone Review UI is retained only as unreachable legacy audit code for Prepared history.
 - Follow-up instructions revise the active Artifact and retain parent versions. Raw conversation text and attachment bodies live only under `90-Local-Only`; SQLite stores hashes, counts and state.
-- Sixteen V3 visual/live acceptance screenshots cover light/dark, all five modules, provider settings, compact layout, alignment hardening and real Obsidian validation.
+- Sixteen V3 historical visual/live acceptance screenshots cover the earlier five-module shell. The current installed shell has four primary modules and routes legacy Review commands into Assistant.
 - Secure model subsystem includes Keychain/FakeKeyStore, OpenAI-compatible adapter, connection diagnostics and per-task routing.
 - Deterministic reviewed/core-only recommendations, feedback/undo, study sessions and explicit mastery confirmation are implemented.
 - Installed Obsidian `main.js` matches the verified build.
 - Model-backed assistant now routes through the secured localhost Runtime; editable Change Set candidates and full idea expansion remain next milestones.
-- Real Obsidian 1.12.7 acceptance passed for all five modules, the model/API drawer and Review rendering. Things-theme color leakage, machine-ID exposure and the obsolete “学习 Agent” label are closed. The former compact statistics sidebar was subsequently retired by product decision.
+- Real Obsidian 1.12.7 acceptance on 2026-07-18 passed the four-module navigation, service-online state, Assistant page and Harness footer. No standalone Review button or tab is reachable. Things-theme color leakage, machine-ID exposure and the obsolete “学习 Agent” label remain closed; the former compact statistics sidebar remains retired.
 - Follow-up alignment hardening overrides host-theme fixed button heights for Materials/Review document cards and centers icon/text controls explicitly. The obsolete plugin global strip plus the main view's native Obsidian header—including the three-dot split menu—are now removed.
 - Agent Brain V1 now unifies intent routing, context, planning, Policy, restricted execution, verification, proposals and audit under one lifecycle.
 - Registered Skills and restricted Tools cover safe capture, organization, research, curriculum planning, recommendations, tutoring, quizzes and evaluation. There is no arbitrary model-accessible filesystem, shell or SQL tool.
@@ -114,13 +114,17 @@ PydanticAI is now the sole Assistant model–tool runtime. The plugin consumes a
 - The CodeMirror Inline Edit extension captures document snapshot, selection offsets and selected text and rejects stale acceptance with “原文已变化，请重新生成。” Backend base-hash verification remains mandatory.
 - Provider/profile and model-routing writes now pass through the frontend SettingsService. Architecture tests prohibit core→feature, runtime→DOM, UI→Python/PydanticAI, legacy coordinator and direct settings-write regressions.
 - A real DeepSeek `deepseek-v4-pro` smoke in a temporary Vault passed `get_current_note → propose_vault_change → commit_vault_change → inline confirmation → reject/resume`. The temporary note was byte-for-byte unchanged before confirmation and after rejection; no real Vault note or PDF was read or modified.
+- The standalone Review navigation and tab were retired. Backward-compatible commands now open Assistant, where scoped confirmation is rendered inline and resumes the same Run. The legacy audit/review backend remains for Prepared PDF history and does not grant model authority.
+- Terse continuation after a concrete write plan no longer fails with `explicit_write_intent_required`. A Change Set is built first; Harness policy then auto-applies, asks inline, or blocks.
+- A repeatable real-model topic smoke (`scripts/real_harness_topic_smoke.py`) passed with the configured `deepseek-v4-pro` in a temporary Vault: `get_conversation_focus → search_vault → read_vault_note ×2 → find_related_notes ×2 → propose_vault_change → commit_vault_change`. The generated PSM note passed topic, assumption, limitation, source-link and post-apply hash gates. No real Vault note was changed.
+- The rebuilt plugin was installed and hot-reloaded in Obsidian 1.12.7. Installed/build hashes are identical: `main.js` `3be69e99dabcba894429b7688c99d621d69340b89b8e8cb07e9e7ebc53e329e4`; `styles.css` `b47e9b289d6c99edf422a599c4e5283d9135b1515b0f0b291b92e8986018b7fb`.
 
 ## Test status
 
 - Python ingestion/review/conversation: 40 tests passed.
-- Runtime/learning/provider/Brain/Intake/Daily Intelligence/context-material/PydanticAI assistant streaming: 150 tests passed (2 explicitly retired schema-v2 semantics skipped).
+- Runtime/learning/provider/Brain/Intake/Daily Intelligence/context-material/PydanticAI assistant streaming: 151 tests passed (2 explicitly retired schema-v2 semantics skipped).
 - Plugin: 59 logic/security/lifecycle/chat-first/context-material/daily-intelligence/study-workspace/privacy/autonomy/streaming/random/architecture tests passed; strict TypeScript check and production build passed.
-- Unified `./scripts/check.sh`: passed on 2026-07-17.
+- Unified `./scripts/check.sh`: passed on 2026-07-18.
 - Right-sidebar retirement gate: 40 ingestion/review/conversation tests, 113 Runtime tests and 36 plugin tests passed; TypeScript and production build passed on 2026-07-15.
 - Today randomized gates passed for 1,000 plans, 10,000 state actions, 1,000 lesson blueprints, 110 responsive widths and 20 reproducible regression seeds.
 - Daily ranking performance with 1,000 candidates: median 0.436 ms, P95 0.559 ms; localhost health response measured 0.018 s.

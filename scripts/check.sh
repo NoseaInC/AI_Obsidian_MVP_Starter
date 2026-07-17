@@ -15,7 +15,8 @@ cd "$ROOT"
   00-System/Scripts/prepared_pdf.py \
   00-System/Scripts/review.py \
   00-System/Scripts/pdf_to_obsidian.py \
-  00-System/Scripts/conversation_to_obsidian.py
+  00-System/Scripts/conversation_to_obsidian.py \
+  scripts/real_harness_topic_smoke.py
 
 if [[ -f agent/pyproject.toml || -d agent/tests ]]; then
   "$PYTHON" -m compileall -q agent

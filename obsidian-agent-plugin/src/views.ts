@@ -69,7 +69,7 @@ export const MAIN_VIEW = "learning-agent-main";
 export const SIDEBAR_VIEW = "zhixu-sidebar-v2";
 export const LEGACY_SIDEBAR_VIEW = "obsidian-learning-agent-view";
 
-type MainTab = "today" | "sources" | "review" | "plan" | "assistant";
+type MainTab = "today" | "sources" | "plan" | "assistant";
 type SourceFilter = "all" | "pending" | "running" | "research" | "applied" | "failed" | "history";
 interface DailyViewPreferences {
   trackingEnabled: boolean;
@@ -96,7 +96,6 @@ interface ModelProfile {
 const MODULES: Array<{id: MainTab; label: string; icon: string}> = [
   {id: "today", label: "今日", icon: "calendar-days"},
   {id: "sources", label: "资料", icon: "files"},
-  {id: "review", label: "审核", icon: "clipboard-check"},
   {id: "plan", label: "计划", icon: "calendar-range"},
   {id: "assistant", label: "助手", icon: "messages-square"},
 ];
@@ -104,7 +103,6 @@ const MODULES: Array<{id: MainTab; label: string; icon: string}> = [
 const MODULE_TITLES: Record<MainTab, string> = {
   today: "今天，继续前进",
   sources: "资料中心",
-  review: "待审核的 Change Set",
   plan: "学习计划",
   assistant: "助手",
 };
@@ -589,7 +587,7 @@ export class LearningAgentMainView extends ItemView {
     progress.createEl("strong", {text: `${percentage}%`});
     const bar = progress.createDiv({cls: "la-job-progress"});
     bar.createDiv({attr: {style: `width:${percentage}%`}});
-    this.navStat(stats, "待确认", (summary?.prepared_count ?? 0) + (summary?.review_count_pending ?? 0));
+    this.navStat(stats, "需要你确认", (summary?.prepared_count ?? 0) + (summary?.review_count_pending ?? 0));
     this.navStat(stats, "运行任务", summary?.active_job_count ?? 0);
 
     const status = nav.createDiv({cls: "la-nav-runtime la-nav-runtime--footer"});
@@ -687,7 +685,6 @@ export class LearningAgentMainView extends ItemView {
     if (!this.dashboard) return;
     if (this.tab === "today") this.renderToday(body);
     else if (this.tab === "sources") await this.renderSources(body);
-    else if (this.tab === "review") await this.renderReviews(body);
     else if (this.tab === "plan") await this.renderPlan(body);
     else await this.renderAssistant(body);
   }
@@ -2247,7 +2244,7 @@ export class LearningAgentMainView extends ItemView {
     };
     const resultActiveArtifact = (artifacts: any[]): string => String([...artifacts].reverse().find(item => !["change_set", "quiz"].includes(item.type))?.id ?? "");
     input.onkeydown = event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } };
-    const safety = dock.createDiv({cls: "la-assistant-safety"}); setIcon(safety.createSpan(), "shield-check"); safety.createSpan({text: "低风险维护可撤销；正式知识和受保护笔记仍需审核。"});
+    const safety = dock.createDiv({cls: "la-assistant-safety"}); setIcon(safety.createSpan(), "shield-check"); safety.createSpan({text: "低风险维护由 Harness 校验并可撤销；受保护知识会在当前对话中请求授权。"});
     this.renderAssistantContext(context, loadedConversation, primaryArtifact, input);
     this.renderProviderDrawer(drawer, profiles, routes);
   }
@@ -2416,7 +2413,7 @@ export class LearningAgentMainView extends ItemView {
         if (change.undoAvailable && change.actionId) button(actions, "撤销", async () => {
           await this.client.post(`/agent-actions/${encodeURIComponent(change.actionId)}/undo`, {}); new Notice("已安全撤销"); await this.refresh();
         });
-        if (changeSetId) button(actions, "打开审核", () => this.setTab("review"), "mod-cta");
+        if (changeSetId) button(actions, "在助手中处理", () => this.setTab("assistant"), "mod-cta");
       }
       return;
     }
@@ -2472,7 +2469,7 @@ export class LearningAgentMainView extends ItemView {
           await this.client.post(`/agent-actions/${encodeURIComponent(change.actionId)}/undo`, {});
           new Notice("已安全撤销；后续人工修改不会被覆盖"); await this.refresh();
         });
-        if (change.changeSet?.id) button(actions, "打开审核", () => this.setTab("review"));
+        if (change.changeSet?.id) button(actions, "在助手中处理", () => this.setTab("assistant"));
       }
     }
     const signals = parent.createEl("section", {cls: "la-assistant-context-section la-assistant-signals"});
@@ -2604,12 +2601,12 @@ export class LearningAgentMainView extends ItemView {
       return;
     }
     if (artifact.type === "update_suggestion") {
-      button(actions, "打开审核", () => this.setTab("review"), "mod-cta");
+      button(actions, "在助手中处理", () => this.setTab("assistant"), "mod-cta");
       if (payload.targetPath) button(actions, "查看原笔记", () => void this.app.workspace.openLinkText(String(payload.targetPath), "", false));
       return;
     }
-    const target: MainTab = artifact.type === "material" || artifact.type === "research_bundle" ? "sources" : artifact.type === "learning_plan" ? "plan" : artifact.type === "change_set" || artifact.type === "capture_proposal" ? "review" : "today";
-    button(actions, target === "review" ? "打开审核" : target === "sources" ? "查看资料" : target === "plan" ? "查看计划" : "加入今日", () => this.setTab(target));
+    const target: MainTab = artifact.type === "material" || artifact.type === "research_bundle" ? "sources" : artifact.type === "learning_plan" ? "plan" : artifact.type === "change_set" || artifact.type === "capture_proposal" ? "assistant" : "today";
+    button(actions, target === "assistant" ? "在助手中处理" : target === "sources" ? "查看资料" : target === "plan" ? "查看计划" : "加入今日", () => this.setTab(target));
     if (!["change_set", "quiz"].includes(artifact.type)) button(actions, "继续调整", () => { new Notice("在下方继续描述修改要求，将生成同一成果的新版本。" ); });
   }
 

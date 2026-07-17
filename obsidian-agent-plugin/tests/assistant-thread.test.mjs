@@ -101,7 +101,7 @@ test("assistant visual contract contains the three-column task and result experi
   assert.match(css, /\.la-learning-pack__grid/);
   assert.match(views, /latestMessage\?\.taskThreadId/);
   assert.doesNotMatch(views, /result\.task_thread \?\? taskThreadFromRun/);
-  for (const label of ["当前理解", "Agent 正在做什么", "最近修改", "需要确认一个指代", "最近对话信号", "本会话不用于个性化", "低风险维护可撤销", "打开笔记", "查看变化", "撤销"]) assert.match(views, new RegExp(label));
+  for (const label of ["当前理解", "Agent 正在做什么", "最近修改", "需要确认一个指代", "最近对话信号", "本会话不用于个性化", "Harness 校验并可撤销", "打开笔记", "查看变化", "撤销"]) assert.match(views, new RegExp(label));
   assert.match(views, /本地优先 · 低风险写入可撤销/);
   assert.doesNotMatch(views, /写入先审核/);
   assert.match(views, /\/agent-actions\/\$\{encodeURIComponent\(change\.actionId\)\}\/undo/);

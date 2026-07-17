@@ -21,6 +21,8 @@
 
 - Resolve every path and reject traversal or symlink escape.
 - All knowledge mutations pass through Change Set and transaction layers.
+- The Harness, not the model or UI, classifies each Change Set as auto-apply, inline confirmation or blocked. Auto-apply is limited to explicit, low-risk new files in configured Draft/Inbox roots.
+- Every successful Harness commit is verified against the immutable Change Set payload hashes before the Run can report success.
 - `reviewed/core` prose is immutable; only explicit user-confirmed learning metadata transitions are permitted.
 - Human content outside managed blocks is preserved.
 - High autonomy is still scoped: only Agent-managed creation and small managed-block maintenance may apply automatically. Each automatic change creates a private snapshot, bounded diff record and audit action.

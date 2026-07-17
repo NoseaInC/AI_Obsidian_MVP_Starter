@@ -148,13 +148,19 @@ class PydanticAssistantRuntimeTests(unittest.TestCase):
         self.assertEqual(target.read_text(encoding="utf-8"), before)
         self.assertEqual(resumed[-1]["type"], "run.completed")
 
-    def test_08_write_tool_is_blocked_without_explicit_write_intent(self):
-        async def stream(_messages, _info):
-            args = {"title": "越权", "writes": [{"path": "10-Inbox/x.md", "content": "x"}]}
-            yield {0: DeltaToolCall(name="propose_vault_change", json_args=json.dumps(args), tool_call_id="bad-1")}
-        events = self._stream("解释概念", model=FunctionModel(stream_function=stream))
-        self.assertEqual(events[-1]["type"], "run.failed")
+    def test_08_missing_write_intent_becomes_inline_harness_request(self):
+        path = "10-Inbox/x.md"
+        events = self._stream(
+            "好，继续。",
+            model=_write_model(path, "", "# X\n\n由 Harness 管理。\n"),
+        )
+        confirmation = next(item for item in events if item["type"] == "inline.confirmation.required")
+        self.assertEqual(confirmation["confirmation"]["risk_level"], "high")
+        self.assertIn("没有明确要求写入", confirmation["confirmation"]["summary"])
         self.assertFalse((self.vault / "10-Inbox/x.md").exists())
+        resumed = list(self.service.confirm_assistant_run(confirmation["runId"], True))
+        self.assertEqual(resumed[-1]["type"], "run.completed")
+        self.assertTrue((self.vault / "10-Inbox/x.md").is_file())
 
     def test_09_reviewed_note_can_never_be_proposed_for_overwrite(self):
         path = "20-Knowledge/Protected.md"; before = "---\nstatus: reviewed\n---\n# Protected\n"
@@ -254,6 +260,60 @@ class PydanticAssistantRuntimeTests(unittest.TestCase):
         )
         database = (self.vault / "90-Local-Only/Agent/agent.sqlite3").read_bytes()
         self.assertNotIn(marker.encode(), database)
+
+    def test_20_harness_collects_local_sources_and_writes_verified_topic_note(self):
+        concept = self.vault / "20-Knowledge/倾向得分.md"
+        method = self.vault / "20-Knowledge/匹配方法.md"
+        concept.write_text("# 倾向得分\n\n在给定协变量时接受处理的条件概率。\n", encoding="utf-8")
+        method.write_text("# 匹配方法\n\n比较倾向得分相近的处理组与对照组。\n", encoding="utf-8")
+        target_path = "10-Inbox/倾向得分匹配-主题整理.md"
+        target_content = (
+            "# 倾向得分匹配\n\n"
+            "## 核心思路\n\n通过倾向得分构造可比的处理组与对照组。\n\n"
+            "## 本地来源\n\n- [[倾向得分]]\n- [[匹配方法]]\n"
+        )
+
+        phase = 0
+        proposal = ""
+
+        async def stream(messages, _info):
+            nonlocal phase, proposal
+            names, observed_proposal = _tool_history(messages)
+            proposal = observed_proposal or proposal
+            if phase == 0:
+                phase = 1
+                yield {0: DeltaToolCall(name="search_vault", json_args=json.dumps({"query": "倾向得分 匹配"}, ensure_ascii=False), tool_call_id="topic-search")}
+                return
+            if phase == 1:
+                phase = 2
+                yield {0: DeltaToolCall(name="read_vault_note", json_args=json.dumps({"path": "20-Knowledge/倾向得分.md"}, ensure_ascii=False), tool_call_id="topic-read-1")}
+                return
+            if phase == 2:
+                phase = 3
+                yield {0: DeltaToolCall(name="read_vault_note", json_args=json.dumps({"path": "20-Knowledge/匹配方法.md"}, ensure_ascii=False), tool_call_id="topic-read-2")}
+                return
+            if phase == 3:
+                phase = 4
+                args = {"title": "整理倾向得分匹配主题", "writes": [{"path": target_path, "content": target_content, "category": "assistant-agent"}]}
+                yield {0: DeltaToolCall(name="propose_vault_change", json_args=json.dumps(args, ensure_ascii=False), tool_call_id="topic-proposal")}
+                return
+            if phase == 4:
+                phase = 5
+                yield {0: DeltaToolCall(name="commit_vault_change", json_args=json.dumps({"proposal_id": proposal}), tool_call_id="topic-commit")}
+                return
+            yield "已搜集两篇本地资料，完成整理，并由 Harness 校验写入结果。"
+
+        events = self._stream(
+            "以倾向得分匹配为主题，搜索本地资料，整理成一篇可追溯笔记并保存到 10-Inbox/倾向得分匹配-主题整理.md。",
+            model=FunctionModel(stream_function=stream),
+        )
+        self.assertNotIn("inline.confirmation.required", [item["type"] for item in events])
+        self.assertEqual(events[-1]["type"], "run.completed")
+        self.assertEqual((self.vault / target_path).read_text(encoding="utf-8"), target_content)
+        tools = [item.get("tool") for item in events if item["type"] == "tool.completed"]
+        self.assertEqual(tools[:5], ["search_vault", "read_vault_note", "read_vault_note", "propose_vault_change", "commit_vault_change"])
+        commit = next(item for item in events if item.get("tool") == "commit_vault_change" and item["type"] == "tool.completed")
+        self.assertTrue(commit["result"]["verification"]["verified"])
 
 
 if __name__ == "__main__":

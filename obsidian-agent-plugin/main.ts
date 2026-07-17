@@ -4,7 +4,7 @@ import {AgentProcessManager, RuntimeSettings} from "./src/process-manager";
 import {LearningAgentMainView, LEGACY_SIDEBAR_VIEW, MAIN_VIEW, SIDEBAR_VIEW} from "./src/views";
 import {inlineEditExtension} from "./src/features/inline-edit/InlineEditController";
 
-type MainTab = "today" | "sources" | "review" | "plan" | "assistant";
+type MainTab = "today" | "sources" | "plan" | "assistant";
 interface LearningAgentSettings extends RuntimeSettings {
   behaviorPersonalization: boolean;
   recordLearningDuration: boolean;
@@ -245,7 +245,7 @@ export default class LearningAgentPlugin extends Plugin {
     this.addCommand({id: "import-conversation", name: "Agent: 导入 AI 对话", callback: async () => { await this.openMain("assistant"); new Notice("请把对话文件或文本交给助手；原文只保存在本地私有区"); }});
     this.addCommand({id: "view-jobs", name: "Agent: 查看当前任务", callback: () => this.openMain("sources")});
     this.addCommand({id: "view-prepared", name: "Agent: 查看待确认资料", callback: () => this.openMain("sources")});
-    this.addCommand({id: "review", name: "Agent: 查看待审核知识", callback: () => this.openMain("review")});
+    this.addCommand({id: "review", name: "Agent: 在助手中处理待确认操作", callback: async () => { await this.openMain("assistant"); new Notice("需要确认的修改会直接出现在当前助手对话中"); }});
     this.addCommand({id: "today-learning", name: "Agent: 开始今日学习", callback: () => this.openMain("today")});
     this.addCommand({id: "assistant", name: "Agent: 打开 AI 助手", callback: () => this.openMain("assistant")});
     this.addCommand({id: "expand-idea", name: "Agent: 展开当前灵感", callback: async () => { const file = this.app.workspace.getActiveFile(); if (!file) { new Notice("请先打开一条灵感"); return; } await this.client.post("/jobs", {kind: "expand-idea", payload: {path: file.path}}); new Notice("灵感扩展已加入安全准备队列"); }});
@@ -276,7 +276,7 @@ export default class LearningAgentPlugin extends Plugin {
     }});
     const ribbon=this.addRibbonIcon("brain-circuit", "知序", async () => { await this.openMain("today"); });
     ribbon.addEventListener("dblclick",event=>{event.preventDefault();void this.openMain("assistant");});
-    ribbon.addEventListener("contextmenu",event=>{event.preventDefault();const menu=new Menu();menu.addItem(item=>item.setTitle("打开知序首页").setIcon("layout-dashboard").onClick(()=>void this.openMain("today")));menu.addItem(item=>item.setTitle("导入 PDF").setIcon("file-input").onClick(()=>void this.openMain("assistant")));menu.addItem(item=>item.setTitle("打开待审核").setIcon("clipboard-check").onClick(()=>void this.openMain("review")));menu.addItem(item=>item.setTitle("打开助手").setIcon("message-circle").onClick(()=>void this.openMain("assistant")));menu.addSeparator();menu.addItem(item=>item.setTitle("重启 Agent").setIcon("refresh-cw").onClick(()=>void this.manager?.restart()));menu.addItem(item=>item.setTitle("打开诊断").setIcon("stethoscope").onClick(()=>new BrainDiagnosticsModal(this.app,this.client).open()));menu.showAtMouseEvent(event);});
+    ribbon.addEventListener("contextmenu",event=>{event.preventDefault();const menu=new Menu();menu.addItem(item=>item.setTitle("打开知序首页").setIcon("layout-dashboard").onClick(()=>void this.openMain("today")));menu.addItem(item=>item.setTitle("导入 PDF").setIcon("file-input").onClick(()=>void this.openMain("assistant")));menu.addItem(item=>item.setTitle("处理待确认操作").setIcon("message-circle-question").onClick(()=>void this.openMain("assistant")));menu.addItem(item=>item.setTitle("打开助手").setIcon("message-circle").onClick(()=>void this.openMain("assistant")));menu.addSeparator();menu.addItem(item=>item.setTitle("重启 Agent").setIcon("refresh-cw").onClick(()=>void this.manager?.restart()));menu.addItem(item=>item.setTitle("打开诊断").setIcon("stethoscope").onClick(()=>new BrainDiagnosticsModal(this.app,this.client).open()));menu.showAtMouseEvent(event);});
   }
   async openMain(tab: MainTab) {
     const registered = this.app.workspace.getLeavesOfType(MAIN_VIEW);

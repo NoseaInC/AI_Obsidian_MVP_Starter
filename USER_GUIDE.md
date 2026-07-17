@@ -5,14 +5,14 @@
 ## 知序 Chat-first
 
 - 单击 Ribbon 图标打开快速侧栏，双击直接打开完整助手，右键打开快捷菜单。
-- 主工作区左侧固定五个模块：今日、资料、审核、计划、助手；⌘1–⌘5 切换。模块栏不是 Vault 文件树。
+- 主工作区左侧固定四个模块：今日、资料、计划、助手。模块栏不是 Vault 文件树。
 - 助手是唯一通用输入：直接输入目标，或拖入/粘贴 PDF、文本、Markdown、URL 和 AI 对话；也可引用当前笔记、`@` 笔记或显式本地路径。
 - 资料页用一列状态卡片汇总所有处理任务；内部 ID 不作为标题。
-- 审核页中间渲染 Markdown/提案，底部固定拒绝、稍后、退回助手调整和修改后接受；来源、风险和版本历史在右侧。
+- 不再维护独立的日常审核页。需要授权的修改会原地出现在当前助手对话底部，展示工具、文件、风险和 Diff；选择“允许本次”或“取消”后继续同一个 Run。
 - 计划页以今日学习块为主，顶部显示可用时间、70/30、任务数和预计完成率，并提供周末预览。
 - 今日页按必须复习、下一步学习、AI 补全、探索和资料任务分组，右侧只展示当前一项的目标与操作。
 - 助手页右侧可以创建多个 Provider 配置。API Key 进入 macOS Keychain，不会写入 Vault 或插件设置。
-- 助手会自动识别整理、研究、保存、规划和检查理解等 Intent；每次提交都会显示理解、计划、策略、执行、校验和提案时间线，需要写入时必须在 Change Set 中再次确认。
+- 助手会自动识别整理、研究、保存、规划和检查理解等 Intent。所有写入先生成 Change Set；Harness 对明确的低风险 Draft/Inbox 新建可自动应用，对已有笔记或更高风险操作在当前聊天中询问，对越权和 reviewed/core 修改直接阻止。
 - Provider 高级设置支持组织 ID、Temperature、Max Tokens、超时、流式/JSON Schema/工具调用能力声明和受保护的自定义 Headers；九类任务可以分别路由模型。
 - 推荐无需模型；模型相关功能在未配置时显示明确入口。
 
@@ -27,7 +27,7 @@
 - 右侧上下文会显示最近对话信号及证据数量。它不会把一次提问当成长期兴趣，也不会把模型推断当成已确认 mastery。
 - 助手会记住当前方法、概念、PDF、附件和当前笔记。连续说“这个方法”“这篇”“刚才那个”时会沿用可验证的当前焦点；无法可靠判断时只显示一次最小确认。
 - 明确说“整理到 Obsidian”“保存到知识库”后，高自治模式会直接完成低风险草稿创建或 managed block 追加。右侧“最近修改”可打开笔记、查看变化和撤销。
-- 新建知识草稿带 `status: ai-draft` 与 `agent_managed: true`；同名 reviewed/core 笔记不会被改写，只会进入审核页形成更新建议。
+- 新建知识草稿带 `status: ai-draft` 与 `agent_managed: true`；同名 reviewed/core 笔记不会被改写，只会在助手中形成可查看 Diff 的更新建议。
 - 示例：先问“介绍一下 Delta Method”，再说“把这个方法带上推导整理到 Obsidian 中”，知序会创建/解析一篇方法笔记，不需要重新指定方法名。
 
 ## 今日调整与可能方向
@@ -46,13 +46,13 @@
 
 Open Obsidian. Learning Agent starts its local runtime automatically and shows online status in the right sidebar.
 
-Open the command palette and use `Agent: 打开首页`, `Agent: 查看当前任务`, `Agent: 查看待确认资料`, `Agent: 查看待审核知识`, `Agent: 开始今日学习`, `Agent: 打开 AI 助手` or `Agent: 打开诊断`.
+Open the command palette and use `Agent: 打开首页`, `Agent: 查看当前任务`, `Agent: 查看待确认资料`, `Agent: 在助手中处理待确认操作`, `Agent: 开始今日学习`, `Agent: 打开 AI 助手` or `Agent: 打开诊断`.
 
 1. Review the “Today” section and start a study session.
 2. Open Assistant and drag in a paper/textbook, paste a URL or type an explicit goal.
-3. Follow the Job in Task Center until it reaches “Awaiting confirmation”.
-4. Inspect its Change Set and evidence, adjust candidates if needed, then explicitly Apply.
-5. Review generated drafts and accept, edit-then-accept or reject them.
+3. Follow the Job in Materials until it completes or produces a governed Change Set.
+4. If the Harness needs authority, inspect and confirm or cancel directly in the current Assistant conversation.
+5. Low-risk draft creation may complete automatically; existing/protected knowledge never bypasses policy.
 6. Confirm mastery only after answering the quiz or completing a retelling.
 
 ## Brain workflows

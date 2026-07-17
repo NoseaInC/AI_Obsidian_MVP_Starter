@@ -155,3 +155,7 @@ An existing-note write cannot be approved by prose or a detached review bar. The
 ## D-039 — Settings persistence has one frontend boundary
 
 Views may read model settings but cannot write provider Profiles or routing endpoints directly. SettingsService is the only frontend persistence boundary; the backend still validates URLs, protected headers, known routes and Keychain references. API keys never enter plugin persistence.
+
+## D-040 — Harness owns write decisions; confirmation stays in the conversation
+
+The standalone Review module is retired from the primary Obsidian navigation. A model may build a bounded Change Set but cannot decide whether it is applied. The local Harness deterministically chooses one of three outcomes: auto-apply an explicit low-risk new draft in an approved root, request one scoped confirmation inline in the current Assistant run, or block the operation. Terse continuation such as “好” or “继续” may inherit an already concrete proposal but never grants authority by itself. Every applied Change Set is revalidated before commit and hash-verified after commit. The legacy review/audit backend remains available for immutable Prepared PDF workflows and historical inspection; it is not a second daily approval inbox.

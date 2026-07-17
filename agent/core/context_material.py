@@ -123,7 +123,12 @@ def extract_entities(text: str, message_id: str = "") -> list[dict[str, Any]]:
 def classify_assistant_intent(message: str, focus: dict[str, Any], attachments: list[dict[str, Any]], active_note: dict[str, Any]) -> dict[str, Any]:
     text = " ".join(str(message).split())
     lower = text.casefold()
-    save = any(marker.casefold() in lower for marker in SAVE_MARKERS) and not any(marker.casefold() in lower for marker in NO_SAVE_MARKERS)
+    path_write = bool(re.search(
+        r"(?:保存|写入|存入|整理).{0,16}(?:到|进)\s*(?:01-Inbox|10-Inbox|10-Sources|20-Knowledge|30-Learning|40-Projects)/",
+        text,
+        re.I,
+    ))
+    save = (any(marker.casefold() in lower for marker in SAVE_MARKERS) or path_write) and not any(marker.casefold() in lower for marker in NO_SAVE_MARKERS)
     active_method = focus.get("activeMethod")
     current_note_write = any(marker in text for marker in (
         "更新当前笔记", "加入当前笔记", "写入当前笔记", "补充到当前笔记", "补进当前笔记",

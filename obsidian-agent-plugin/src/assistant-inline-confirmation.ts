@@ -26,7 +26,7 @@ export function renderInlineAgentConfirmation(
   card.setAttribute("role", "group");
   card.setAttribute(
     "aria-label",
-    "Agent 请求确认一次 Obsidian 修改",
+    "知序 Harness 请求一次操作授权",
   );
 
   const icon = card.createDiv({
@@ -44,7 +44,7 @@ export function renderInlineAgentConfirmation(
   });
   body.createDiv({
     cls: "la-inline-agent-confirmation__tool",
-    text: `工具 · ${confirmation.tool_name ?? "commit_vault_change"}`,
+    text: `Harness · ${confirmation.tool_name ?? "commit_vault_change"}`,
   });
   body.createDiv({
     cls: "la-inline-agent-confirmation__summary",
@@ -56,7 +56,7 @@ export function renderInlineAgentConfirmation(
   });
   meta.setText(
     `${confirmation.writes.length} 个文件变更 · ${
-      confirmation.risk_level === "high" ? "高风险" : "需要确认"
+      confirmation.risk_level === "high" ? "高风险操作" : "仅本次授权"
     }`,
   );
   if (confirmation.writes.length) {
@@ -115,7 +115,7 @@ export function renderInlineAgentConfirmation(
 
   const confirmButton = actions.createEl("button", {
     cls: "la-button la-button--primary",
-    text: "确认执行",
+    text: "允许本次",
   });
   confirmButton.addEventListener("click", async () => {
     if (busy || disposed) return;

@@ -188,3 +188,22 @@ class ChangeSetTools:
         else:
             self.store.update_brain_change_set(change_set_id, "applied", transaction_id)
         return {"id": change_set_id, "state": "applied", "idempotent": False, "transaction_id": transaction_id, "journal": str(journal.relative_to(self.vault))}
+
+    def verify_applied(self, change_set_id: str) -> dict[str, Any]:
+        """Verify the committed files against the immutable Change Set payload.
+
+        This is a deterministic Harness check. The model cannot declare its
+        own write successful and the verification result contains hashes and
+        paths only—never note bodies.
+        """
+        record, bundle = self._bundle(change_set_id)
+        files: list[dict[str, Any]] = []
+        verified = record.get("state") == "applied"
+        for item in bundle.get("writes", []):
+            path = safe_note(self.vault, str(item.get("path", "")))
+            expected = _hash(str(item.get("content", "")))
+            actual = _hash(path.read_text(encoding="utf-8")) if path.is_file() else "missing"
+            match = actual == expected
+            verified = verified and match
+            files.append({"path": str(item.get("path", "")), "sha256": actual, "match": match})
+        return {"change_set_id": change_set_id, "verified": bool(verified), "files": files}

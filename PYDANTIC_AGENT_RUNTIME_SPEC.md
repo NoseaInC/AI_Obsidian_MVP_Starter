@@ -33,17 +33,25 @@ and never renders hidden reasoning.
 ## Governed writes
 
 The model can propose a bounded Change Set and call the governed commit tool.
-Existing-note changes suspend the same PydanticAI run with deferred tool
-approval. The inline confirmation displays the tool, paths, summary, risk and
-on-demand Diff; the normal composer is hidden until confirm/cancel resolves.
-Confirmed execution revalidates the immutable payload, base hashes, path policy
-and reviewed/core protection. The apply primitive is not exposed as an
-independent model tool.
+The local Harness classifies each concrete Change Set as auto-apply, inline
+confirmation, or blocked. Explicit low-risk creation under approved Draft/Inbox
+roots may be committed automatically. Existing-note changes, missing inherited
+write authority and medium/high-risk operations suspend the same PydanticAI run
+with deferred tool approval. The inline confirmation displays the tool, paths,
+summary, risk and on-demand Diff; the normal composer is hidden until
+confirm/cancel resolves. Confirmed execution revalidates the immutable payload,
+base hashes, path policy and reviewed/core protection, then compares every
+written file with the immutable payload hash. The apply primitive is not
+exposed as an independent model tool, and there is no separate daily Review UI.
 
 If a model creates a proposal and then tries to simulate “waiting for approval”
 in prose, a PydanticAI output validator requests a model retry and requires the
 governed commit tool. Explicit “proposal only / do not apply” requests are not
 forced into commit.
+
+Terse continuation such as “好” or “继续” is not treated as an error after a
+concrete proposal exists. The model creates the Change Set and the Harness—not
+the keyword classifier—decides whether the current run may continue or must ask.
 
 ## Lifecycle
 

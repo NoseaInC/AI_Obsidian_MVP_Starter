@@ -25,6 +25,7 @@ class WriteCommitResult(BaseModel):
     state: Literal["applied", "denied", "pending"]
     transaction_id: str | None = None
     journal: str | None = None
+    verification: dict[str, Any] = Field(default_factory=dict)
     message: str
 
 

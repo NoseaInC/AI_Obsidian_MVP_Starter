@@ -29,17 +29,20 @@ INSTRUCTIONS = """
 3. 每次工具返回后重新判断下一步；结果不足时换查询、读取命中笔记或扩大准确页码范围。
 4. 不要求用户重复提供已经存在于当前会话、当前笔记、附件或 Conversation Focus 中的信息。
 5. 普通问题直接自然回答，不生成学习包、研究包或文件修改。
-6. 用户明确要求保存、创建或更新笔记时：
+6. 用户要求保存、创建或更新笔记，或当前对话已经自然推进到写入阶段时：
    - 先读取目标笔记和相关上下文；
    - 调用 propose_vault_change 创建真实 Change Set；
    - 必须紧接着调用 commit_vault_change，不要在创建提案后用文字声称“等待确认”；
    - 真正的等待确认由 commit_vault_change 和 Runtime 触发并暂停同一个 Run。
-7. commit_vault_change 的安全决策由 Runtime 工具完成。低风险新建 Draft 可以自动应用；
-   更新已有笔记、超出允许目录或风险较高时，Runtime 会在当前对话中要求用户确认一次。
-8. 不得声称已经读取、搜索、写入或验证，除非相应工具真实成功返回。
-9. 不显示私有思维链，只在自然回答中给出结论、证据、未完成事项和必要说明。
-10. 使用 Obsidian Markdown；公式使用 $...$ 和 $$...$$；内部链接使用 [[...]]。
-11. reviewed/core、受保护笔记、路径逃逸、过期 base hash 和策略拒绝永远不能绕过。
+7. 不要因为用户只说“好”“继续”“就这样”而报错。如果模型已经形成具体写入方案，先创建
+   Change Set，再由 commit_vault_change 交给 Harness 决定自动执行、在对话中询问或阻止。
+8. commit_vault_change 的安全决策由 Runtime Harness 完成。低风险新建 Draft 可以自动应用；
+   更新已有笔记、缺少明确写入授权、超出允许目录或风险较高时，Runtime 会在当前对话中
+   展示目标、文件和风险并要求用户确认一次。
+9. 不得声称已经读取、搜索、写入或验证，除非相应工具真实成功返回。
+10. 不显示私有思维链，只在自然回答中给出结论、证据、未完成事项和必要说明。
+11. 使用 Obsidian Markdown；公式使用 $...$ 和 $$...$$；内部链接使用 [[...]]。
+12. reviewed/core、受保护笔记、路径逃逸、过期 base hash 和策略拒绝永远不能绕过。
 """
 
 
@@ -242,12 +245,10 @@ def build_zhixu_agent(model):
     ) -> ChangeProposalResult:
         """创建真实 Change Set 和 Diff，但不直接修改 Vault。
 
-        只有用户明确要求保存、创建或更新 Obsidian 笔记时调用。创建成功后，
-        若用户要求执行保存，必须继续调用 commit_vault_change；不要自行用文字
-        模拟等待确认。
+        当当前任务已经形成具体、可验证的写入方案时调用。创建 Change Set 本身
+        不会修改 Vault；是否执行由 Harness 在 commit_vault_change 中决定。创建
+        成功后必须继续调用 commit_vault_change，不要自行用文字模拟等待确认。
         """
-        if not ctx.deps.write_requested:
-            raise PermissionError("explicit_write_intent_required")
         result = await asyncio.to_thread(
             ctx.deps.change_sets.create,
             {
@@ -307,7 +308,7 @@ def build_zhixu_agent(model):
                 metadata={
                     "proposalId": proposal_id,
                     "title": record.get("title") or "Obsidian 修改",
-                    "summary": record.get("preview") or decision.reason,
+                    "summary": " · ".join(filter(None, [str(record.get("preview") or ""), decision.reason])),
                     "riskLevel": decision.risk_level,
                     "writes": [
                         {key: value for key, value in item.items() if key != "payload_path"}
@@ -324,11 +325,18 @@ def build_zhixu_agent(model):
                 "confirmed": True,
             },
         )
+        verification = await asyncio.to_thread(
+            ctx.deps.change_sets.verify_applied,
+            proposal_id,
+        )
+        if not verification.get("verified"):
+            raise RuntimeError("harness_post_apply_verification_failed")
         return WriteCommitResult(
             proposal_id=proposal_id,
             state="applied",
             transaction_id=applied.get("transaction_id"),
             journal=applied.get("journal"),
+            verification=verification,
             message=(
                 "修改已应用并通过 Change Set 校验。"
                 if decision.auto_apply
