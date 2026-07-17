@@ -69,7 +69,13 @@ def run(tools: Any, vault: Path, payload: dict[str, Any], context: dict[str, Any
             + "\n\n## 后续操作\n\n- [ ] 审核整理内容\n- [ ] 决定是否沉淀为正式知识\n"
         )
     proposed = note_result(title, path, content, kind)
-    change_set = tools.call("create_change_set", {"run_id": run_id, "title": f"保存：{title}", "writes": [proposed]}, run_id=run_id, step_id=step_id)
+    change_set = tools.call(
+        "create_change_set",
+        {"run_id": run_id, "title": f"保存：{title}", "writes": [proposed]},
+        run_id=run_id,
+        step_id=step_id,
+        allowed_permissions=("read_only", "proposal"),
+    )
     return {
         "kind": "capture", "original_text": original, "classification": kind,
         "suggested_title": title, "suggested_path": path, "related_notes": related,

@@ -139,3 +139,7 @@ Provider SSE deltas are cumulative state, not disposable plain text. The Obsidia
 ## D-035 — A write confirmation inherits a proposal, never the command text
 
 A terse confirmation such as `写入` has no standalone document meaning. It may inherit only a recent explicit assistant proposal with an allowlisted Markdown target and provenance message. The inherited result is one pending Change Set; reviewed/core becomes an update suggestion, and application still requires explicit Diff confirmation. If no proposal exists the system requests a target. Creation and apply validation both reject command-only note artifacts so stale historical proposals cannot bypass the corrected resolver.
+
+## D-036 — Agent planning is Observation-driven and authority remains local
+
+Each Assistant Runtime V3 round selects exactly one action: call one currently allowed typed tool, answer, or request one minimal clarification. The resulting Observation returns to the model before the next decision. Native Function Calling and strict JSON Planner mode share the same Tool Registry, permission levels, schemas and resource-scope checks. The model may see `create_change_set` as a proposal capability but can never see or invoke `apply_confirmed_change_set`. Ordered events and checkpoints are runtime metadata; request prose, note excerpts and Change Set bodies remain private files outside SQLite.

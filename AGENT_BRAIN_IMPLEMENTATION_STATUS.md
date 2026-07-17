@@ -37,3 +37,12 @@ Last updated: 2026-07-13
 - No secret output.
 - No reviewed/core overwrite.
 - No external research provider enabled implicitly.
+
+## Runtime V3 update — 2026-07-17
+
+- Fixed deterministic Tool selection was replaced by one-action model planning with Observation-driven replanning.
+- Native Function Calling and strict JSON Planner modes share the same typed Tool Registry and local permission checks.
+- Real Change Set proposals now produce ordered schema-v2 events and an awaiting-approval checkpoint; Apply remains hidden from the model.
+- Authenticated reconnect, Resume and Reject complete the approval lifecycle and are idempotent.
+- Runtime schema 8 stores event/checkpoint metadata without copying note excerpts or Change Set prose into SQLite.
+- Verification passed: 40 ingestion/review tests, 140 Agent tests, 52 plugin tests, TypeScript typecheck, production build and unified `./scripts/check.sh`.

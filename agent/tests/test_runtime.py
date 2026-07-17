@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent.api.server import Handler, serve
+from agent.brain import BrainRequest
 from agent.core.service import AgentService
 from agent.core.storage import StateStore
 from agent.core.models import FakeKeyStore
@@ -23,6 +24,15 @@ class _RuntimeChatProvider:
         yield {"type": "delta", "content": "离线假模型回答"}
         yield {"type": "finish", "finishReason": "stop"}
         yield {"type": "done"}
+
+    def structured_output(self, model, messages, schema, **options):
+        return {"choices": [{"message": {"content": json.dumps({
+            "action": "respond",
+            "tool_name": "",
+            "arguments": {},
+            "purpose": "",
+            "clarification": "",
+        }, ensure_ascii=False)}}]}
 
 
 class RuntimeTests(unittest.TestCase):
@@ -261,6 +271,92 @@ artifact_id: "source:concept:0"
             self.assertEqual([item["role"] for item in persisted], ["user", "assistant"])
             self.assertEqual(persisted[-1]["content"], "离线假模型回答")
             self.assertEqual(service.list_agent_artifacts(conversation_id=conversation["id"])["items"], [])
+        finally:
+            server.shutdown(); server.server_close(); service.store.close(); thread.join(timeout=2)
+
+    def test_assistant_v3_reconnect_resume_and_reject_http_api(self):
+        server = self._serve_local(port=0, session_token="session", key_store=FakeKeyStore())
+        service = server.RequestHandlerClass.service
+
+        def pending_run(suffix: str) -> tuple[str, str, Path]:
+            run_id = f"run-http-{suffix}"
+            target = self.vault / f"01-Inbox/{suffix}.md"
+            service.store.create_brain_run(run_id, BrainRequest(text=f"创建 {suffix}"))
+            service.store.update_brain_run(run_id, "awaiting_confirmation")
+            proposal = service.tools.call(
+                "create_change_set",
+                {
+                    "run_id": run_id,
+                    "title": f"HTTP {suffix}",
+                    "writes": [
+                        {
+                            "path": f"01-Inbox/{suffix}.md",
+                            "content": f"# {suffix}\n",
+                            "category": "assistant-proposal",
+                        }
+                    ],
+                },
+                run_id=run_id,
+                allowed_permissions=("proposal",),
+            )
+            service.store.save_agent_run_checkpoint(
+                run_id,
+                "awaiting_approval",
+                {"awaitingApproval": True},
+                pending_approval_id=proposal["id"],
+            )
+            service.store.append_agent_run_event(
+                run_id,
+                1,
+                "run.awaiting_approval",
+                {
+                    "schemaVersion": 2,
+                    "seq": 1,
+                    "type": "run.awaiting_approval",
+                    "runId": run_id,
+                    "conversationId": "conversation-http",
+                    "proposalId": proposal["id"],
+                },
+            )
+            return run_id, proposal["id"], target
+
+        resume_id, _, resume_target = pending_run("resume")
+        reject_id, reject_proposal, reject_target = pending_run("reject")
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        base = f"http://127.0.0.1:{server.server_port}/api/v1/assistant/runs"
+        headers = {"Authorization": "Bearer session", "Content-Type": "application/json"}
+        try:
+            request = urllib.request.Request(
+                f"{base}/{resume_id}/events?after=0&limit=10",
+                headers={"Authorization": "Bearer session"},
+            )
+            with urllib.request.urlopen(request, timeout=3) as response:
+                events = json.loads(response.read())
+            self.assertEqual(events["schemaVersion"], 2)
+            self.assertEqual(events["events"][0]["type"], "run.awaiting_approval")
+
+            request = urllib.request.Request(
+                f"{base}/{resume_id}/resume",
+                method="POST",
+                headers=headers,
+                data=json.dumps({"confirmed": True}).encode(),
+            )
+            with urllib.request.urlopen(request, timeout=3) as response:
+                resumed = json.loads(response.read())
+            self.assertEqual(resumed["run"]["status"], "completed")
+            self.assertEqual(resume_target.read_text(encoding="utf-8"), "# resume\n")
+
+            request = urllib.request.Request(
+                f"{base}/{reject_id}/reject",
+                method="POST",
+                headers=headers,
+                data=json.dumps({"reason": "用户拒绝"}, ensure_ascii=False).encode(),
+            )
+            with urllib.request.urlopen(request, timeout=3) as response:
+                rejected = json.loads(response.read())
+            self.assertEqual(rejected["run"]["status"], "cancelled")
+            self.assertFalse(reject_target.exists())
+            self.assertEqual(service.store.get_brain_change_set(reject_proposal)["state"], "rejected")
         finally:
             server.shutdown(); server.server_close(); service.store.close(); thread.join(timeout=2)
 

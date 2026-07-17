@@ -126,6 +126,26 @@ export class AgentClient {
       reader.releaseLock();
     }
   }
+  async assistantRunEvents(
+    runId: string,
+    after = 0,
+    limit = 500,
+  ): Promise<{
+    schemaVersion: 2;
+    runId: string;
+    status: string;
+    events: AssistantStreamEvent[];
+    checkpoint?: Record<string, unknown> | null;
+  }> {
+    const encoded = encodeURIComponent(runId);
+    return this.get(`/assistant/runs/${encoded}/events?after=${Math.max(0, after)}&limit=${Math.max(1, Math.min(2000, limit))}`);
+  }
+  async resumeAssistantRun<T>(runId: string): Promise<T> {
+    return this.post<T>(`/assistant/runs/${encodeURIComponent(runId)}/resume`, {confirmed: true});
+  }
+  async rejectAssistantRun<T>(runId: string, reason = ""): Promise<T> {
+    return this.post<T>(`/assistant/runs/${encodeURIComponent(runId)}/reject`, {reason});
+  }
   async health(): Promise<HealthResponse> {
     const health = await this.get<HealthResponse>("/health");
     if (health.ok !== true || health.status !== "ok" || health.service !== "obsidian-learning-agent" || health.protocol_version !== 1) {

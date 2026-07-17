@@ -197,7 +197,7 @@ class ContextMaterialTests(unittest.TestCase):
             self.assertEqual(resolved["canonicalName"], "Delta Method", phrase)
 
     def test_schema_and_turn_scoped_units_are_repeatable(self) -> None:
-        self.assertEqual(SCHEMA_VERSION, 7)
+        self.assertEqual(SCHEMA_VERSION, 8)
         first = self.service.submit_intake({"message": "倾向得分是什么？"}, "focus-repeat-1")
         second = self.service.submit_intake({
             "conversation_id": first["conversation"]["id"], "message": "继续解释这个概念。",

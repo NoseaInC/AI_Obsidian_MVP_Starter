@@ -1,10 +1,12 @@
 # Learning Agent Plugin Status
 
-Last updated: 2026-07-14
+Last updated: 2026-07-17
 
 ## Current phase
 
 知序 Chat-first now includes Material-to-Obsidian V2 context and organization state. Assistant is the unified input; Materials, Review, Plan and Today consume the same versioned Artifact state.
+
+Assistant Runtime V3 is now the live stream contract: schema-v2 events expose model decisions, typed tools, Observations, real proposals and awaiting-approval state. The client reducer preserves streamed or approval-only completed messages and provides authenticated event reconnect, Resume and Reject calls without granting the plugin direct Vault write authority.
 
 ## Resolved regression
 
