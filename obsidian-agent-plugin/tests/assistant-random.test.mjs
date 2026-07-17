@@ -43,9 +43,9 @@ test("5000 seeded stream partitions reconstruct exact Markdown and normalize saf
       chunks.push(source.slice(cursor, cursor + length)); cursor += length;
     }
     let state = stream.initialAssistantLiveRun();
-    state = stream.reduceAssistantStream(state, {schemaVersion: 2, seq: 1, type: "run.started", runId: `run-${sample}`, conversationId: "c"});
+    state = stream.reduceAssistantStream(state, {schemaVersion: 3, seq: 1, type: "run.started", runId: `run-${sample}`, conversationId: "c"});
     chunks.forEach((delta, index) => {
-      state = stream.reduceAssistantStream(state, {schemaVersion: 2, seq: index + 2, type: "message.delta", runId: `run-${sample}`, conversationId: "c", delta});
+      state = stream.reduceAssistantStream(state, {schemaVersion: 3, seq: index + 2, type: "message.delta", runId: `run-${sample}`, conversationId: "c", delta});
     });
     assert.equal(state.content, source, `seed=${seed}; sample=${sample}; chunks=${JSON.stringify(chunks)}`);
     const normalized = markdown.normalizeAssistantMarkdown(state.content);

@@ -74,6 +74,7 @@ class ToolRegistry:
         run_id: str,
         step_id: str = "",
         allowed_permissions: tuple[str, ...] = ("read_only",),
+        record_event: bool = True,
     ) -> dict[str, Any]:
         if name not in self._tools:
             raise ValueError(f"unregistered_tool:{name}")
@@ -85,14 +86,15 @@ class ToolRegistry:
         _validate_payload(payload, definition.input_schema)
         input_summary = _tool_input_summary(name, payload)
         event_id = f"tool-{uuid.uuid4().hex}"
-        self.store.record_tool_event(
-            event_id,
-            run_id,
-            step_id,
-            name,
-            "running",
-            input_summary,
-        )
+        if record_event:
+            self.store.record_tool_event(
+                event_id,
+                run_id,
+                step_id,
+                name,
+                "running",
+                input_summary,
+            )
         try:
             result = handler(payload)
             if not isinstance(result, dict):
@@ -101,27 +103,29 @@ class ToolRegistry:
             encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode()
             if len(encoded) > definition.max_result_bytes:
                 raise ValueError("tool_output_too_large")
-            self.store.record_tool_event(
-                event_id,
-                run_id,
-                step_id,
-                name,
-                "completed",
-                input_summary,
-                summary(result),
-            )
+            if record_event:
+                self.store.record_tool_event(
+                    event_id,
+                    run_id,
+                    step_id,
+                    name,
+                    "completed",
+                    input_summary,
+                    summary(result),
+                )
             return result
         except Exception as error:
-            self.store.record_tool_event(
-                event_id,
-                run_id,
-                step_id,
-                name,
-                "failed",
-                input_summary,
-                summary({"error": type(error).__name__}),
-                type(error).__name__,
-            )
+            if record_event:
+                self.store.record_tool_event(
+                    event_id,
+                    run_id,
+                    step_id,
+                    name,
+                    "failed",
+                    input_summary,
+                    summary({"error": type(error).__name__}),
+                    type(error).__name__,
+                )
             raise
 
 

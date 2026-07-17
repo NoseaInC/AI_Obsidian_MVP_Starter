@@ -2,6 +2,7 @@ import {App, FileSystemAdapter, Menu, Modal, Notice, Plugin, PluginSettingTab, S
 import {AgentClient} from "./src/api";
 import {AgentProcessManager, RuntimeSettings} from "./src/process-manager";
 import {LearningAgentMainView, LEGACY_SIDEBAR_VIEW, MAIN_VIEW, SIDEBAR_VIEW} from "./src/views";
+import {inlineEditExtension} from "./src/features/inline-edit/InlineEditController";
 
 type MainTab = "today" | "sources" | "review" | "plan" | "assistant";
 interface LearningAgentSettings extends RuntimeSettings {
@@ -227,6 +228,7 @@ export default class LearningAgentPlugin extends Plugin {
     if (adapter instanceof FileSystemAdapter) { this.manager = new AgentProcessManager(adapter.getBasePath(), this.settings, () => {}); this.client.configure(this.manager.baseUrl, this.manager.sessionToken); void this.manager.ensureRunning().then(async () => { for (const leaf of this.app.workspace.getLeavesOfType(MAIN_VIEW)) if (leaf.view instanceof LearningAgentMainView) await leaf.view.refresh(); const autonomy = await this.client.get<any>("/autonomy"); if (!autonomy.permissionSummaryAcknowledged) new AutonomyPermissionModal(this.app, this.client).open(); }).catch(error => new Notice(`Agent 启动失败：${error.message}`)); }
     else new Notice("知序 仅支持本地桌面 Vault");
     this.addSettingTab(new AgentSettingsTab(this.app, this));
+    this.registerEditorExtension(inlineEditExtension);
     this.registerView(MAIN_VIEW, leaf => new LearningAgentMainView(leaf, this.client, () => ({
       trackingEnabled: this.settings.behaviorPersonalization && !this.settings.behaviorTrackingPaused,
       recordLearningDuration: this.settings.recordLearningDuration,

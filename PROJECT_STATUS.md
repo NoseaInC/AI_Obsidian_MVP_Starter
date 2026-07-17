@@ -4,7 +4,7 @@ Last updated: 2026-07-17
 
 ## Current phase
 
-Assistant Runtime V3 is implemented and verified. Each turn now follows a bounded model decision → one restricted tool → real Observation → model replan loop. Profiles with native Tool Calling use function calls; DeepSeek and other profiles with `toolCalling=false` use the same Tool Registry through a strict JSON Planner. Write intent can create a real Change Set, but Apply is never model-visible and Vault files remain unchanged until explicit confirmation. Persisted schema-v2 events, checkpoints, reconnect, Resume and Reject complete the approval lifecycle. The separate first Dragonnet `apply-prepared` gate remains untouched.
+PydanticAI is now the sole Assistant model–tool runtime. The plugin consumes a provider-neutral `AgentRuntime` contract, while the only adapter is `PydanticAgentRuntime` over authenticated localhost schema-v3 NDJSON. Real model, tool, Diff, approval, usage and lifecycle events remain in occurrence order. Existing-note writes suspend the same Run and render confirmation inside the conversation; confirm/cancel resumes that Run and the standalone approval bar is gone. The separate first Dragonnet `apply-prepared` gate remains untouched.
 
 ## Completed before autonomous run
 
@@ -107,13 +107,19 @@ Assistant Runtime V3 is implemented and verified. Each turn now follows a bounde
 - reviewed/core inherited targets produce only a local update suggestion. A second Change Set guard rejects command-only artifacts such as `01-Inbox/写入.md`, including the historical bad proposal left by the previous implementation.
 - Real installed-Obsidian DeepSeek smoke on 2026-07-16 passed inline Markdown list rendering and a ten-item streamed response. A live bare `写入` safety smoke left the Change Set count unchanged at 5 and created no `01-Inbox/写入.md`; no real Change Set was applied.
 - Latest installed/build hashes are identical: `main.js` `599864272b08dca8b9d54b5da4ec2192ce13a788203a0deb65bd5f79882232b7`; `styles.css` `f632f3ea547b5f51bc2d0b52debfa758dbe6529c7774e7f8ea5a2d927aacf7ec`.
-- Assistant Runtime V3 installed/build hashes are identical: `main.js` `703b6f5af0762b0ea35cf43c161a8c2e5213c14c3e727102ffa14dccb946df61`; `styles.css` `f632f3ea547b5f51bc2d0b52debfa758dbe6529c7774e7f8ea5a2d927aacf7ec`.
+- Installed plugin artifacts were rebuilt on 2026-07-17: `main.js` `7d9e342b9ef5da73afed67356aa12efb796e4a69756a4bd31c8e7e049fb39d6c`; `styles.css` `b47e9b289d6c99edf422a599c4e5283d9135b1515b0f0b291b92e8986018b7fb`.
+- Provider-neutral frontend contracts now include AgentRuntime, capabilities, registry, turn preparation, normalized chunks and durable conversation state. Reconnect, cancel, compact, fork and regenerate call real backend endpoints.
+- PydanticAI deferred-tool approval is the canonical confirmation path. A model that proposes a requested write but stops with prose is retried by an output validator until it invokes the governed commit tool; proposal-only requests remain proposal-only.
+- Tool Trace and write Diff are generated from real ordered events. Diff bodies are generated on demand and never copied into SQLite; public confirmation payloads omit private payload references.
+- The CodeMirror Inline Edit extension captures document snapshot, selection offsets and selected text and rejects stale acceptance with “原文已变化，请重新生成。” Backend base-hash verification remains mandatory.
+- Provider/profile and model-routing writes now pass through the frontend SettingsService. Architecture tests prohibit core→feature, runtime→DOM, UI→Python/PydanticAI, legacy coordinator and direct settings-write regressions.
+- A real DeepSeek `deepseek-v4-pro` smoke in a temporary Vault passed `get_current_note → propose_vault_change → commit_vault_change → inline confirmation → reject/resume`. The temporary note was byte-for-byte unchanged before confirmation and after rejection; no real Vault note or PDF was read or modified.
 
 ## Test status
 
 - Python ingestion/review/conversation: 40 tests passed.
-- Runtime/learning/provider/Brain/Intake/Daily Intelligence/context-material/assistant streaming: 140 tests passed.
-- Plugin: 52 logic/security/lifecycle/chat-first/context-material/daily-intelligence/study-workspace/privacy/autonomy/streaming/random tests passed; strict TypeScript check and production build passed.
+- Runtime/learning/provider/Brain/Intake/Daily Intelligence/context-material/PydanticAI assistant streaming: 150 tests passed (2 explicitly retired schema-v2 semantics skipped).
+- Plugin: 59 logic/security/lifecycle/chat-first/context-material/daily-intelligence/study-workspace/privacy/autonomy/streaming/random/architecture tests passed; strict TypeScript check and production build passed.
 - Unified `./scripts/check.sh`: passed on 2026-07-17.
 - Right-sidebar retirement gate: 40 ingestion/review/conversation tests, 113 Runtime tests and 36 plugin tests passed; TypeScript and production build passed on 2026-07-15.
 - Today randomized gates passed for 1,000 plans, 10,000 state actions, 1,000 lesson blueprints, 110 responsive widths and 20 reproducible regression seeds.
@@ -139,4 +145,4 @@ Assistant Runtime V3 is implemented and verified. Each turn now follows a bounde
 
 ## Resume point
 
-Assistant Runtime V3 is the canonical Run Coordinator. Continue by adding crash-time model-loop continuation and richer approval editing without weakening typed tool permissions, persisted observations or the Change Set boundary. The deliberate first real Dragonnet Apply gate remains separate and untouched.
+PydanticAI is the canonical Assistant Run Coordinator. Continue with richer scoped policy rules and full UI wiring for selection-level Inline Edit without weakening typed tool permissions, persisted observations or the Change Set boundary. The deliberate first real Dragonnet Apply gate remains separate and untouched.

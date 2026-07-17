@@ -46,6 +46,7 @@ import {
 } from "./assistant-thread";
 import {
   AssistantLiveRun,
+  agentChunkToAssistantEvent,
   cancelledAssistantRun,
   initialAssistantLiveRun,
   reduceAssistantStream,
@@ -59,6 +60,10 @@ import {
   type StudyWorkspaceState,
 } from "./study-workspace";
 import {isAssistantReadableVaultPath, referencedVaultNotePath} from "./vault-note-policy";
+import {renderInlineAgentConfirmation} from "./assistant-inline-confirmation";
+import type {AgentRuntime} from "./core/runtime/AgentRuntime";
+import {PydanticAgentRuntime} from "./core/runtime/PydanticAgentRuntime";
+import {SettingsService} from "./core/settings/SettingsService";
 
 export const MAIN_VIEW = "learning-agent-main";
 export const SIDEBAR_VIEW = "zhixu-sidebar-v2";
@@ -431,11 +436,15 @@ export class LearningAgentMainView extends ItemView {
   private studyAssistantMessages: Array<{role: "user" | "assistant"; content: string}> = [];
   private exposedRecommendations = new Set<string>();
   private markdown: ObsidianAssistantMarkdownRenderer;
+  private agentRuntime: AgentRuntime;
+  private settingsService: SettingsService;
 
   constructor(leaf: WorkspaceLeaf, private client: AgentClient, private dailyPreferences: () => DailyViewPreferences = () => ({trackingEnabled: true, recordLearningDuration: true, useQuizResults: true, useRecommendationFeedback: true, dailyKnowledgeCount: 1})) {
     super(leaf);
     this.dailyEngine = new LocalDailyIntelligenceEngine(client, () => this.dailyPreferences().trackingEnabled);
     this.markdown = new ObsidianAssistantMarkdownRenderer(this.app, this);
+    this.agentRuntime = new PydanticAgentRuntime(client);
+    this.settingsService = new SettingsService(client);
   }
 
   getViewType(): string { return MAIN_VIEW; }
@@ -450,6 +459,7 @@ export class LearningAgentMainView extends ItemView {
 
   async onClose(): Promise<void> {
     this.abort?.abort();
+    this.agentRuntime.cleanup();
     await this.dailyEngine.dispose();
   }
 
@@ -1899,7 +1909,7 @@ export class LearningAgentMainView extends ItemView {
     selector.createEl("option", {value: "", text: profiles.length ? "本地能力 · 未选模型" : "本地能力可用"});
     for (const profile of profiles.filter(item => item.enabled)) selector.createEl("option", {value: profile.id, text: `${profile.displayName} · ${profile.defaultModel || "手动模型"}`});
     selector.value = routes.assistant_chat?.profileId ?? routes.assistant?.profileId ?? "";
-    selector.onchange = () => void this.client.patch("/model-routing", {routes: {assistant_chat: {profileId: selector.value, modelOverride: ""}}});
+    selector.onchange = () => void this.settingsService.updateModelRoute("assistant_chat", selector.value);
     const historyButton = iconButton(header, "history", "历史会话", () => undefined);
     historyButton.onclick = event => {
       const menu = new Menu();
@@ -2066,7 +2076,11 @@ export class LearningAgentMainView extends ItemView {
       let content = input.value.trim();
       const regenerateMessageId = this.assistantRegenerateMessageId;
       if (this.assistantLiveRun.status === "running") {
+        const activeRunId = this.assistantLiveRun.runId;
         this.abort?.abort();
+        if (activeRunId) {
+          await this.agentRuntime.cancel(activeRunId).catch(() => undefined);
+        }
         this.assistantLiveRun = cancelledAssistantRun(this.assistantLiveRun);
         const traces = messages.querySelectorAll<HTMLElement>(".la-live-trace");
         const activeTrace = traces.item(traces.length - 1);
@@ -2077,6 +2091,7 @@ export class LearningAgentMainView extends ItemView {
       if (!content && !this.pendingAttachments.length) return;
       input.disabled = true;
       let progressiveMarkdown: ProgressiveAssistantMarkdown | null = null;
+      let awaitingInlineConfirmation = false;
       try {
         const conversationId = await ensureConversation();
         if (!this.pendingAttachments.length && /^\/(?:Users|Volumes)\/[^\n]+$/.test(content)) {
@@ -2088,33 +2103,6 @@ export class LearningAgentMainView extends ItemView {
         }
         const mentionedNotePath = referencedVaultNotePath(content);
         const contextualNotePath = currentFile && isAssistantReadableVaultPath(currentFile.path) ? currentFile.path : mentionedNotePath;
-        const governedWrite = !regenerateMessageId && /(保存|写入|存入\s*Obsidian|更新(?:到|进|当前)|修改(?:当前)?笔记|应用修改|整理到)/i.test(content);
-        if (governedWrite) {
-          const user = messages.createDiv({cls: "la-message la-message--user"}); user.createEl("p", {text: content || "处理这些附件"});
-          const trace = messages.createEl("section", {cls: "la-live-trace is-running", attr: {"aria-label": "受控写入任务"}});
-          this.paintAssistantLiveTrace(trace, {
-            ...initialAssistantLiveRun(), status: "running", started: true,
-            steps: [
-              {id: "context", label: "理解目标与来源", status: "running"},
-              {id: "proposal", label: "生成 Change Set 与 Diff", status: "pending"},
-              {id: "verify", label: "校验权限与目标状态", status: "pending"},
-            ],
-          });
-          const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-          const result = await this.client.post<any>("/intake/submit", {
-            message: content || "请整理这些附件并生成写入提案",
-            conversation_id: conversationId, mode: this.assistantMode,
-            attachments: this.pendingAttachments.map(item => ({attachment_id: item.id, kind: item.kind, display_name: item.displayName})),
-            references: contextualNotePath ? [{kind: "vault_note", path: contextualNotePath}] : [],
-            active_note: {path: contextualNotePath, selection: markdownView?.editor?.getSelection() ?? ""},
-            active_artifact_id: resultActiveArtifact(this.assistantArtifacts),
-            options: {available_minutes: 25, allow_network: true},
-          }, `intake-${Date.now()}-${Math.random().toString(16).slice(2)}`);
-          this.assistantRun = result.run; this.assistantArtifacts = result.artifacts ?? [];
-          this.assistantMessages = result.conversation?.messages ?? [];
-          this.assistantTaskThread = result.task_thread ?? null; this.assistantArtifactGroup = result.artifact_group ?? null;
-          this.pendingAttachments = []; input.value = ""; this.assistantDraft = ""; await this.refresh(); return;
-        }
         if (!regenerateMessageId) {
           const user = messages.createDiv({cls: "la-message la-message--user"});
           const userCopy = user.createDiv({cls: "la-message-copy"}); userCopy.createEl("p", {text: content || "处理这些附件"});
@@ -2140,29 +2128,55 @@ export class LearningAgentMainView extends ItemView {
           progressiveMarkdown?.push(this.assistantLiveRun.content || "正在生成…");
           if (messages.scrollHeight - messages.scrollTop - messages.clientHeight < 180) messages.scrollTop = messages.scrollHeight;
         };
-        await this.client.streamAssistant({
+        const turn = this.agentRuntime.prepareTurn({
           message: content || "请处理这些附件并告诉我下一步",
-          regenerate_message_id: regenerateMessageId || undefined,
-          conversation_id: conversationId,
-          profile_id: selector.value,
-          mode: this.assistantMode,
-          attachments: this.pendingAttachments.map(item => ({attachment_id: item.id, kind: item.kind, display_name: item.displayName})),
-          references: contextualNotePath ? [{kind: "vault_note", path: contextualNotePath}] : [],
-          active_note: {path: contextualNotePath, selection},
-          active_artifact_id: resultActiveArtifact(this.assistantArtifacts),
-          options: {available_minutes: 25, allow_network: true},
-        }, event => {
+          regenerateMessageId: regenerateMessageId || undefined,
+          conversationId,
+          profileId: selector.value,
+          attachments: this.pendingAttachments.map(item => ({
+            attachment_id: item.id,
+            kind: item.kind,
+            display_name: item.displayName,
+          })),
+          activeNote: {path: contextualNotePath, selection},
+          options: {available_minutes: 25, allow_network: true, mode: this.assistantMode},
+        });
+        for await (const chunk of this.agentRuntime.query(turn, this.abort.signal)) {
+          const event = agentChunkToAssistantEvent(chunk);
           this.assistantLiveRun = reduceAssistantStream(this.assistantLiveRun, event);
           this.paintAssistantLiveTrace(trace, this.assistantLiveRun);
           if (event.type === "context.resolved") {
             this.assistantContext = {...(this.assistantContext ?? {}), focus: event.focus, currentUnderstanding: event.understanding};
           }
           if (event.type === "message.delta" && !frame) frame = window.requestAnimationFrame(paintDelta);
-        }, this.abort.signal);
-        if (frame) { window.cancelAnimationFrame(frame); paintDelta(); }
+        }
         if (this.assistantLiveRun.status === "failed") throw new Error(this.assistantLiveRun.error?.code ?? "assistant_stream_failed");
         if (this.assistantLiveRun.content) await progressiveMarkdown.flush(this.assistantLiveRun.content);
         assistant.removeClass("la-message--streaming");
+        if (
+          this.assistantLiveRun.status === "waiting_confirmation" &&
+          this.assistantLiveRun.confirmation
+        ) {
+          awaitingInlineConfirmation = true;
+          dock.addClass("is-waiting-confirmation");
+          const confirmationHost = assistantCopy.createDiv({cls: "la-inline-confirmation-host"});
+          const confirmation = this.assistantLiveRun.confirmation;
+          renderInlineAgentConfirmation(confirmationHost, confirmation, {
+            openDiff: async proposalId => {
+              const detail = await this.client.get<any>(`/change-sets/${encodeURIComponent(proposalId)}/diff`);
+              const files = Array.isArray(detail.diff?.files) ? detail.diff.files : [];
+              const preview = files.map((item: any) => `${String(item.path ?? "")}  +${Number(item.added ?? 0)} -${Number(item.deleted ?? 0)}\n\n${String(item.diff ?? "")}`).join("\n\n");
+              new TextPreviewModal(this.app, "修改预览", preview || "暂无候选写入").open();
+            },
+            confirm: async runId => resumeInlineConfirmation(runId, true, markdown, trace),
+            reject: async runId => resumeInlineConfirmation(runId, false, markdown, trace),
+          });
+          this.pendingAttachments = [];
+          input.value = "";
+          this.assistantDraft = "";
+          this.assistantRegenerateMessageId = "";
+          return;
+        }
         const completedMessage = this.assistantLiveRun.completedMessage ?? {
           id: this.assistantLiveRun.messageId, role: "assistant", content: this.assistantLiveRun.content,
           createdAt: new Date().toISOString(),
@@ -2190,7 +2204,45 @@ export class LearningAgentMainView extends ItemView {
         const technical = copy.createEl("details", {cls: "la-technical"}); technical.createEl("summary", {text: "技术详情"}); technical.createEl("code", {text: String(failure.technicalCode ?? "assistant_error")});
       } finally {
         progressiveMarkdown?.dispose();
-        this.abort = null; input.disabled = false; setIcon(send, "send"); send.setAttribute("aria-label", "发送"); send.title = "发送"; input.focus();
+        this.abort = null;
+        input.disabled = awaitingInlineConfirmation;
+        setIcon(send, "send"); send.setAttribute("aria-label", "发送"); send.title = "发送";
+        if (!awaitingInlineConfirmation) input.focus();
+      }
+    };
+    const resumeInlineConfirmation = async (
+      runId: string,
+      confirmed: boolean,
+      markdown: HTMLElement,
+      trace: HTMLElement,
+    ): Promise<void> => {
+      this.abort?.abort();
+      this.abort = new AbortController();
+      const progressive = new ProgressiveAssistantMarkdown(this.markdown, markdown);
+      let frame = 0;
+      try {
+        for await (const chunk of this.agentRuntime.confirm(runId, confirmed, this.abort.signal)) {
+          const event = agentChunkToAssistantEvent(chunk);
+          this.assistantLiveRun = reduceAssistantStream(this.assistantLiveRun, event);
+          this.paintAssistantLiveTrace(trace, this.assistantLiveRun);
+          if (event.type === "message.delta" && !frame) {
+            frame = window.requestAnimationFrame(() => {
+              frame = 0;
+              progressive.push(this.assistantLiveRun.content);
+            });
+          }
+        }
+        if (frame) window.cancelAnimationFrame(frame);
+        if (this.assistantLiveRun.content) await progressive.flush(this.assistantLiveRun.content);
+        if (this.assistantLiveRun.status === "failed") {
+          throw new Error(this.assistantLiveRun.error?.code ?? "assistant_confirmation_failed");
+        }
+        dock.removeClass("is-waiting-confirmation");
+        input.disabled = false;
+        await this.refresh();
+      } finally {
+        progressive.dispose();
+        this.abort = null;
       }
     };
     const resultActiveArtifact = (artifacts: any[]): string => String([...artifacts].reverse().find(item => !["change_set", "quiz"].includes(item.type))?.id ?? "");
@@ -2766,25 +2818,24 @@ export class LearningAgentMainView extends ItemView {
           customHeaders,
         },
       };
-      if (picker.value) await this.client.patch(`/model-profiles/${picker.value}`, payload);
-      else await this.client.post("/model-profiles", payload);
+      await this.settingsService.saveModelProfile(picker.value, payload);
       new Notice("模型配置已安全保存；Key 未进入插件设置");
       await this.refresh();
     }, "mod-cta");
     button(actions, "测试连接", async () => {
       if (!picker.value) throw new Error("请先保存配置");
-      const result = await this.client.post<any>(`/model-profiles/${picker.value}/test`, {});
+      const result = await this.settingsService.testModelProfile(picker.value);
       new Notice(result.message);
     });
     button(actions, "获取模型", async () => {
       if (!picker.value) throw new Error("请先保存配置");
-      const result = await this.client.post<any>(`/model-profiles/${picker.value}/models`, {});
+      const result = await this.settingsService.listProfileModels(picker.value);
       new Notice(`发现 ${result.models.length} 个模型`);
     });
     button(actions, "删除", () => {
       if (!picker.value) return;
       new ExplicitConfirmModal(this.app, "删除模型配置", "只删除模型 Profile，不删除现有 Keychain 密钥，也不影响知识笔记。", async () => {
-        await this.client.delete(`/model-profiles/${picker.value}`);
+        await this.settingsService.deleteModelProfile(picker.value);
         await this.refresh();
       }).open();
     });
@@ -2796,7 +2847,7 @@ export class LearningAgentMainView extends ItemView {
       select.createEl("option", {value: "", text: "未配置"});
       for (const profile of profiles.filter(item => item.enabled)) select.createEl("option", {value: profile.id, text: profile.displayName});
       select.value = routes[task]?.profileId ?? "";
-      select.onchange = () => void this.client.patch("/model-routing", {routes: {[task]: {profileId: select.value, modelOverride: ""}}});
+      select.onchange = () => void this.settingsService.updateModelRoute(task, select.value);
     }
   }
 

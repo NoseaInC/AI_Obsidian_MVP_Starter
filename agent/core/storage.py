@@ -116,6 +116,14 @@ CREATE TABLE IF NOT EXISTS brain_change_sets (
   updated_at TEXT NOT NULL, applied_at TEXT,
   FOREIGN KEY(run_id) REFERENCES brain_runs(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS assistant_change_sets (
+  id TEXT PRIMARY KEY, run_id TEXT NOT NULL, state TEXT NOT NULL,
+  title TEXT NOT NULL, writes_json TEXT NOT NULL, preview TEXT NOT NULL,
+  base_hashes_json TEXT NOT NULL, transaction_id TEXT, created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL, applied_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_assistant_change_sets_run
+  ON assistant_change_sets(run_id, created_at);
 CREATE TABLE IF NOT EXISTS research_bundles (
   id TEXT PRIMARY KEY, run_id TEXT, title TEXT NOT NULL, question TEXT NOT NULL,
   status TEXT NOT NULL, source_count INTEGER NOT NULL, estimated_minutes INTEGER NOT NULL,
@@ -1679,6 +1687,45 @@ class StateStore:
             self.connection.execute(
                 "INSERT INTO proposed_actions VALUES (?, ?, 'change_set', ?, ?, 'low', 'pending', ?, ?, NULL)",
                 (action_id, run_id, title, f"{len(writes)} 个候选写入", change_set_id, now),
+            )
+            self.connection.commit()
+
+    def create_assistant_change_set(self, change_set_id: str, run_id: str, title: str, writes: list[dict[str, Any]], preview: str, base_hashes: dict[str, str]) -> None:
+        """Persist a PydanticAI proposal without coupling it to legacy brain_runs."""
+        now = _now()
+        with self.lock:
+            self.connection.execute(
+                "INSERT INTO assistant_change_sets VALUES (?, ?, 'proposed', ?, ?, ?, ?, NULL, ?, ?, NULL)",
+                (change_set_id, run_id, title, json.dumps(writes, ensure_ascii=False), preview, json.dumps(base_hashes), now, now),
+            )
+            self.connection.commit()
+
+    def is_assistant_runtime_run(self, run_id: str) -> bool:
+        with self.lock:
+            try:
+                return self.connection.execute(
+                    "SELECT 1 FROM assistant_framework_runs WHERE run_id=?",
+                    (run_id,),
+                ).fetchone() is not None
+            except sqlite3.OperationalError:
+                return False
+
+    def get_assistant_change_set(self, change_set_id: str) -> dict[str, Any]:
+        with self.lock:
+            row = self.connection.execute("SELECT * FROM assistant_change_sets WHERE id=?", (change_set_id,)).fetchone()
+            if not row:
+                raise RuntimeError("Change Set not found")
+            item = dict(row)
+            item["writes"] = json.loads(item.pop("writes_json"))
+            item["base_hashes"] = json.loads(item.pop("base_hashes_json"))
+            return item
+
+    def update_assistant_change_set(self, change_set_id: str, state: str, transaction_id: str | None = None) -> None:
+        now = _now()
+        with self.lock:
+            self.connection.execute(
+                "UPDATE assistant_change_sets SET state=?, transaction_id=?, updated_at=?, applied_at=? WHERE id=?",
+                (state, transaction_id, now, now if state == "applied" else None, change_set_id),
             )
             self.connection.commit()
 

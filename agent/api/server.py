@@ -54,7 +54,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             safe = redact(str(exc))
             failure = {
-                "schemaVersion": 2, "seq": 1, "type": "run.failed",
+                "schemaVersion": 3, "seq": 1, "type": "run.failed",
                 "runId": "assistant-run-error", "conversationId": "",
                 "code": type(exc).__name__,
                 "message": safe if isinstance(safe, str) else "助手流启动失败",
@@ -142,7 +142,6 @@ class Handler(BaseHTTPRequestHandler):
                 payload = self.service.assistant_run_events(
                     self._identifier(path.removeprefix("/assistant/runs/").removesuffix("/events")),
                     int(query.get("after", [0])[0]),
-                    int(query.get("limit", [500])[0]),
                 )
             elif path.startswith("/intake/attachments/"): payload = {"attachment": self.service.get_attachment(self._identifier(path.removeprefix("/intake/attachments/")))}
             elif path == "/artifacts": payload = self.service.list_agent_artifacts(str(query.get("type", [""])[0]), str(query.get("status", [""])[0]), str(query.get("conversation_id", [""])[0]), int(query.get("limit", [100])[0]), int(query.get("offset", [0])[0]))
@@ -168,6 +167,10 @@ class Handler(BaseHTTPRequestHandler):
             elif path.startswith("/agent-actions/"): payload = {"action": self.service.store.get_agent_action(self._identifier(path.removeprefix("/agent-actions/")))}
             elif path.startswith("/research-bundles/"): payload = {"bundle": self.service.get_research_bundle(self._identifier(path.removeprefix("/research-bundles/")))}
             elif path == "/curriculum/candidates": payload = self.service.list_curriculum_candidates(str(query.get("status", ["active"])[0]))
+            elif path.startswith("/change-sets/") and path.endswith("/diff"):
+                payload = {"diff": self.service.diff_change_set(self._identifier(path.removeprefix("/change-sets/").removesuffix("/diff")))}
+            elif path.startswith("/change-sets/"):
+                payload = {"change_set": self.service.get_change_set(self._identifier(path.removeprefix("/change-sets/")))}
             elif path.startswith("/brain-change-sets/"): payload = {"change_set": self.service.get_brain_change_set(self._identifier(path.removeprefix("/brain-change-sets/")))}
             elif path.startswith("/prepared/"): payload = {"preview": self.service.inspect_prepared(self._identifier(path.removeprefix("/prepared/")))}
             elif path.startswith("/reviews/") and path.endswith("/diff"):
@@ -201,6 +204,36 @@ class Handler(BaseHTTPRequestHandler):
             body = self._body()
             if path == "/assistant/stream":
                 self._send_ndjson(self.service.assistant_stream(body)); return
+            if path.startswith("/assistant/runs/") and path.endswith("/confirm"):
+                run_id = self._identifier(
+                    path.removeprefix("/assistant/runs/").removesuffix("/confirm")
+                )
+                self._send_ndjson(
+                    self.service.confirm_assistant_run(
+                        run_id,
+                        body.get("confirmed") is True,
+                    )
+                )
+                return
+            if path.startswith("/assistant/runs/") and path.endswith("/cancel"):
+                run_id = self._identifier(
+                    path.removeprefix("/assistant/runs/").removesuffix("/cancel")
+                )
+                self._send(200, self.service.cancel_assistant_run(run_id))
+                return
+            if path.startswith("/assistant/runs/") and path.endswith("/compact"):
+                run_id = self._identifier(
+                    path.removeprefix("/assistant/runs/").removesuffix("/compact")
+                )
+                self._send(200, self.service.compact_assistant_run(run_id))
+                return
+            if path.startswith("/assistant/runs/") and path.endswith("/fork"):
+                run_id = self._identifier(
+                    path.removeprefix("/assistant/runs/").removesuffix("/fork")
+                )
+                sequence = body.get("sequence")
+                self._send(200, self.service.fork_assistant_run(run_id, int(sequence) if sequence is not None else None))
+                return
             if path == "/intake/submit":
                 payload = self.service.submit_intake(body, self.headers.get("Idempotency-Key", ""))
             elif path == "/conversations":
@@ -267,16 +300,6 @@ class Handler(BaseHTTPRequestHandler):
             elif path.startswith("/agent-actions/") and path.endswith("/undo"):
                 payload = self.service.undo_autonomous_vault_change(self._identifier(path.removeprefix("/agent-actions/").removesuffix("/undo")))
             elif path == "/brain/tutor": payload = {"run": self.service.submit_brain(body, self.headers.get("Idempotency-Key", ""), mode="tutor")}
-            elif path.startswith("/assistant/runs/") and path.endswith("/resume"):
-                payload = self.service.resume_assistant_run(
-                    self._identifier(path.removeprefix("/assistant/runs/").removesuffix("/resume")),
-                    body.get("confirmed") is True,
-                )
-            elif path.startswith("/assistant/runs/") and path.endswith("/reject"):
-                payload = self.service.reject_assistant_run(
-                    self._identifier(path.removeprefix("/assistant/runs/").removesuffix("/reject")),
-                    str(body.get("reason") or ""),
-                )
             elif path.startswith("/brain/runs/") and path.endswith("/resume"):
                 payload = self.service.resume_assistant_run(
                     self._identifier(path.removeprefix("/brain/runs/").removesuffix("/resume")),

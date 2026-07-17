@@ -1,6 +1,7 @@
 # Local/private runtime data
 90-Local-Only/
 .obsidian/
+.claudian/
 copilot/copilot-conversations/
 
 # User knowledge and learning records (keep directory placeholders)

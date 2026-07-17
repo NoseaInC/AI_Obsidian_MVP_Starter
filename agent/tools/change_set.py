@@ -5,6 +5,7 @@ import json
 import re
 import sys
 import uuid
+from difflib import unified_diff
 from pathlib import Path
 from typing import Any
 
@@ -80,12 +81,15 @@ class ChangeSetTools:
         ingest_pdf.atomic_write(payload_path, json.dumps(bundle, ensure_ascii=False, indent=2) + "\n")
         metadata = [{"path": item["path"], "action": item["action"], "category": item["category"], "content_sha256": _hash(item["content"]), "payload_path": str(payload_path.relative_to(self.vault))} for item in normalized]
         preview = f"{bundle['title']} · {len(normalized)} 个候选写入"
-        self.store.create_brain_change_set(change_set_id, run_id, bundle["title"], metadata, preview, hashes)
+        if self.store.is_assistant_runtime_run(run_id):
+            self.store.create_assistant_change_set(change_set_id, run_id, bundle["title"], metadata, preview, hashes)
+        else:
+            self.store.create_brain_change_set(change_set_id, run_id, bundle["title"], metadata, preview, hashes)
         public_metadata = [{key: value for key, value in item.items() if key != "payload_path"} for item in metadata]
         return {"id": change_set_id, "state": "proposed", "title": bundle["title"], "writes": public_metadata, "preview": preview, "requires_confirmation": True}
 
     def _bundle(self, change_set_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
-        record = self.store.get_brain_change_set(change_set_id)
+        record = self.get_record(change_set_id)
         paths = {str(item.get("payload_path", "")) for item in record["writes"]}
         if len(paths) != 1:
             raise RuntimeError("change_set_payload_missing")
@@ -105,6 +109,47 @@ class ChangeSetTools:
         if record.get("base_hashes") != bundle.get("base_hashes"):
             raise RuntimeError("change_set_payload_tampered")
         return record, bundle
+
+    def get_record(self, change_set_id: str) -> dict[str, Any]:
+        """Resolve a proposal from its owning runtime without exposing payload text."""
+        try:
+            return self.store.get_assistant_change_set(change_set_id)
+        except RuntimeError:
+            return self.store.get_brain_change_set(change_set_id)
+
+    def public_record(self, change_set_id: str) -> dict[str, Any]:
+        record = self.get_record(change_set_id)
+        return {
+            **record,
+            "writes": [
+                {key: value for key, value in item.items() if key != "payload_path"}
+                for item in record.get("writes", [])
+            ],
+        }
+
+    def diff(self, change_set_id: str) -> dict[str, Any]:
+        """Build an authenticated preview without persisting note text in SQLite."""
+        record, bundle = self._bundle(change_set_id)
+        files: list[dict[str, Any]] = []
+        for item in bundle["writes"]:
+            relative = str(item["path"])
+            target = safe_note(self.vault, relative)
+            before = target.read_text(encoding="utf-8") if target.exists() else ""
+            after = str(item["content"])
+            lines = list(unified_diff(
+                before.splitlines(keepends=True),
+                after.splitlines(keepends=True),
+                fromfile=f"a/{relative}",
+                tofile=f"b/{relative}",
+            ))
+            files.append({
+                "path": relative,
+                "action": item["action"],
+                "added": sum(1 for line in lines if line.startswith("+") and not line.startswith("+++")),
+                "deleted": sum(1 for line in lines if line.startswith("-") and not line.startswith("---")),
+                "diff": "".join(lines),
+            })
+        return {"id": change_set_id, "state": record["state"], "files": files}
 
     def validate(self, payload: dict[str, Any]) -> dict[str, Any]:
         change_set_id = str(payload.get("change_set_id", ""))
@@ -138,5 +183,8 @@ class ChangeSetTools:
         ])
         transaction_id = f"brain-{uuid.uuid4().hex}"
         journal = ingest_pdf.execute_plan(plan, transaction_id=transaction_id)
-        self.store.update_brain_change_set(change_set_id, "applied", transaction_id)
+        if self.store.is_assistant_runtime_run(str(bundle.get("run_id") or "")):
+            self.store.update_assistant_change_set(change_set_id, "applied", transaction_id)
+        else:
+            self.store.update_brain_change_set(change_set_id, "applied", transaction_id)
         return {"id": change_set_id, "state": "applied", "idempotent": False, "transaction_id": transaction_id, "journal": str(journal.relative_to(self.vault))}

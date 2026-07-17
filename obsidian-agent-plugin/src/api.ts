@@ -126,25 +126,61 @@ export class AgentClient {
       reader.releaseLock();
     }
   }
+  async confirmAssistantRun(
+    runId: string,
+    confirmed: boolean,
+    onEvent: (event: AssistantStreamEvent) => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const response = await fetch(`${this.baseUrl}${API_PREFIX}/assistant/runs/${encodeURIComponent(runId)}/confirm`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(this.sessionToken ? {Authorization: `Bearer ${this.sessionToken}`} : {}),
+      },
+      body: JSON.stringify({confirmed}),
+      signal,
+    });
+    if (!response.ok) throw new Error(`Assistant confirmation failed: HTTP ${response.status}`);
+    if (!response.body) throw new Error("Assistant confirmation stream has no response body");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let remainder = "";
+    try {
+      while (true) {
+        const {value, done} = await reader.read();
+        if (done) break;
+        const parsed = parseNdjsonBuffer(remainder + decoder.decode(value, {stream: true}));
+        remainder = parsed.remainder;
+        for (const event of parsed.events) onEvent(event);
+      }
+      const tail = (remainder + decoder.decode()).trim();
+      if (tail) {
+        const parsed = parseNdjsonBuffer(`${tail}\n`);
+        for (const event of parsed.events) onEvent(event);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
   async assistantRunEvents(
     runId: string,
     after = 0,
-    limit = 500,
   ): Promise<{
-    schemaVersion: 2;
-    runId: string;
-    status: string;
-    events: AssistantStreamEvent[];
-    checkpoint?: Record<string, unknown> | null;
+    schemaVersion: 3;
+    items: AssistantStreamEvent[];
   }> {
     const encoded = encodeURIComponent(runId);
-    return this.get(`/assistant/runs/${encoded}/events?after=${Math.max(0, after)}&limit=${Math.max(1, Math.min(2000, limit))}`);
+    return this.get(`/assistant/runs/${encoded}/events?after=${Math.max(0, after)}`);
   }
-  async resumeAssistantRun<T>(runId: string): Promise<T> {
-    return this.post<T>(`/assistant/runs/${encodeURIComponent(runId)}/resume`, {confirmed: true});
+  async cancelAssistantRun(runId: string): Promise<unknown> {
+    return this.post(`/assistant/runs/${encodeURIComponent(runId)}/cancel`, {});
   }
-  async rejectAssistantRun<T>(runId: string, reason = ""): Promise<T> {
-    return this.post<T>(`/assistant/runs/${encodeURIComponent(runId)}/reject`, {reason});
+  async compactAssistantRun(runId: string): Promise<any> {
+    return this.post(`/assistant/runs/${encodeURIComponent(runId)}/compact`, {});
+  }
+  async forkAssistantRun(runId: string, sequence?: number): Promise<any> {
+    return this.post(`/assistant/runs/${encodeURIComponent(runId)}/fork`, {sequence});
   }
   async health(): Promise<HealthResponse> {
     const health = await this.get<HealthResponse>("/health");

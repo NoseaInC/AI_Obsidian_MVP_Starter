@@ -143,3 +143,15 @@ A terse confirmation such as `写入` has no standalone document meaning. It may
 ## D-036 — Agent planning is Observation-driven and authority remains local
 
 Each Assistant Runtime V3 round selects exactly one action: call one currently allowed typed tool, answer, or request one minimal clarification. The resulting Observation returns to the model before the next decision. Native Function Calling and strict JSON Planner mode share the same Tool Registry, permission levels, schemas and resource-scope checks. The model may see `create_change_set` as a proposal capability but can never see or invoke `apply_confirmed_change_set`. Ordered events and checkpoints are runtime metadata; request prose, note excerpts and Change Set bodies remain private files outside SQLite.
+
+## D-037 — PydanticAI is the sole model–tool kernel
+
+The plugin owns a provider-neutral AgentRuntime contract but registers only PydanticAgentRuntime. Python PydanticAI owns model/tool iteration, observations, retries and deferred approval; TypeScript normalizes ordered NDJSON into AgentChunk and renders it. This boundary permits future adapter replacement without introducing Claude Code, Codex CLI, OpenCode, Pi or duplicated provider implementations.
+
+## D-038 — Confirmation is a deferred tool result inside the same Run
+
+An existing-note write cannot be approved by prose or a detached review bar. The governed commit tool raises deferred approval, the current conversation displays the real tool/path/risk/Diff request, and confirm/cancel resumes the same PydanticAI Run. A model that stops after proposing an explicitly requested write is retried by an output validator rather than having the frontend fabricate progress. Backend hashes and policy remain authoritative.
+
+## D-039 — Settings persistence has one frontend boundary
+
+Views may read model settings but cannot write provider Profiles or routing endpoints directly. SettingsService is the only frontend persistence boundary; the backend still validates URLs, protected headers, known routes and Keychain references. API keys never enter plugin persistence.

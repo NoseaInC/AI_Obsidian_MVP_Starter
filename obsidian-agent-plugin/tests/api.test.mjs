@@ -145,16 +145,16 @@ test("review preview hides audit identifiers outside collapsed technical details
   assert.doesNotMatch(preview, /pdf-secret|private\/vault|artifact_id/);
 });
 
-test("Agent Brain UI uses the governed request lifecycle and proposal confirmation", () => {
+test("assistant UI uses the Pydantic runtime and inline governed confirmation", () => {
   const views = readFileSync(new URL("../src/views.ts", import.meta.url), "utf8");
   const api = readFileSync(new URL("../src/api.ts", import.meta.url), "utf8");
   const css = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
   for (const mode of ["对话", "整理", "研究", "规划"]) assert.match(views, new RegExp(mode));
   for (const component of ["la-chat-first", "la-brain-timeline", "la-brain-result", "la-change-set-proposal", "la-brain-error", "la-artifact-card"]) assert.match(views + css, new RegExp(component));
-  assert.match(views, /\/intake\/submit/);
-  assert.match(views, /active_artifact_id/);
-  assert.match(views, /\/brain-change-sets\/.*\/apply/);
-  assert.match(views, /confirmed: true/);
+  assert.match(views, /PydanticAgentRuntime/);
+  assert.match(views, /renderInlineAgentConfirmation/);
+  assert.match(views, /\/change-sets\/.*\/diff/);
+  assert.doesNotMatch(views, /assistant.*\/intake\/submit/);
   assert.doesNotMatch(views, /this\.client\.post<any>\("\/chat"/);
   assert.match(api, /Idempotency-Key/);
 });

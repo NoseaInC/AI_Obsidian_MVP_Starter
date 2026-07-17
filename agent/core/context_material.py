@@ -28,7 +28,8 @@ PRONOUNS = (
 SAVE_MARKERS = (
     "整理到 Obsidian", "保存到 Obsidian", "存入 Obsidian", "写入 Obsidian", "保存到知识库", "存入知识库",
     "加入知识库", "整理并保存", "保存一下", "保存它", "把它保存", "写成笔记", "整理成笔记", "写进笔记",
-    "更新当前笔记", "加入当前笔记", "补充到当前笔记",
+    "更新当前笔记", "加入当前笔记", "补充到当前笔记", "补进当前笔记", "补充当前笔记",
+    "补充进当前笔记", "追加到当前笔记", "追加进当前笔记", "添加到当前笔记", "添加进当前笔记",
 )
 NO_SAVE_MARKERS = (
     "不要保存", "不保存", "只整理", "整理但不保存", "只预览",
@@ -124,7 +125,12 @@ def classify_assistant_intent(message: str, focus: dict[str, Any], attachments: 
     lower = text.casefold()
     save = any(marker.casefold() in lower for marker in SAVE_MARKERS) and not any(marker.casefold() in lower for marker in NO_SAVE_MARKERS)
     active_method = focus.get("activeMethod")
-    if any(marker in text for marker in ("更新当前笔记", "加入当前笔记", "写入当前笔记", "补充到当前笔记", "更新到我当前笔记", "加到当前笔记", "更新当前打开的笔记")):
+    current_note_write = any(marker in text for marker in (
+        "更新当前笔记", "加入当前笔记", "写入当前笔记", "补充到当前笔记", "补进当前笔记",
+        "补充进当前笔记", "补充当前笔记", "追加到当前笔记", "追加进当前笔记", "添加到当前笔记",
+        "添加进当前笔记", "更新到我当前笔记", "加到当前笔记", "更新当前打开的笔记",
+    )) or bool(re.search(r"(?:补充|追加|添加|写入|更新).{0,4}(?:到|进)?(?:我)?(?:的)?当前(?:打开的)?笔记", text))
+    if current_note_write:
         name = "update_current_note"
     elif any(marker in text for marker in ("加入今天", "放到今天", "安排到今天")):
         name = "create_daily_task"

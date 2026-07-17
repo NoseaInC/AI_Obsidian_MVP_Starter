@@ -12,7 +12,7 @@ async function moduleUnderTest() {
 }
 
 function event(seq, type, extra = {}) {
-  return {schemaVersion: 2, seq, type, runId: "run-1", conversationId: "conv-1", ...extra};
+  return {schemaVersion: 3, seq, type, runId: "run-1", conversationId: "conv-1", ...extra};
 }
 
 test("five thousand real token chunks preserve exact order and Unicode", async () => {
@@ -71,29 +71,26 @@ test("cancel keeps partial output and changes only a running run", async () => {
   assert.equal(mod.cancelledAssistantRun({...state, status: "completed"}).status, "completed");
 });
 
-test("real agent plan and tool events become visible execution steps", async () => {
+test("real ordered tool events become visible execution steps", async () => {
   const mod = await moduleUnderTest();
   let state = mod.initialAssistantLiveRun();
   state = mod.reduceAssistantStream(state, event(1, "run.started", {model: "deepseek-chat"}));
-  state = mod.reduceAssistantStream(state, event(2, "plan.created", {mode: "model-tools", allowedTools: ["search_vault"]}));
-  state = mod.reduceAssistantStream(state, event(3, "tool.requested", {callId: "call-1", tool: "search_vault"}));
-  state = mod.reduceAssistantStream(state, event(4, "tool.started", {callId: "call-1", tool: "search_vault"}));
-  state = mod.reduceAssistantStream(state, event(5, "tool.completed", {callId: "call-1", tool: "search_vault", status: "completed", summary: "返回 2 项"}));
-  state = mod.reduceAssistantStream(state, event(6, "run.completed", {brainRunId: "run-1"}));
-  assert.equal(state.runtimeMode, "model-tools");
-  assert.deepEqual(state.allowedTools, ["search_vault"]);
-  assert.deepEqual(state.toolCalls, [{id: "call-1", tool: "search_vault", status: "completed", summary: "返回 2 项", purpose: undefined}]);
+  state = mod.reduceAssistantStream(state, event(2, "tool.started", {callId: "call-1", tool: "search_vault", input: {query: "Delta"}}));
+  state = mod.reduceAssistantStream(state, event(3, "tool.completed", {callId: "call-1", tool: "search_vault", status: "completed", summary: "返回 2 项", result: {count: 2}}));
+  state = mod.reduceAssistantStream(state, event(4, "run.completed"));
+  assert.deepEqual(state.toolCalls, [{id: "call-1", tool: "search_vault", status: "completed", summary: "返回 2 项", purpose: undefined, input: undefined, result: {count: 2}}]);
   assert.equal(state.steps.find(item => item.id === "tool:call-1").label, "搜索知识库");
   assert.equal(state.steps.find(item => item.id === "tool:call-1").status, "completed");
 });
 
-test("approval event is not mistaken for an applied write", async () => {
+test("inline confirmation is not mistaken for an applied write", async () => {
   const mod = await moduleUnderTest();
   let state = mod.initialAssistantLiveRun();
   state = mod.reduceAssistantStream(state, event(1, "run.started"));
-  state = mod.reduceAssistantStream(state, event(2, "approval.required", {reason: "Change Set required"}));
+  state = mod.reduceAssistantStream(state, event(2, "inline.confirmation.required", {confirmation: {run_id: "run-1", proposal_id: "cs-1", title: "修改", summary: "1 个文件", risk_level: "medium", writes: [], actions: ["confirm", "reject"]}}));
+  state = mod.reduceAssistantStream(state, event(3, "run.waiting_confirmation", {proposalId: "cs-1"}));
   assert.equal(state.proposalRequired, true);
-  assert.equal(state.status, "running");
+  assert.equal(state.status, "waiting_confirmation");
 });
 
 test("completed message metadata survives the stream without a full view refresh", async () => {
@@ -110,20 +107,16 @@ test("completed message metadata survives the stream without a full view refresh
   assert.equal(state.status, "completed");
 });
 
-test("approval-only completion renders the persisted proposal message", async () => {
+test("confirmation-only turn keeps the proposal inline", async () => {
   const mod = await moduleUnderTest();
   let state = mod.initialAssistantLiveRun();
   state = mod.reduceAssistantStream(state, event(1, "run.started"));
-  state = mod.reduceAssistantStream(state, event(2, "proposal.created", {
-    proposalId: "brain-cs-1", title: "补充笔记", writes: [], requiresConfirmation: true,
-  }));
-  state = mod.reduceAssistantStream(state, event(3, "message.completed", {
-    message: {id: "msg-proposal", role: "assistant", content: "修改提案已生成，文件尚未变化。"},
-  }));
-  state = mod.reduceAssistantStream(state, event(4, "run.awaiting_approval", {proposalId: "brain-cs-1"}));
-  assert.equal(state.status, "awaiting_approval");
-  assert.equal(state.content, "修改提案已生成，文件尚未变化。");
-  assert.equal(state.completedMessage.id, "msg-proposal");
+  state = mod.reduceAssistantStream(state, event(2, "write.diff", {proposalId: "assistant-cs-1", title: "补充笔记", writes: [{path: "20-Knowledge/x.md"}]}));
+  state = mod.reduceAssistantStream(state, event(3, "inline.confirmation.required", {confirmation: {run_id: "run-1", proposal_id: "assistant-cs-1", title: "补充笔记", summary: "等待确认", risk_level: "medium", writes: [], actions: ["confirm", "reject"]}}));
+  state = mod.reduceAssistantStream(state, event(4, "run.waiting_confirmation", {proposalId: "assistant-cs-1"}));
+  assert.equal(state.status, "waiting_confirmation");
+  assert.equal(state.proposal.id, "assistant-cs-1");
+  assert.equal(state.confirmation.proposal_id, "assistant-cs-1");
 });
 
 test("assistant production surface uses stream endpoint, stop and three inspector tabs", async () => {
@@ -137,10 +130,13 @@ test("assistant production surface uses stream endpoint, stop and three inspecto
   assert.match(views, /停止生成/);
   assert.match(views, /reduceAssistantStream/);
   assert.match(views, /paintAssistantLiveTrace\(activeTrace, this\.assistantLiveRun\)/);
-  assert.match(views, /regenerate_message_id/);
+  assert.match(views, /regenerateMessageId/);
   assert.match(views, /编辑后重发/);
   assert.match(views, /重新生成/);
   assert.match(views, /ProgressiveAssistantMarkdown/);
+  assert.match(views, /PydanticAgentRuntime/);
+  assert.match(views, /resumeInlineConfirmation/);
+  assert.match(api, /cancelAssistantRun/);
   assert.doesNotMatch(views, /markdown\.empty\(\); await this\.markdown\.render/);
   assert.match(css, /\.la-message-markdown strong \{[\s\S]*display:\s*inline/);
   for (const label of ["上下文", "来源", "变更", "新会话", "搜索对话"]) assert.match(views, new RegExp(label));

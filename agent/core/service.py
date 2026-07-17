@@ -36,7 +36,7 @@ from agent.brain import BrainOrchestrator, BrainRequest
 from agent.brain.errors import BrainError
 from agent.brain.schemas import IntentResult
 from agent.brain.model_gateway import BrainModelGateway
-from agent.brain.run_coordinator import AssistantRunCoordinator
+from agent.runtime import PydanticAssistantRuntime
 from agent.skills import build_skill_registry
 from agent.tools import build_tool_registry
 from agent.tools.change_set import ChangeSetTools
@@ -63,8 +63,8 @@ class AgentService:
         )
         self.skills = build_skill_registry(self.vault, self.store, self.tools, self.list_prepared, self.model_gateway)
         self.brain = BrainOrchestrator(self.vault, self.store, self.skills, intent_classifier=self.model_gateway.classify_intent)
-        self.assistant_runtime = AssistantRunCoordinator(self.vault, self.store, self.tools, self.brain.router)
         self.brain_change_sets = ChangeSetTools(self.vault, self.store)
+        self.assistant_runtime = PydanticAssistantRuntime(self)
         self.store.recover_interrupted()
         self.log_path = self.vault / "90-Local-Only/Agent/logs/events.jsonl"
         self.sync_indexes()
@@ -1006,6 +1006,12 @@ class AgentService:
         record = self.store.get_brain_change_set(change_set_id)
         return {**record, "writes": [{key: value for key, value in item.items() if key != "payload_path"} for item in record["writes"]]}
 
+    def get_change_set(self, change_set_id: str) -> dict[str, Any]:
+        return self.brain_change_sets.public_record(change_set_id)
+
+    def diff_change_set(self, change_set_id: str) -> dict[str, Any]:
+        return self.brain_change_sets.diff(change_set_id)
+
     def apply_brain_change_set(self, change_set_id: str, confirmed: bool) -> dict[str, Any]:
         record = self.store.get_brain_change_set(change_set_id)
         result = self.brain_change_sets.apply({"change_set_id": change_set_id, "confirmed": confirmed})
@@ -1702,436 +1708,35 @@ class AgentService:
         return {"conversation_id": conversation_id, "model": model, "message": {"role": "assistant", "content": content}, "streaming": False, "stream_requested": stream}
 
     def assistant_stream(self, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
-        """Stream one turn through AssistantRunCoordinator V3."""
-        message = str(body.get("message") or "").strip()
-        if not message or len(message) > 250_000:
-            raise ValueError("message must contain 1–250000 characters")
+        """Stream one assistant turn through the single PydanticAI runtime."""
+        return self.assistant_runtime.stream(body)
 
-        conversation_id = self.intake.ensure_conversation(
-            str(body.get("conversation_id") or "") or None,
-            self._conversation_title(message),
-        )
-        attachment_ids = [
-            str(
-                item.get("attachment_id")
-                if isinstance(item, dict)
-                else item
-            )
-            for item in body.get("attachments", [])
-        ][:20]
-        attachments: list[dict[str, Any]] = []
-        for attachment_id in attachment_ids:
-            attachment = self.intake.get_attachment(attachment_id)
-            if attachment["conversationId"] != conversation_id:
-                raise ValueError("attachment_conversation_mismatch")
-            attachments.append(attachment)
+    def confirm_assistant_run(
+        self,
+        run_id: str,
+        confirmed: bool,
+    ) -> Iterator[dict[str, Any]]:
+        """Resume the same deferred PydanticAI run after inline confirmation."""
+        return self.assistant_runtime.confirm(run_id, confirmed)
 
-        regenerate_message_id = str(
-            body.get("regenerate_message_id") or ""
-        ).strip()
-        if regenerate_message_id:
-            user_row = self.intake.get_message(
-                conversation_id,
-                regenerate_message_id,
-            )
-            if user_row.get("role") != "user":
-                raise ValueError("regenerate_message_must_be_user")
-            message = str(user_row.get("content") or "").strip()
-        else:
-            user_row = self.intake.append_message(
-                conversation_id,
-                "user",
-                message,
-            )
+    def assistant_run_events(
+        self,
+        run_id: str,
+        after_sequence: int = 0,
+    ) -> dict[str, Any]:
+        """Return persisted runtime events for reconnect/resume."""
+        return self.assistant_runtime.events(run_id, after_sequence)
 
-        prepared = self.context_material.prepare(
-            conversation_id,
-            user_row,
-            attachments,
-            body,
-        )
-        routes = self.model_routing()
-        route = routes.get("assistant_chat") or routes.get(
-            "assistant",
-            {},
-        )
-        profile_id = str(
-            body.get("profile_id")
-            or route.get("profileId")
-            or ""
-        )
-        if not profile_id:
-            raise RuntimeError(
-                "No assistant model profile is configured"
-            )
-        profile = next(
-            (
-                item
-                for item in self.store.list_model_profiles()
-                if item["id"] == profile_id
-            ),
-            None,
-        )
-        if not profile or not profile["enabled"]:
-            raise RuntimeError(
-                "Assistant model profile is unavailable"
-            )
+    def cancel_assistant_run(self, run_id: str) -> dict[str, Any]:
+        return self.assistant_runtime.cancel(run_id)
 
-        model = str(
-            body.get("model")
-            or route.get("modelOverride")
-            or profile["defaultModel"]
-        )
-        provider = self.models.provider(profile_id)
-        settings = profile["settings"]
-        run_id = f"run-{uuid.uuid4().hex}"
-        sequence = 0
-        assistant_message_id = ""
+    def compact_assistant_run(self, run_id: str) -> dict[str, Any]:
+        return self.assistant_runtime.compact(run_id)
 
-        def event(kind: str, **payload: Any) -> dict[str, Any]:
-            nonlocal sequence
-            sequence += 1
-            value = {
-                "schemaVersion": 2,
-                "seq": sequence,
-                "type": kind,
-                "runId": run_id,
-                "conversationId": conversation_id,
-                **payload,
-            }
-            if hasattr(self.store, "append_agent_run_event"):
-                self.store.append_agent_run_event(
-                    run_id,
-                    sequence,
-                    kind,
-                    value,
-                )
-            return value
+    def fork_assistant_run(self, run_id: str, sequence: int | None = None) -> dict[str, Any]:
+        return self.assistant_runtime.fork(run_id, sequence)
 
-        focus = prepared.get("focus") or {}
-        understanding = (
-            prepared.get("materialBundle") or {}
-        ).get("understanding") or {}
-        sources = [
-            {
-                "id": item.get("id"),
-                "title": item.get("displayName"),
-                "kind": item.get("kind"),
-                "status": item.get("status"),
-            }
-            for item in attachments
-        ]
-        active_note = (
-            body.get("active_note")
-            if isinstance(body.get("active_note"), dict)
-            else {}
-        )
-        if active_note.get("path"):
-            sources.append(
-                {
-                    "id": "active-note",
-                    "title": str(active_note.get("path")),
-                    "kind": "vault_note",
-                    "status": "local",
-                }
-            )
-        context_text = self._assistant_grounding_text(
-            attachments,
-            active_note,
-        )
-        recent = (
-            self.intake.recent_messages_through(
-                conversation_id,
-                regenerate_message_id,
-                24,
-            )
-            if regenerate_message_id
-            else self.intake.recent_messages(
-                conversation_id,
-                24,
-            )
-        )
 
-        session = None
-        try:
-            options = (
-                body.get("options")
-                if isinstance(body.get("options"), dict)
-                else {}
-            )
-            request = BrainRequest(
-                text=str(
-                    prepared.get("resolvedMessage") or message
-                ),
-                mode=str(body.get("mode") or "auto"),
-                source="assistant-stream",
-                active_note=str(active_note.get("path") or ""),
-                selected_text=str(
-                    active_note.get("selection") or ""
-                ),
-                time_budget_minutes=(
-                    options.get("available_minutes")
-                    if isinstance(
-                        options.get("available_minutes"),
-                        int,
-                    )
-                    else None
-                ),
-                metadata={
-                    "conversation_id": conversation_id,
-                    "assistant_intent": prepared.get("intent")
-                    or {},
-                    "source_evidence": sources,
-                    "allow_network": (
-                        options.get("allow_network") is True
-                    ),
-                },
-            )
-            resolved_intent = str(
-                (prepared.get("intent") or {}).get("name")
-                or ""
-            )
-            intent_name = {
-                "answer_question": "ask_question",
-                "continue_explanation": "learn_topic",
-                "organize_preview": "organize_text",
-                "create_daily_task": "generate_daily_plan",
-            }.get(resolved_intent)
-
-            session = self.assistant_runtime.begin(
-                run_id,
-                request,
-                focus=focus,
-                understanding=understanding,
-                sources=sources,
-                material_excerpt=context_text,
-                profile_id=profile_id,
-                intent_hint=(
-                    IntentResult(
-                        intent_name,
-                        basis="conversation-focus",
-                    )
-                    if intent_name
-                    else None
-                ),
-            )
-
-            yield event(
-                "run.started",
-                model=model,
-                profileId=profile_id,
-                regenerationOf=regenerate_message_id or None,
-            )
-            yield event(
-                "context.resolved",
-                focus=focus,
-                understanding=understanding,
-                sources=sources,
-            )
-
-            for runtime_event in self.assistant_runtime.run(
-                session,
-                provider,
-                model=model,
-                recent=recent,
-                native_tool_calling=bool(
-                    settings.get("toolCalling", False)
-                ),
-                temperature=float(
-                    settings.get("temperature", 0.3)
-                ),
-                max_tokens=int(
-                    settings.get("maxTokens", 3000)
-                ),
-                max_rounds=8,
-            ):
-                kind = str(runtime_event.pop("type"))
-                if kind == "message.started":
-                    assistant_message_id = str(
-                        runtime_event.get("messageId") or ""
-                    )
-                yield event(kind, **runtime_event)
-
-        except GeneratorExit:
-            partial = session.answer.strip() if session is not None else ""
-            if partial:
-                self.intake.append_message(
-                    conversation_id,
-                    "assistant",
-                    partial,
-                    "partial",
-                )
-            if session is not None:
-                self.assistant_runtime.fail(
-                    session,
-                    BrainError(
-                        "brain_cancelled",
-                        "任务已取消",
-                    ),
-                    cancelled=True,
-                )
-            self.log(
-                "assistant.stream-cancelled",
-                {
-                    "run_id": run_id,
-                    "conversation_id": conversation_id,
-                },
-            )
-            raise
-        except Exception as exc:
-            partial = session.answer.strip() if session is not None else ""
-            if partial:
-                self.intake.append_message(
-                    conversation_id,
-                    "assistant",
-                    partial,
-                    "partial",
-                )
-            if session is not None:
-                cancelled = (
-                    getattr(exc, "code", "")
-                    == "brain_cancelled"
-                )
-                self.assistant_runtime.fail(
-                    session,
-                    exc,
-                    cancelled=cancelled,
-                )
-            self.log(
-                "assistant.stream-failed",
-                {
-                    "run_id": run_id,
-                    "conversation_id": conversation_id,
-                    "error": type(exc).__name__,
-                },
-            )
-            if getattr(exc, "code", "") == "brain_cancelled":
-                yield event(
-                    "run.cancelled",
-                    code="brain_cancelled",
-                    message="任务已取消",
-                )
-            else:
-                yield event(
-                    "run.failed",
-                code=type(exc).__name__,
-                message=str(redact(str(exc))),
-                partial=bool(partial),
-                )
-            return
-
-        if session is None:
-            yield event(
-                "run.failed",
-                code="assistant_runtime_not_started",
-                message="助手 Runtime 未启动",
-                partial=False,
-            )
-            return
-
-        if session.awaiting_approval:
-            self.assistant_runtime.mark_awaiting_approval(
-                session
-            )
-            proposal = session.proposal or {}
-            content = (
-                "我已经基于当前上下文生成了一个 Obsidian "
-                "修改提案。文件尚未发生变化，请先查看 Diff 并确认。"
-            )
-            stored = self.intake.append_message(
-                conversation_id,
-                "assistant",
-                content,
-                "markdown",
-            )
-            yield event(
-                "message.completed",
-                message=stored,
-                streamMessageId=assistant_message_id,
-            )
-            yield event(
-                "run.awaiting_approval",
-                proposalId=proposal.get("id"),
-                messageId=stored["id"],
-                brainRunId=run_id,
-            )
-            self.log(
-                "assistant.awaiting-approval",
-                {
-                    "run_id": run_id,
-                    "conversation_id": conversation_id,
-                    "proposal_id": proposal.get("id"),
-                    "tool_count": len(session.tool_calls),
-                },
-            )
-            return
-
-        content = session.answer.strip()
-        if not content:
-            self.assistant_runtime.fail(
-                session,
-                BrainError(
-                    "empty_model_response",
-                    "模型没有返回可显示内容",
-                    True,
-                    "重试或切换模型",
-                ),
-            )
-            yield event(
-                "run.failed",
-                code="empty_model_response",
-                message="模型没有返回可显示内容",
-                partial=False,
-            )
-            return
-
-        try:
-            stored = self.intake.append_message(
-                conversation_id,
-                "assistant",
-                content,
-                "markdown",
-            )
-            self.assistant_runtime.complete(
-                session,
-                answer=content,
-                model=model,
-            )
-        except Exception as exc:
-            self.assistant_runtime.fail(
-                session,
-                exc,
-            )
-            yield event(
-                "run.failed",
-                code="assistant_completion_failed",
-                message="回答已生成，但本地运行记录未能完整提交",
-                partial=True,
-            )
-            return
-
-        yield event(
-            "message.completed",
-            message=stored,
-            streamMessageId=assistant_message_id,
-        )
-        yield event(
-            "run.completed",
-            messageId=stored["id"],
-            model=model,
-            brainRunId=run_id,
-        )
-        self.log(
-            "assistant.stream-completed",
-            {
-                "run_id": run_id,
-                "conversation_id": conversation_id,
-                "model": model,
-                "characters": len(content),
-                "tool_count": len(session.tool_calls),
-                "planner_rounds": session.planner_round,
-            },
-        )
     def _assistant_grounding_text(self, attachments: list[dict[str, Any]], active_note: dict[str, Any]) -> str:
         sections: list[str] = []
         note_path = str(active_note.get("path") or "")

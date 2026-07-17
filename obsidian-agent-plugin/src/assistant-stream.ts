@@ -1,4 +1,8 @@
-export const ASSISTANT_STREAM_SCHEMA_VERSION = 2;
+import type {InlineAgentConfirmation} from "./assistant-inline-confirmation";
+import type {AgentChunk} from "./core/runtime/types";
+import {toolTraceFromAgentChunk} from "./features/chat/ToolTraceRenderer";
+
+export const ASSISTANT_STREAM_SCHEMA_VERSION = 3;
 
 export type AssistantStreamEventType =
   | "run.started"
@@ -8,6 +12,7 @@ export type AssistantStreamEventType =
   | "tool.requested"
   | "tool.started"
   | "tool.completed"
+  | "write.diff"
   | "observation.recorded"
   | "step.updated"
   | "message.started"
@@ -16,9 +21,9 @@ export type AssistantStreamEventType =
   | "proposal.created"
   | "proposal.rejected"
   | "change.applied"
-  | "write.proposal-required"
-  | "approval.required"
-  | "run.awaiting_approval"
+  | "inline.confirmation.required"
+  | "inline.confirmation.resolved"
+  | "run.waiting_confirmation"
   | "run.completed"
   | "run.cancelled"
   | "run.failed";
@@ -50,6 +55,9 @@ export interface AssistantStreamEvent {
   status?: string;
   summary?: string;
   arguments?: Record<string, unknown>;
+  input?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  confirmation?: InlineAgentConfirmation;
 
   proposalId?: string;
   approvalId?: string;
@@ -89,7 +97,7 @@ export interface AssistantLiveRun {
   status:
     | "idle"
     | "running"
-    | "awaiting_approval"
+    | "waiting_confirmation"
     | "completed"
     | "failed"
     | "cancelled";
@@ -109,6 +117,7 @@ export interface AssistantLiveRun {
   }>;
   proposalRequired: boolean;
   proposal?: AssistantProposal;
+  confirmation?: InlineAgentConfirmation;
   runtimeMode?: string;
   allowedTools: string[];
   plannerRound: number;
@@ -118,6 +127,9 @@ export interface AssistantLiveRun {
     status: string;
     summary?: string;
     purpose?: string;
+    input?: Record<string, unknown>;
+    result?: Record<string, unknown>;
+    diffData?: {proposalId: string; writes: Array<Record<string, unknown>>};
   }>;
   error?: {
     code: string;
@@ -168,6 +180,9 @@ export function reduceAssistantStream(
     proposal: state.proposal
       ? {...state.proposal, writes: [...state.proposal.writes]}
       : undefined,
+    confirmation: state.confirmation
+      ? {...state.confirmation, writes: [...state.confirmation.writes]}
+      : undefined,
   };
 
   if (event.type === "run.started") {
@@ -204,16 +219,9 @@ export function reduceAssistantStream(
           ? "running"
           : String(event.status ?? "completed");
 
-    const normalized =
-      status === "skipped"
-        ? "completed"
-        : status === "completed"
-          ? "completed"
-          : status === "running"
-            ? "running"
-            : status === "pending"
-              ? "pending"
-              : "failed";
+    const normalized = (["pending", "running", "completed", "failed", "blocked", "cancelled"].includes(status)
+      ? status
+      : status === "skipped" ? "completed" : "failed") as "pending" | "running" | "completed" | "failed" | "blocked" | "cancelled";
 
     const call = {
       id,
@@ -221,6 +229,8 @@ export function reduceAssistantStream(
       status: normalized,
       summary: event.summary,
       purpose: event.purpose,
+      input: event.input ?? event.arguments,
+      result: event.result,
     };
     const callIndex = next.toolCalls.findIndex(item => item.id === id);
     if (callIndex >= 0) {
@@ -251,6 +261,18 @@ export function reduceAssistantStream(
     next.messageId = String(event.messageId ?? "");
   } else if (event.type === "message.delta") {
     next.content += String(event.delta ?? "");
+  } else if (event.type === "write.diff") {
+    next.proposalRequired = true;
+    next.proposal = {
+      id: String(event.proposalId ?? ""),
+      title: String(event.title ?? "Obsidian 修改提案"),
+      preview: String(event.preview ?? ""),
+      writes: Array.isArray(event.writes) ? event.writes : [],
+      requiresConfirmation: true,
+      riskLevel: String(event.riskLevel ?? "medium"),
+    };
+    const call = [...next.toolCalls].reverse().find(item => item.tool === "propose_vault_change");
+    if (call) call.diffData = {proposalId: next.proposal.id, writes: [...next.proposal.writes]};
   } else if (event.type === "proposal.created") {
     next.proposalRequired = true;
     next.proposal = {
@@ -266,11 +288,9 @@ export function reduceAssistantStream(
     next.status = "cancelled";
   } else if (event.type === "change.applied") {
     next.proposalRequired = false;
-  } else if (
-    event.type === "write.proposal-required" ||
-    event.type === "approval.required"
-  ) {
+  } else if (event.type === "inline.confirmation.required") {
     next.proposalRequired = true;
+    next.confirmation = event.confirmation;
   } else if (event.type === "message.completed") {
     next.messageId = String(
       (event.message as {id?: unknown} | undefined)?.id ?? next.messageId,
@@ -281,8 +301,11 @@ export function reduceAssistantStream(
     if (!next.content && typeof event.message?.content === "string") {
       next.content = event.message.content;
     }
-  } else if (event.type === "run.awaiting_approval") {
-    next.status = "awaiting_approval";
+  } else if (event.type === "inline.confirmation.resolved") {
+    next.confirmation = undefined;
+    next.proposalRequired = false;
+  } else if (event.type === "run.waiting_confirmation") {
+    next.status = "waiting_confirmation";
     next.proposalRequired = true;
   } else if (event.type === "run.completed") {
     next.status = "completed";
@@ -314,11 +337,17 @@ export function toolLabel(name: string): string {
       search_academic_sources: "检索可信来源",
       fetch_user_provided_url: "读取公开网页",
       get_attachment_metadata: "读取附件信息",
+      get_current_note: "读取当前笔记",
+      get_current_selection: "读取当前选区",
+      read_vault_note: "读取笔记正文",
+      find_related_notes: "查找相关笔记与反向链接",
       read_pdf_pages: "读取 PDF 页面",
       search_pdf: "搜索 PDF",
       get_conversation_focus: "读取当前会话焦点",
       get_recent_conversation_messages: "读取最近对话",
       create_change_set: "生成 Obsidian 修改提案",
+      propose_vault_change: "生成 Obsidian 修改提案",
+      commit_vault_change: "校验并提交 Obsidian 修改",
     } as Record<string, string>
   )[name] ?? "执行受控工具";
 }
@@ -349,6 +378,25 @@ export function parseNdjsonBuffer(buffer: string): {
   }
 
   return {events, remainder};
+}
+
+export function agentChunkToAssistantEvent(chunk: AgentChunk): AssistantStreamEvent {
+  const base = {
+    schemaVersion: ASSISTANT_STREAM_SCHEMA_VERSION,
+    seq: chunk.sequence,
+    runId: chunk.runId,
+    conversationId: chunk.conversationId,
+  };
+  if (chunk.type === "text") return {...base, type: "message.delta", delta: chunk.content, messageId: chunk.messageId};
+  const toolTrace = toolTraceFromAgentChunk(chunk);
+  if (chunk.type === "tool_use" && toolTrace) return {...base, type: "tool.started", callId: toolTrace.id, tool: toolTrace.name, input: toolTrace.input, status: toolTrace.status};
+  if (chunk.type === "tool_result" && toolTrace) return {...base, type: "tool.completed", callId: toolTrace.id, tool: toolTrace.name, result: toolTrace.result, summary: toolTrace.summary, status: toolTrace.status};
+  if (chunk.type === "write_diff") return {...base, type: "write.diff", proposalId: chunk.proposalId, title: chunk.title, writes: chunk.writes};
+  if (chunk.type === "confirmation_required") return {...base, type: "inline.confirmation.required", confirmation: chunk.confirmation};
+  if (chunk.type === "error") return {...base, type: "run.failed", code: chunk.code, partial: chunk.partial, reason: chunk.content};
+  if (chunk.type === "done") return {...base, type: chunk.status === "cancelled" ? "run.cancelled" : "run.completed", message: chunk.message};
+  if (chunk.type === "notice" && chunk.data) return chunk.data as unknown as AssistantStreamEvent;
+  return {...base, type: "context.resolved"};
 }
 
 export function cancelledAssistantRun(
