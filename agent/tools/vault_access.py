@@ -190,29 +190,113 @@ def list_vault_folder(
     payload: dict[str, Any],
     index: VaultReadIndex | None = None,
 ) -> dict[str, Any]:
-    """List model-visible Markdown notes below one validated Vault folder."""
-    raw = str(payload.get("path", "")).strip().replace("\\", "/").rstrip("/")
+    """List one model-visible Vault folder without exposing project/private roots.
+
+    ``/`` and ``.`` are explicit aliases for the model-visible Vault root.  They
+    intentionally return only ``SAFE_ROOTS`` instead of enumerating the real
+    workspace root, which also contains runtime code and local-only state.
+    """
+    vault = vault.resolve()
+    requested = str(payload.get("path", "")).strip().replace("\\", "/")
+    root_alias = requested in {"", ".", "/", "./"}
+    raw = requested.rstrip("/")
+    entries = (index or VaultReadIndex(vault)).entries()
+    limit = max(1, min(100, int(payload.get("limit", 50))))
+    cursor = max(0, int(payload.get("cursor", 0)))
+
+    if root_alias:
+        rows: list[dict[str, Any]] = []
+        for root_name in SAFE_ROOTS:
+            root = vault / root_name
+            if not root.is_dir() or root.is_symlink():
+                continue
+            direct_count = 0
+            total_count = 0
+            for entry in entries:
+                entry_path = Path(str(entry.get("path") or ""))
+                if not entry_path.parts or entry_path.parts[0] != root_name:
+                    continue
+                total_count += 1
+                if entry_path.parent == Path(root_name):
+                    direct_count += 1
+            try:
+                modified_at = datetime.fromtimestamp(
+                    root.stat().st_mtime
+                ).astimezone().isoformat(timespec="seconds")
+            except OSError:
+                modified_at = ""
+            rows.append({
+                "kind": "folder",
+                "title": root_name,
+                "path": root_name,
+                "status": "",
+                "type": "folder",
+                "modifiedAt": modified_at,
+                "directNoteCount": direct_count,
+                "totalNoteCount": total_count,
+            })
+        page = rows[cursor:cursor + limit]
+        next_cursor = cursor + len(page)
+        return {
+            "path": ".",
+            "scope": "model-visible-vault-root",
+            "recursive": False,
+            "items": page,
+            "total": len(rows),
+            "nextCursor": next_cursor if next_cursor < len(rows) else None,
+        }
+
     relative = Path(raw)
     if not raw or relative.is_absolute() or ".." in relative.parts or not _safe_relative(relative):
         raise ValueError("invalid_folder_path")
-    target = (vault.resolve() / relative).resolve()
+    target = (vault / relative).resolve()
     try:
-        target.relative_to(vault.resolve())
+        target.relative_to(vault)
     except ValueError as error:
         raise ValueError("invalid_folder_path") from error
     if target.is_symlink() or any(
-        parent.is_symlink() for parent in [target, *target.parents] if parent != vault.resolve()
+        parent.is_symlink() for parent in [target, *target.parents] if parent != vault
     ):
         raise ValueError("symlink_path_not_allowed")
     if not target.is_dir():
         raise FileNotFoundError("folder_not_found")
 
     recursive = payload.get("recursive") is True
-    limit = max(1, min(100, int(payload.get("limit", 50))))
-    cursor = max(0, int(payload.get("cursor", 0)))
     prefix = relative.as_posix()
     rows: list[dict[str, Any]] = []
-    for entry in (index or VaultReadIndex(vault)).entries():
+    if not recursive:
+        try:
+            child_directories = sorted(
+                (
+                    child for child in target.iterdir()
+                    if child.is_dir() and not child.is_symlink()
+                ),
+                key=lambda child: (child.name.casefold(), child.name),
+            )
+        except OSError:
+            child_directories = []
+        for child in child_directories:
+            child_relative = child.relative_to(vault)
+            child_prefix = child_relative.as_posix()
+            child_entries = [
+                entry for entry in entries
+                if str(entry.get("path") or "").startswith(f"{child_prefix}/")
+            ]
+            rows.append({
+                "kind": "folder",
+                "title": child.name,
+                "path": child_prefix,
+                "status": "",
+                "type": "folder",
+                "modifiedAt": "",
+                "directNoteCount": sum(
+                    Path(str(entry.get("path") or "")).parent == child_relative
+                    for entry in child_entries
+                ),
+                "totalNoteCount": len(child_entries),
+            })
+
+    for entry in entries:
         entry_path = str(entry.get("path") or "")
         parent = str(Path(entry_path).parent.as_posix())
         if recursive:
@@ -221,13 +305,18 @@ def list_vault_folder(
         elif parent != prefix:
             continue
         rows.append({
+            "kind": "note",
             "title": str(entry.get("title") or ""),
             "path": entry_path,
             "status": str(entry.get("status") or ""),
             "type": str(entry.get("type") or "note"),
             "modifiedAt": str(entry.get("modifiedAt") or ""),
         })
-    rows.sort(key=lambda item: (item["path"].casefold(), item["path"]))
+    rows.sort(key=lambda item: (
+        0 if item.get("kind") == "folder" else 1,
+        item["path"].casefold(),
+        item["path"],
+    ))
     page = rows[cursor:cursor + limit]
     next_cursor = cursor + len(page)
     return {

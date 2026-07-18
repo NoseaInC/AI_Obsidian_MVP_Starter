@@ -1,6 +1,6 @@
 # PydanticAI Assistant Runtime
 
-Status: implemented, corrected 2026-07-18
+Status: implemented, corrected 2026-07-19
 
 ## Canonical chain
 
@@ -62,8 +62,12 @@ receives its real Observation and replans.
 `ask_user` is a typed deferred tool, not a prose convention. It is reserved for
 information that Vault/PDF/web tools cannot resolve or for a decision only the
 user can make. The answer resumes the same run and becomes a tool result.
-`list_vault_folder` provides a validated, paginated Markdown file inventory;
-file bodies still require explicit `read_vault_note` calls.
+`list_vault_folder` provides a validated, paginated directory and Markdown file
+inventory; `/` and `.` mean the model-visible Vault root and return only the
+configured safe roots. Project code and local-only state are never enumerated.
+File bodies still require explicit `read_vault_note` calls. Expected validation,
+not-found and permission failures return bounded failed Observations so the same
+model run can re-plan; unexpected implementation faults remain fatal.
 
 ## Lifecycle
 

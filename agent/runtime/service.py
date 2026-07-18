@@ -402,9 +402,20 @@ class PydanticAssistantRuntime:
                                     tool_event,
                                     FunctionToolResultEvent,
                                 ):
-                                    failed = isinstance(
-                                        tool_event.part,
-                                        RetryPromptPart,
+                                    raw_result = tool_event.part.content
+                                    if isinstance(raw_result, BaseModel):
+                                        raw_result = raw_result.model_dump(
+                                            mode="json"
+                                        )
+                                    failed = (
+                                        isinstance(
+                                            tool_event.part,
+                                            RetryPromptPart,
+                                        )
+                                        or (
+                                            isinstance(raw_result, dict)
+                                            and raw_result.get("ok") is False
+                                        )
                                     )
                                     public_result = self._public_tool_result(
                                         tool_event.part.content
@@ -908,6 +919,14 @@ class PydanticAssistantRuntime:
         if isinstance(content, BaseModel):
             content = content.model_dump(mode="json")
         if isinstance(content, dict):
+            if content.get("ok") is False:
+                error = content.get("error")
+                code = (
+                    str(error.get("code") or "tool_error")
+                    if isinstance(error, dict)
+                    else "tool_error"
+                )
+                return f"工具未完成 · {code[:160]}"
             if tool_name in {"get_current_note", "read_vault_note"}:
                 path = str(content.get("path") or "已授权笔记")
                 excerpt = str(content.get("excerpt") or "")
@@ -919,7 +938,18 @@ class PydanticAssistantRuntime:
             if tool_name == "get_conversation_focus":
                 return "读取会话焦点"
             if tool_name == "list_vault_folder":
-                return f"列出文件夹 · {len(content.get('items') or [])} 篇笔记"
+                items = content.get("items") or []
+                folders = sum(
+                    isinstance(item, dict)
+                    and item.get("kind") == "folder"
+                    for item in items
+                )
+                notes = len(items) - folders
+                if folders and notes:
+                    return f"列出文件夹 · {folders} 个目录、{notes} 篇笔记"
+                if folders:
+                    return f"列出文件夹 · {folders} 个目录"
+                return f"列出文件夹 · {notes} 篇笔记"
             if tool_name == "ask_user":
                 return "已收到用户回答"
             if tool_name == "get_attachment_metadata":
@@ -978,6 +1008,19 @@ class PydanticAssistantRuntime:
                 return {}
         if not isinstance(value, dict):
             return {}
+        if value.get("ok") is False:
+            error = value.get("error")
+            if not isinstance(error, dict):
+                error = {}
+            return {
+                "ok": False,
+                "error": {
+                    "code": str(error.get("code") or "tool_error")[:160],
+                    "type": str(error.get("type") or "")[:80],
+                    "recoverable": error.get("recoverable") is True,
+                    "retryable": error.get("retryable") is True,
+                },
+            }
         proposal_id = str(
             value.get("proposal_id") or value.get("proposalId") or ""
         )

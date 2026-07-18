@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-07-18
+Last updated: 2026-07-19
 
 ## Current phase
 
@@ -120,13 +120,16 @@ PydanticAI is the sole Assistant model–tool runtime. The primary Obsidian work
 - The rebuilt plugin was installed and hot-reloaded in Obsidian 1.12.7. Installed/build hashes are identical: `main.js` `3be69e99dabcba894429b7688c99d621d69340b89b8e8cb07e9e7ebc53e329e4`; `styles.css` `b47e9b289d6c99edf422a599c4e5283d9135b1515b0f0b291b92e8986018b7fb`.
 - The model-driven tool-loop correction is installed and Force Reloaded in Obsidian 1.12.7. Build/installed hashes match: `main.js` `f31005a2a6423f676eb1091931fe9441dd7f88ed9696917f014ad2ec0057d78c`; `styles.css` `3a197aa5f092c00197032a6b9d0410b320e7219167508afac6ecfc1dd3994a8d`. The plugin restarted the backend with a fresh Runtime ID.
 - A real installed-Obsidian `deepseek-v4-pro` read-only smoke passed on 2026-07-18: the model selected `list_vault_folder`, received the real `20-Knowledge/Concepts` observation and returned the three complete Markdown paths and statuses. No Change Set was created and no Vault note was written.
+- Vault-root directory listing now treats `/` and `.` as explicit safe aliases. They enumerate only model-visible roots (`01-Inbox`, `10-Sources`, `20-Knowledge`, `30-Learning`, `40-Projects` in the current Vault), never project code or `90-Local-Only`. Direct folder listing also returns child directories without reading note bodies.
+- Expected local-tool failures (`ValueError`, missing files/folders and policy denials) now become bounded failed Observations inside the same PydanticAI Run. The model can retry, ask or choose another safe tool; unexpected implementation failures still terminate the Run.
+- Real installed-Obsidian acceptance on 2026-07-19 passed `list_vault_folder("/")` with the configured `deepseek-v4-pro`. Run `run-e2f62fa2886043e493765cb21e621374` completed after one real tool call, returned five safe roots, emitted no `write.diff`/confirmation event and created no Change Set.
 
 ## Test status
 
 - Python ingestion/review/conversation: 40 tests passed.
-- Runtime/learning/provider/Brain/Intake/Daily Intelligence/context-material/PydanticAI assistant streaming: 164 tests passed (2 explicitly retired schema-v2 semantics skipped).
+- Runtime/learning/provider/Brain/Intake/Daily Intelligence/context-material/PydanticAI assistant streaming: 167 tests passed (2 explicitly retired schema-v2 semantics skipped).
 - Plugin: 59 logic/security/lifecycle/chat-first/context-material/daily-intelligence/study-workspace/privacy/autonomy/streaming/random/architecture tests passed; strict TypeScript check and production build passed.
-- Unified `./scripts/check.sh`: passed on 2026-07-18.
+- Unified `./scripts/check.sh`: passed on 2026-07-19.
 - Right-sidebar retirement gate: 40 ingestion/review/conversation tests, 113 Runtime tests and 36 plugin tests passed; TypeScript and production build passed on 2026-07-15.
 - Today randomized gates passed for 1,000 plans, 10,000 state actions, 1,000 lesson blueprints, 110 responsive widths and 20 reproducible regression seeds.
 - Daily ranking performance with 1,000 candidates: median 0.436 ms, P95 0.559 ms; localhost health response measured 0.018 s.

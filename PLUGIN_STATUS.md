@@ -1,6 +1,6 @@
 # Learning Agent Plugin Status
 
-Last updated: 2026-07-18
+Last updated: 2026-07-19
 
 ## Current phase
 
@@ -59,6 +59,8 @@ The Harness now treats a concrete proposal independently from brittle write keyw
 - The latest real Obsidian pass verifies current understanding, Delta pronoun continuity, no-write requests, minimum clarification, materials/review, dark and narrow layouts. The 14-state matrix is in `artifacts/context-material-obsidian-v1-screenshots/`.
 - The installed Runtime was restarted after the final intent fix; mixed text/URL “organize as a preview, do not save” now renders the Organization Plan instead of an answer-only fallback, without writing a note.
 - Live Assistant inspection shows the Harness contract in the normal conversation surface: low-risk maintenance is validated and undoable, while protected knowledge requests scoped authorization in the current chat. Installed/build hashes match (`main.js` `3be69e99dabcba894429b7688c99d621d69340b89b8e8cb07e9e7ebc53e329e4`, `styles.css` `b47e9b289d6c99edf422a599c4e5283d9135b1515b0f0b291b92e8986018b7fb`).
+- The installed Runtime was restarted on 2026-07-19 after the safe root-listing fix. A real `deepseek-v4-pro` request called `list_vault_folder("/")`, displayed five model-visible roots and completed without `ValueError`, Change Set, confirmation or Vault write.
+- Current complete gate: 40 ingestion/review/conversation tests, 167 Runtime/learning/model/Brain/Intake/PydanticAI tests (2 retired cases skipped), 59 plugin tests, strict TypeScript and production build all pass. Installed/build hashes match: `main.js` `f31005a2a6423f676eb1091931fe9441dd7f88ed9696917f014ad2ec0057d78c`; `styles.css` `3a197aa5f092c00197032a6b9d0410b320e7219167508afac6ecfc1dd3994a8d`.
 
 ## P0 / P1
 

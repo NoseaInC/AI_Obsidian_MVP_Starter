@@ -29,6 +29,20 @@ def _tool_history(messages) -> tuple[list[str], str]:
     return names, proposal
 
 
+def _tool_results(messages, tool_name: str) -> list[dict]:
+    results: list[dict] = []
+    for message in messages:
+        for part in getattr(message, "parts", []):
+            if str(getattr(part, "tool_name", "") or "") != tool_name:
+                continue
+            content = getattr(part, "content", None)
+            if isinstance(content, BaseModel):
+                content = content.model_dump()
+            if isinstance(content, dict):
+                results.append(content)
+    return results
+
+
 def _write_model(path: str, before: str, after: str) -> FunctionModel:
     async def stream(messages, _info):
         names, proposal = _tool_history(messages)
@@ -503,6 +517,133 @@ class PydanticAssistantRuntimeTests(unittest.TestCase):
         self.assertIn("write.diff", [item["type"] for item in events])
         self.assertNotIn("inline.confirmation.required", [item["type"] for item in events])
         self.assertFalse((self.vault / target).exists())
+
+    def test_29_vault_root_alias_lists_only_model_visible_roots(self):
+        (self.vault / "01-Inbox").mkdir()
+        (self.vault / "30-Learning").mkdir()
+        (self.vault / "30-Learning/Plan.md").write_text(
+            "# Plan\n",
+            encoding="utf-8",
+        )
+        (self.vault / "agent").mkdir()
+        (self.vault / "agent/private.md").write_text(
+            "# Runtime internals\n",
+            encoding="utf-8",
+        )
+        captured: dict = {}
+
+        async def stream(messages, _info):
+            nonlocal captured
+            results = _tool_results(messages, "list_vault_folder")
+            if not results:
+                yield {0: DeltaToolCall(
+                    name="list_vault_folder",
+                    json_args=json.dumps({"path": "/"}),
+                    tool_call_id="root-list",
+                )}
+                return
+            captured = results[-1]
+            yield "已列出模型可见的 Vault 顶层目录。"
+
+        events = self._stream(
+            "列出 Obsidian Vault 根目录",
+            model=FunctionModel(stream_function=stream),
+        )
+        paths = [item["path"] for item in captured["items"]]
+        self.assertEqual(captured["path"], ".")
+        self.assertEqual(captured["scope"], "model-visible-vault-root")
+        self.assertIn("01-Inbox", paths)
+        self.assertIn("20-Knowledge", paths)
+        self.assertIn("30-Learning", paths)
+        self.assertNotIn("agent", paths)
+        self.assertNotIn("90-Local-Only", paths)
+        self.assertTrue(all(item["kind"] == "folder" for item in captured["items"]))
+        root_event = next(
+            item for item in events
+            if item.get("tool") == "list_vault_folder"
+            and item["type"] == "tool.completed"
+        )
+        self.assertEqual(root_event["status"], "completed")
+        self.assertIn("个目录", root_event["summary"])
+        self.assertEqual(events[-1]["type"], "run.completed")
+
+    def test_30_missing_folder_is_observation_and_same_run_replans(self):
+        captured_error: dict = {}
+        captured_root: dict = {}
+
+        async def stream(messages, _info):
+            nonlocal captured_error, captured_root
+            results = _tool_results(messages, "list_vault_folder")
+            if not results:
+                yield {0: DeltaToolCall(
+                    name="list_vault_folder",
+                    json_args=json.dumps({"path": "20-Knowledge/Missing"}),
+                    tool_call_id="missing-folder",
+                )}
+                return
+            if len(results) == 1:
+                captured_error = results[0]
+                yield {0: DeltaToolCall(
+                    name="list_vault_folder",
+                    json_args=json.dumps({"path": "."}),
+                    tool_call_id="fallback-root",
+                )}
+                return
+            captured_root = results[-1]
+            yield "原目录不存在，已安全回退到 Vault 顶层目录。"
+
+        events = self._stream(
+            "检查目录；若不存在就查看 Vault 根目录",
+            model=FunctionModel(stream_function=stream),
+        )
+        self.assertFalse(captured_error["ok"])
+        self.assertEqual(
+            captured_error["error"]["code"],
+            "folder_not_found",
+        )
+        self.assertTrue(captured_error["error"]["recoverable"])
+        self.assertEqual(captured_root["path"], ".")
+        tool_events = [
+            item for item in events
+            if item.get("tool") == "list_vault_folder"
+            and item["type"] == "tool.completed"
+        ]
+        self.assertEqual(
+            [item["status"] for item in tool_events],
+            ["failed", "completed"],
+        )
+        self.assertEqual(
+            tool_events[0]["result"]["error"]["code"],
+            "folder_not_found",
+        )
+        self.assertNotIn("run.failed", [item["type"] for item in events])
+        self.assertEqual(events[-1]["type"], "run.completed")
+
+    def test_31_unexpected_tool_value_error_still_fails_fast(self):
+        original_call = self.service.tools.call
+
+        def broken_call(*args, **kwargs):
+            raise ValueError("tool_output_object_required")
+
+        self.service.tools.call = broken_call
+
+        async def stream(_messages, _info):
+            yield {0: DeltaToolCall(
+                name="search_vault",
+                json_args=json.dumps({"query": "Delta Method"}),
+                tool_call_id="broken-tool",
+            )}
+
+        try:
+            events = self._stream(
+                "搜索 Delta Method",
+                model=FunctionModel(stream_function=stream),
+            )
+        finally:
+            self.service.tools.call = original_call
+
+        self.assertEqual(events[-1]["type"], "run.failed")
+        self.assertEqual(events[-1]["code"], "ValueError")
 
 
 if __name__ == "__main__":

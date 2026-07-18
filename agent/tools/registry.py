@@ -422,7 +422,7 @@ def build_tool_registry(
     )
     register(
         "list_vault_folder",
-        "列出一个已授权 Vault 文件夹中的 Markdown 笔记；只返回路径与元数据，不读取正文。",
+        "列出一个已授权 Vault 文件夹中的子目录和 Markdown 笔记；path 为 / 或 . 时只列出模型可见的顶层目录。",
         folder_list,
         lambda p: list_vault_folder(vault, p, vault_index),
         max_result_bytes=48_000,

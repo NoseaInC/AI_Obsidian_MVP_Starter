@@ -106,9 +106,11 @@ def build_zhixu_agent(model):
         limit: int = 50,
         cursor: int = 0,
     ) -> dict[str, Any]:
-        """列出指定 Obsidian 文件夹中的 Markdown 文件。
+        """列出指定 Obsidian 文件夹中的子目录和 Markdown 文件。
 
         当用户明确要求读取某个文件夹，或任务必须知道目录中的完整文件清单时使用。
+        path 传入 "/" 或 "." 时列出模型可见的 Vault 顶层目录；其他路径必须是
+        相对 Vault 的受控路径，例如 "20-Knowledge/Concepts"。
         此工具只返回受控知识目录中的路径和元数据；正文应随后用 read_vault_note 读取。
         """
         return await ctx.deps.call_registered_tool(

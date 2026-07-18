@@ -9,6 +9,15 @@ if TYPE_CHECKING:
     from agent.tools.change_set import ChangeSetTools
 
 
+RECOVERABLE_TOOL_VALUE_ERRORS = (
+    "invalid_tool_arguments:",
+    "invalid_note_path",
+    "invalid_folder_path",
+    "symlink_path_not_allowed",
+    "tool_output_too_large",
+)
+
+
 def _extract_pdf_pages(path: Path) -> list[str]:
     """Load the legacy PDF extractor only when a PDF tool is invoked.
 
@@ -54,14 +63,45 @@ class ZhixuDependencies:
         name: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        return await asyncio.to_thread(
-            self.tool_registry.call,
-            name,
-            payload,
-            run_id=self.run_id,
-            step_id="assistant-agent",
-            record_event=False,
-        )
+        try:
+            return await asyncio.to_thread(
+                self.tool_registry.call,
+                name,
+                payload,
+                run_id=self.run_id,
+                step_id="assistant-agent",
+                record_event=False,
+            )
+        except (FileNotFoundError, PermissionError) as error:
+            raw_code = str(error).strip().splitlines()[0][:160]
+            code = raw_code or type(error).__name__
+            return {
+                "ok": False,
+                "error": {
+                    "code": code,
+                    "type": type(error).__name__,
+                    "recoverable": True,
+                    "retryable": not isinstance(error, PermissionError),
+                },
+            }
+        except ValueError as error:
+            # Invalid model arguments, missing local resources and denied paths
+            # are observations the model can recover from.  Returning a bounded
+            # contract keeps the same PydanticAI run alive so it can re-plan;
+            # unexpected implementation failures still propagate and fail fast.
+            raw_code = str(error).strip().splitlines()[0][:160]
+            if not raw_code.startswith(RECOVERABLE_TOOL_VALUE_ERRORS):
+                raise
+            code = raw_code or type(error).__name__
+            return {
+                "ok": False,
+                "error": {
+                    "code": code,
+                    "type": type(error).__name__,
+                    "recoverable": True,
+                    "retryable": not isinstance(error, PermissionError),
+                },
+            }
 
     async def read_pdf_pages(
         self,
