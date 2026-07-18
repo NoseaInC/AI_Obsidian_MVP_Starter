@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+"""Legacy intake/context material pipeline.
+
+The keyword classifier in this module is retained only for the legacy
+``submit_intake`` workflow. The canonical Pydantic Assistant Runtime must not
+import or consume it; assistant tool selection is model-driven.
+"""
+
 import hashlib
 import json
 import re

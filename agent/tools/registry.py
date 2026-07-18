@@ -22,6 +22,7 @@ from .source_search import (
 )
 from .vault_access import (
     VaultReadIndex,
+    list_vault_folder,
     read_note_excerpt,
     read_note_metadata,
     related_notes,
@@ -257,6 +258,17 @@ def build_tool_registry(
         "required": ["path"],
         "additionalProperties": False,
     }
+    folder_list = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "minLength": 1, "maxLength": 500},
+            "recursive": {"type": "boolean"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            "cursor": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        },
+        "required": ["path"],
+        "additionalProperties": False,
+    }
     due = {
         "type": "object",
         "properties": {
@@ -407,6 +419,13 @@ def build_tool_registry(
         "按标题、别名与正文相关性搜索 Vault；用于主动查找已有知识和避免重复。",
         query,
         lambda p: search_vault(vault, p, vault_index),
+    )
+    register(
+        "list_vault_folder",
+        "列出一个已授权 Vault 文件夹中的 Markdown 笔记；只返回路径与元数据，不读取正文。",
+        folder_list,
+        lambda p: list_vault_folder(vault, p, vault_index),
+        max_result_bytes=48_000,
     )
     register(
         "read_note_metadata",

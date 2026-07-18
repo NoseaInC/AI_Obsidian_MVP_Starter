@@ -5063,6 +5063,31 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   line-height: 1.5;
 }
 
+.la-inline-agent-confirmation__question {
+  margin-top: 10px;
+  color: var(--text-normal);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.55;
+}
+
+.la-inline-agent-confirmation__answer {
+  width: 100%;
+  min-height: 34px;
+  margin-top: 10px;
+  padding: 7px 9px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 7px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+}
+
+.la-inline-agent-confirmation__answer:focus-visible {
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 18%, transparent);
+  outline: none;
+}
+
 .la-inline-agent-confirmation__tool {
   margin-top: 4px;
   color: var(--text-muted);

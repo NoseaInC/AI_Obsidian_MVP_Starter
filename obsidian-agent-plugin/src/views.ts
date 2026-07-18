@@ -2165,8 +2165,9 @@ export class LearningAgentMainView extends ItemView {
               const preview = files.map((item: any) => `${String(item.path ?? "")}  +${Number(item.added ?? 0)} -${Number(item.deleted ?? 0)}\n\n${String(item.diff ?? "")}`).join("\n\n");
               new TextPreviewModal(this.app, "修改预览", preview || "暂无候选写入").open();
             },
-            confirm: async runId => resumeInlineConfirmation(runId, true, markdown, trace),
+            confirm: async (runId, scope) => resumeInlineConfirmation(runId, true, markdown, trace, "", scope),
             reject: async runId => resumeInlineConfirmation(runId, false, markdown, trace),
+            answer: async (runId, answer) => resumeInlineConfirmation(runId, true, markdown, trace, answer),
           });
           this.pendingAttachments = [];
           input.value = "";
@@ -2212,13 +2213,15 @@ export class LearningAgentMainView extends ItemView {
       confirmed: boolean,
       markdown: HTMLElement,
       trace: HTMLElement,
+      answer = "",
+      scope = "",
     ): Promise<void> => {
       this.abort?.abort();
       this.abort = new AbortController();
       const progressive = new ProgressiveAssistantMarkdown(this.markdown, markdown);
       let frame = 0;
       try {
-        for await (const chunk of this.agentRuntime.confirm(runId, confirmed, this.abort.signal)) {
+        for await (const chunk of this.agentRuntime.confirm(runId, confirmed, this.abort.signal, answer, scope)) {
           const event = agentChunkToAssistantEvent(chunk);
           this.assistantLiveRun = reduceAssistantStream(this.assistantLiveRun, event);
           this.paintAssistantLiveTrace(trace, this.assistantLiveRun);
@@ -2764,7 +2767,16 @@ export class LearningAgentMainView extends ItemView {
     };
     const streaming = capability("支持流式响应");
     const jsonSchema = capability("支持 JSON Schema");
-    const toolCalling = capability("支持工具调用");
+    const toolCalling = capability("原生 Tool Calling（支持工具调用）");
+    const streamedToolCalls = capability("流式 Tool Call 参数");
+    const reasoningContent = capability("Reasoning Content（仅内部）");
+    const parallelToolCalls = capability("并行 Tool Calls");
+    const reasoningWrap = advanced.createDiv({cls: "la-form-field"});
+    reasoningWrap.createEl("label", {text: "Reasoning Effort"});
+    const reasoningEffort = reasoningWrap.createEl("select", {attr: {"aria-label": "Reasoning Effort"}});
+    for (const value of ["", "none", "minimal", "low", "medium", "high", "xhigh"]) {
+      reasoningEffort.createEl("option", {value, text: value || "Provider 默认"});
+    }
     const headers = advanced.createEl("textarea", {attr: {placeholder: "自定义 Headers JSON（禁止 Authorization / Host / Content-Length）", "aria-label": "自定义 Headers"}});
 
     const load = (profile?: ModelProfile): void => {
@@ -2781,7 +2793,11 @@ export class LearningAgentMainView extends ItemView {
       timeout.value = String(profile?.settings?.timeout ?? 30);
       streaming.checked = profile?.settings?.streaming ?? true;
       jsonSchema.checked = profile?.settings?.jsonSchema ?? true;
-      toolCalling.checked = profile?.settings?.toolCalling ?? false;
+      toolCalling.checked = profile?.settings?.nativeToolCalling ?? profile?.settings?.toolCalling ?? true;
+      streamedToolCalls.checked = profile?.settings?.streamedToolCalls ?? toolCalling.checked;
+      reasoningContent.checked = profile?.settings?.reasoningContent ?? providerType.value === "deepseek";
+      parallelToolCalls.checked = profile?.settings?.parallelToolCalls ?? false;
+      reasoningEffort.value = profile?.settings?.reasoningEffort ?? "";
       headers.value = JSON.stringify(profile?.settings?.customHeaders ?? {}, null, 2);
     };
     load();
@@ -2812,6 +2828,12 @@ export class LearningAgentMainView extends ItemView {
           streaming: streaming.checked,
           jsonSchema: jsonSchema.checked,
           toolCalling: toolCalling.checked,
+          nativeToolCalling: toolCalling.checked,
+          streamedToolCalls: streamedToolCalls.checked,
+          reasoningContent: reasoningContent.checked,
+          thinkingControl: "provider-default",
+          parallelToolCalls: parallelToolCalls.checked,
+          reasoningEffort: reasoningEffort.value,
           customHeaders,
         },
       };

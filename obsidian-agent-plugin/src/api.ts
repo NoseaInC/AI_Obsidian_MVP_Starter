@@ -128,7 +128,7 @@ export class AgentClient {
   }
   async confirmAssistantRun(
     runId: string,
-    confirmed: boolean,
+    decision: {confirmed: boolean; answer?: string; scope?: string},
     onEvent: (event: AssistantStreamEvent) => void,
     signal?: AbortSignal,
   ): Promise<void> {
@@ -138,7 +138,7 @@ export class AgentClient {
         "Content-Type": "application/json",
         ...(this.sessionToken ? {Authorization: `Bearer ${this.sessionToken}`} : {}),
       },
-      body: JSON.stringify({confirmed}),
+      body: JSON.stringify(decision),
       signal,
     });
     if (!response.ok) throw new Error(`Assistant confirmation failed: HTTP ${response.status}`);

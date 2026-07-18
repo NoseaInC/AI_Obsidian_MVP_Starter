@@ -31,13 +31,18 @@ class WriteCommitResult(BaseModel):
 
 class InlineConfirmation(BaseModel):
     run_id: str
-    proposal_id: str
+    kind: Literal["write", "question"] = "write"
+    proposal_id: str = ""
     title: str
     summary: str
-    risk_level: Literal["medium", "high"] = "medium"
+    risk_level: Literal["low", "medium", "high"] = "medium"
     writes: list[dict[str, Any]] = Field(default_factory=list)
     tool_name: str = "commit_vault_change"
-    actions: list[Literal["confirm", "reject"]] = Field(
+    question: str = ""
+    options: list[str] = Field(default_factory=list)
+    reason: str = ""
+    scope_candidates: list[str] = Field(default_factory=list)
+    actions: list[str] = Field(
         default_factory=lambda: ["confirm", "reject"]
     )
 

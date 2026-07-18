@@ -148,15 +148,15 @@ class PydanticAssistantRuntimeTests(unittest.TestCase):
         self.assertEqual(target.read_text(encoding="utf-8"), before)
         self.assertEqual(resumed[-1]["type"], "run.completed")
 
-    def test_08_missing_write_intent_becomes_inline_harness_request(self):
+    def test_08_commit_defaults_to_inline_harness_request_without_intent_flags(self):
         path = "10-Inbox/x.md"
         events = self._stream(
             "好，继续。",
             model=_write_model(path, "", "# X\n\n由 Harness 管理。\n"),
         )
         confirmation = next(item for item in events if item["type"] == "inline.confirmation.required")
-        self.assertEqual(confirmation["confirmation"]["risk_level"], "high")
-        self.assertIn("没有明确要求写入", confirmation["confirmation"]["summary"])
+        self.assertEqual(confirmation["confirmation"]["risk_level"], "medium")
+        self.assertIn("默认需要", confirmation["confirmation"]["summary"])
         self.assertFalse((self.vault / "10-Inbox/x.md").exists())
         resumed = list(self.service.confirm_assistant_run(confirmation["runId"], True))
         self.assertEqual(resumed[-1]["type"], "run.completed")
@@ -307,13 +307,202 @@ class PydanticAssistantRuntimeTests(unittest.TestCase):
             "以倾向得分匹配为主题，搜索本地资料，整理成一篇可追溯笔记并保存到 10-Inbox/倾向得分匹配-主题整理.md。",
             model=FunctionModel(stream_function=stream),
         )
-        self.assertNotIn("inline.confirmation.required", [item["type"] for item in events])
-        self.assertEqual(events[-1]["type"], "run.completed")
+        confirmation = next(item for item in events if item["type"] == "inline.confirmation.required")
+        self.assertFalse((self.vault / target_path).exists())
+        resumed = list(self.service.confirm_assistant_run(confirmation["runId"], True))
+        self.assertEqual(resumed[-1]["type"], "run.completed")
         self.assertEqual((self.vault / target_path).read_text(encoding="utf-8"), target_content)
-        tools = [item.get("tool") for item in events if item["type"] == "tool.completed"]
+        all_events = events + resumed
+        tools = [item.get("tool") for item in all_events if item["type"] == "tool.completed"]
         self.assertEqual(tools[:5], ["search_vault", "read_vault_note", "read_vault_note", "propose_vault_change", "commit_vault_change"])
-        commit = next(item for item in events if item.get("tool") == "commit_vault_change" and item["type"] == "tool.completed")
+        commit = next(item for item in all_events if item.get("tool") == "commit_vault_change" and item["type"] == "tool.completed")
         self.assertTrue(commit["result"]["verification"]["verified"])
+
+    def test_21_all_safe_tools_are_stable_across_turns(self):
+        observed: list[tuple[str, ...]] = []
+
+        async def stream(_messages, info):
+            observed.append(tuple(sorted(tool.name for tool in info.function_tools)))
+            yield "完成。"
+
+        model = FunctionModel(stream_function=stream)
+        self._stream("普通解释", model=model)
+        self._stream("请整理一个主题", model=model)
+        self.assertEqual(observed[0], observed[1])
+        self.assertTrue({
+            "get_current_note", "get_current_selection", "get_conversation_focus",
+            "get_recent_conversation_messages", "search_vault", "list_vault_folder",
+            "read_vault_note", "find_related_notes", "get_attachment_metadata",
+            "read_pdf_pages", "search_pdf", "search_public_web", "fetch_public_url",
+            "ask_user", "propose_vault_change", "commit_vault_change",
+        }.issubset(set(observed[0])))
+
+    def test_22_runtime_context_contains_no_classified_intent_or_write_markers(self):
+        events = self._stream("把内容整理一下")
+        snapshot = self.service.assistant_runtime.persistence.load(events[0]["runId"])
+        encoded = json.dumps(snapshot.request, ensure_ascii=False)
+        self.assertIn("<runtime-context>", snapshot.request["prompt"])
+        self.assertNotIn("write_requested", encoded)
+        self.assertNotIn("commit_required", encoded)
+        self.assertNotIn('"intent"', encoded)
+
+    def test_23_folder_listing_is_real_paginated_vault_observation(self):
+        folder = self.vault / "20-Knowledge/Folder"
+        folder.mkdir(parents=True)
+        (folder / "A.md").write_text("# A", encoding="utf-8")
+        (folder / "B.md").write_text("# B", encoding="utf-8")
+
+        async def stream(messages, _info):
+            names, _ = _tool_history(messages)
+            if "list_vault_folder" not in names:
+                yield {0: DeltaToolCall(
+                    name="list_vault_folder",
+                    json_args=json.dumps({"path": "20-Knowledge/Folder", "limit": 1}),
+                    tool_call_id="folder-list",
+                )}
+                return
+            yield "已根据真实目录清单回答。"
+
+        events = self._stream("列出这个文件夹", model=FunctionModel(stream_function=stream))
+        event = next(item for item in events if item.get("tool") == "list_vault_folder" and item["type"] == "tool.completed")
+        self.assertIn("1 篇笔记", event["summary"])
+
+    def test_24_ask_user_resumes_same_run_with_answer_observation(self):
+        saw_answer = False
+
+        async def stream(messages, _info):
+            nonlocal saw_answer
+            names, _ = _tool_history(messages)
+            if "ask_user" not in names:
+                yield {0: DeltaToolCall(
+                    name="ask_user",
+                    json_args=json.dumps({
+                        "question": "保存到哪一个目录？",
+                        "options": ["10-Inbox", "20-Knowledge/Drafts"],
+                        "reason": "两个目录都安全，但用途不同",
+                    }, ensure_ascii=False),
+                    tool_call_id="ask-1",
+                )}
+                return
+            for message in messages:
+                for part in getattr(message, "parts", []):
+                    if getattr(part, "tool_name", "") == "ask_user" and "10-Inbox" in str(getattr(part, "content", "")):
+                        saw_answer = True
+            yield "已按你的选择继续。"
+
+        events = self._stream("帮我整理，但目录由我选择", model=FunctionModel(stream_function=stream))
+        pending = next(item for item in events if item["type"] == "inline.confirmation.required")
+        self.assertEqual(pending["confirmation"]["kind"], "question")
+        self.assertEqual(pending["confirmation"]["options"], ["10-Inbox", "20-Knowledge/Drafts"])
+        resumed = list(self.service.confirm_assistant_run(pending["runId"], True, answer="10-Inbox"))
+        self.assertTrue(saw_answer)
+        self.assertEqual(resumed[-1]["type"], "run.completed")
+
+    def test_25_scoped_session_grant_auto_allows_only_future_creates_in_root(self):
+        first_path = "10-Inbox/one.md"
+        first = self._stream("创建第一篇", model=_write_model(first_path, "", "# One\n"))
+        pending = next(item for item in first if item["type"] == "inline.confirmation.required")
+        conversation_id = pending["conversationId"]
+        self.assertIn("10-Inbox", pending["confirmation"]["scope_candidates"])
+        list(self.service.confirm_assistant_run(pending["runId"], True, scope="10-Inbox"))
+
+        second_path = "10-Inbox/two.md"
+        phase = 0
+        proposal = ""
+
+        async def second_stream(messages, _info):
+            nonlocal phase, proposal
+            _, observed = _tool_history(messages)
+            proposal = observed or proposal
+            if phase == 0:
+                phase = 1
+                yield {0: DeltaToolCall(
+                    name="propose_vault_change",
+                    json_args=json.dumps({
+                        "title": "第二篇",
+                        "writes": [{"path": second_path, "content": "# Two\n", "category": "assistant-agent"}],
+                    }, ensure_ascii=False),
+                    tool_call_id="second-proposal",
+                )}
+                return
+            if phase == 1:
+                phase = 2
+                yield {0: DeltaToolCall(
+                    name="commit_vault_change",
+                    json_args=json.dumps({"proposal_id": proposal}),
+                    tool_call_id="second-commit",
+                )}
+                return
+            yield "第二篇已完成。"
+
+        self.service.assistant_runtime.model_factory = lambda *_: FunctionModel(stream_function=second_stream)
+        events = list(self.service.assistant_stream({
+            "message": "创建第二篇",
+            "profile_id": self.profile["id"],
+            "conversation_id": conversation_id,
+        }))
+        self.assertNotIn("inline.confirmation.required", [item["type"] for item in events])
+        self.assertTrue((self.vault / second_path).is_file())
+
+    def test_26_absolute_path_is_denied_before_any_write(self):
+        outside = Path(self.temp.name) / "outside.md"
+        events = self._stream(
+            "写到绝对路径",
+            model=_write_model(str(outside), "", "# Escape\n"),
+        )
+        self.assertEqual(events[-1]["type"], "run.failed")
+        self.assertFalse(outside.exists())
+
+    def test_27_invalid_tool_arguments_are_returned_to_model_for_recovery(self):
+        phase = 0
+
+        async def stream(_messages, _info):
+            nonlocal phase
+            if phase == 0:
+                phase = 1
+                yield {0: DeltaToolCall(
+                    name="search_vault",
+                    json_args=json.dumps({"limit": 5}),
+                    tool_call_id="bad-search",
+                )}
+                return
+            if phase == 1:
+                phase = 2
+                yield {0: DeltaToolCall(
+                    name="search_vault",
+                    json_args=json.dumps({"query": "Delta Method", "limit": 5}),
+                    tool_call_id="good-search",
+                )}
+                return
+            yield "已修正工具参数并完成搜索。"
+
+        events = self._stream("搜索 Delta Method", model=FunctionModel(stream_function=stream))
+        tool_events = [item for item in events if item["type"] == "tool.completed"]
+        self.assertTrue(any(item["status"] == "failed" for item in tool_events))
+        self.assertTrue(any(item["status"] == "completed" for item in tool_events))
+        self.assertEqual(events[-1]["type"], "run.completed")
+
+    def test_28_proposal_only_turn_does_not_require_keyword_classifier(self):
+        target = "10-Inbox/preview-only.md"
+
+        async def stream(messages, _info):
+            names, _ = _tool_history(messages)
+            if "propose_vault_change" not in names:
+                yield {0: DeltaToolCall(
+                    name="propose_vault_change",
+                    json_args=json.dumps({
+                        "title": "只预览",
+                        "writes": [{"path": target, "content": "# Preview\n", "category": "assistant-agent"}],
+                    }, ensure_ascii=False),
+                    tool_call_id="preview-proposal",
+                )}
+                return
+            yield "修改方案已生成，尚未提交。"
+
+        events = self._stream("先给我看看方案", model=FunctionModel(stream_function=stream))
+        self.assertIn("write.diff", [item["type"] for item in events])
+        self.assertNotIn("inline.confirmation.required", [item["type"] for item in events])
+        self.assertFalse((self.vault / target).exists())
 
 
 if __name__ == "__main__":

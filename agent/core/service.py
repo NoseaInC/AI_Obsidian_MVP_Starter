@@ -1715,9 +1715,17 @@ class AgentService:
         self,
         run_id: str,
         confirmed: bool,
+        *,
+        answer: str = "",
+        scope: str = "",
     ) -> Iterator[dict[str, Any]]:
         """Resume the same deferred PydanticAI run after inline confirmation."""
-        return self.assistant_runtime.confirm(run_id, confirmed)
+        return self.assistant_runtime.confirm(
+            run_id,
+            confirmed,
+            answer=answer,
+            scope=scope,
+        )
 
     def assistant_run_events(
         self,

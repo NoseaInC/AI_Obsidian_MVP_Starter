@@ -47,12 +47,18 @@ export interface AgentConversationState {
 
 export interface AgentInlineConfirmation {
   run_id: string;
+  kind: "write" | "question";
   proposal_id: string;
   title: string;
   summary: string;
-  risk_level: "medium" | "high";
+  risk_level: "low" | "medium" | "high";
   writes: Array<Record<string, unknown>>;
-  actions: Array<"confirm" | "reject">;
+  tool_name?: string;
+  question: string;
+  options: string[];
+  reason: string;
+  scope_candidates: string[];
+  actions: string[];
 }
 
 interface AgentChunkBase {

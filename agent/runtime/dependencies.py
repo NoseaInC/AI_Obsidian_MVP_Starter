@@ -43,14 +43,11 @@ class ZhixuDependencies:
     active_note_path: str
     active_selection: str
     attachment_ids: list[str]
-    write_requested: bool
-    autonomy_mode: str
     allow_network: bool
     fetch_public_web: Callable[[str], dict[str, Any]]
     search_public_web: Callable[[str, int], dict[str, Any]]
-    commit_required: bool = False
+    session_allow_create_roots: list[str] = field(default_factory=list)
     proposed_change_set_ids: list[str] = field(default_factory=list)
-    commit_attempted: bool = False
 
     async def call_registered_tool(
         self,
@@ -130,3 +127,32 @@ class ZhixuDependencies:
             "query": query,
             "items": matches,
         }
+
+    async def apply_validated_change_set(
+        self,
+        proposal_id: str,
+    ) -> dict[str, Any]:
+        """Harness-owned commit boundary with mandatory post-confirm revalidation."""
+        validation = await asyncio.to_thread(
+            self.change_sets.validate,
+            {"change_set_id": proposal_id},
+        )
+        if validation.get("idempotent"):
+            return {
+                "idempotent": True,
+                "verification": await asyncio.to_thread(
+                    self.change_sets.verify_applied,
+                    proposal_id,
+                ),
+            }
+        applied = await asyncio.to_thread(
+            self.change_sets.apply,
+            {"change_set_id": proposal_id, "confirmed": True},
+        )
+        verification = await asyncio.to_thread(
+            self.change_sets.verify_applied,
+            proposal_id,
+        )
+        if not verification.get("verified"):
+            raise RuntimeError("harness_post_apply_verification_failed")
+        return {**applied, "verification": verification}

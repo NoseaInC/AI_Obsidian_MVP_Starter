@@ -155,6 +155,11 @@ test("assistant UI uses the Pydantic runtime and inline governed confirmation", 
   for (const component of ["la-chat-first", "la-brain-timeline", "la-brain-result", "la-change-set-proposal", "la-brain-error", "la-artifact-card"]) assert.match(views + css, new RegExp(component));
   assert.match(views, /PydanticAgentRuntime/);
   assert.match(views, /renderInlineAgentConfirmation/);
+  const confirmation = readFileSync(new URL("../src/assistant-inline-confirmation.ts", import.meta.url), "utf8");
+  assert.match(confirmation, /confirmation\.kind === "question"/);
+  assert.match(confirmation, /handlers\.answer/);
+  assert.match(confirmation, /本会话允许在/);
+  assert.doesNotMatch(confirmation, /window\.(?:prompt|confirm|alert)\(/);
   assert.match(views, /\/change-sets\/.*\/diff/);
   assert.doesNotMatch(views, /assistant.*\/intake\/submit/);
   assert.doesNotMatch(views, /this\.client\.post<any>\("\/chat"/);
@@ -170,7 +175,7 @@ test("assistant model picker only changes chat routing", () => {
 
 test("provider settings expose Keychain references and all Brain model routes", () => {
   const views = readFileSync(new URL("../src/views.ts", import.meta.url), "utf8");
-  for (const field of ["API Key Reference", "组织 ID（可选）", "支持流式响应", "支持 JSON Schema", "支持工具调用"]) assert.match(views, new RegExp(field));
+  for (const field of ["API Key Reference", "组织 ID（可选）", "支持流式响应", "支持 JSON Schema", "支持工具调用", "流式 Tool Call 参数", "Reasoning Content", "并行 Tool Calls", "Reasoning Effort"]) assert.match(views, new RegExp(field));
   for (const route of ["brain_orchestrator", "intent_router", "curriculum_planner", "research_synthesis", "tutor", "quiz", "evaluation", "pdf_prepare", "assistant_chat"]) assert.match(views, new RegExp(route));
   assert.match(views, /apiKeyReference: keyReference\.value/);
   assert.match(views, /organizationId: organizationId\.value/);

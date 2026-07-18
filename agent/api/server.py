@@ -212,6 +212,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.service.confirm_assistant_run(
                         run_id,
                         body.get("confirmed") is True,
+                        answer=str(body.get("answer") or ""),
+                        scope=str(body.get("scope") or ""),
                     )
                 )
                 return

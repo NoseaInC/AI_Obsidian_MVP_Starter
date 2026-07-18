@@ -1,6 +1,6 @@
 # PydanticAI Assistant Runtime
 
-Status: implemented, 2026-07-17
+Status: implemented, corrected 2026-07-18
 
 ## Canonical chain
 
@@ -33,25 +33,37 @@ and never renders hidden reasoning.
 ## Governed writes
 
 The model can propose a bounded Change Set and call the governed commit tool.
-The local Harness classifies each concrete Change Set as auto-apply, inline
-confirmation, or blocked. Explicit low-risk creation under approved Draft/Inbox
-roots may be committed automatically. Existing-note changes, missing inherited
-write authority and medium/high-risk operations suspend the same PydanticAI run
-with deferred tool approval. The inline confirmation displays the tool, paths,
-summary, risk and on-demand Diff; the normal composer is hidden until
-confirm/cancel resolves. Confirmed execution revalidates the immutable payload,
-base hashes, path policy and reviewed/core protection, then compares every
-written file with the immutable payload hash. The apply primitive is not
-exposed as an independent model tool, and there is no separate daily Review UI.
+The local `ToolPermissionGate` classifies the concrete tool request as `allow`,
+`ask`, or `deny`. Commit defaults to an inline question. A scoped, conversation-
+local rule may auto-allow future *creates* in one explicit root such as
+`10-Inbox`; it never auto-allows updates. Invalid/absolute paths, path or symlink
+escape, reviewed/core targets, stale base hashes and unknown actions remain
+deny rules and override every session grant.
 
-If a model creates a proposal and then tries to simulate “waiting for approval”
-in prose, a PydanticAI output validator requests a model retry and requires the
-governed commit tool. Explicit “proposal only / do not apply” requests are not
-forced into commit.
+The inline confirmation displays the real tool, paths, summary, risk and
+on-demand Diff; the normal composer is hidden until the user answers. Confirmed
+execution revalidates the immutable payload, base hashes, path policy and
+reviewed/core protection, then compares every written file with the immutable
+payload hash. The apply primitive is owned by the dependency/Harness boundary,
+not exposed as an independent model tool, and there is no separate daily Review
+UI. The model decides from the actual user turn whether a Change Set is only a
+preview or should proceed to commit; there is no keyword-derived
+`write_requested` or `commit_required` flag and no output-validator coercion.
 
-Terse continuation such as “好” or “继续” is not treated as an error after a
-concrete proposal exists. The model creates the Change Set and the Harness—not
-the keyword classifier—decides whether the current run may continue or must ask.
+## Model-driven tool loop
+
+Every turn exposes the same typed safe tools. The user text is not preclassified
+into intent, allowed-tools, tool budget or write flags. The current user turn is
+augmented only by a bounded `<runtime-context>` block containing conversation
+focus, recent messages, active-note identity, attachment metadata, permission
+mode and runtime capabilities. The same DeepSeek/PydanticAI run selects a tool,
+receives its real Observation and replans.
+
+`ask_user` is a typed deferred tool, not a prose convention. It is reserved for
+information that Vault/PDF/web tools cannot resolve or for a decision only the
+user can make. The answer resumes the same run and becomes a tool result.
+`list_vault_folder` provides a validated, paginated Markdown file inventory;
+file bodies still require explicit `read_vault_note` calls.
 
 ## Lifecycle
 
@@ -76,6 +88,7 @@ replaces, the backend Change Set base hash.
 - PydanticAI exists only in the Python backend.
 - The main assistant does not import the retired AssistantRunCoordinator.
 - Provider and model-routing writes pass through SettingsService.
+- Runtime code cannot import or consume the legacy keyword intent classifier.
 - Markdown remains knowledge truth; runtime prose remains local-only files.
 
 Claudian was studied as an MIT-licensed design reference. No unrestricted CLI,

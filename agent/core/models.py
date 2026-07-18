@@ -221,6 +221,9 @@ class ModelProfileService:
         if not KEY_REFERENCE.fullmatch(reference):
             raise ValueError("API Key Reference may contain only letters, numbers, dot, underscore, colon and hyphen")
         settings = dict(data.get("settings", {})); settings["customHeaders"] = validate_headers(dict(settings.get("customHeaders", {})))
+        native_tool_calling = bool(
+            settings.get("nativeToolCalling", settings.get("toolCalling", True))
+        )
         profile = {
             "id": profile_id, "displayName": str(data.get("displayName", "未命名配置")).strip() or "未命名配置",
             "providerType": provider_type, "baseUrl": validate_base_url(str(data.get("baseUrl", ""))),
@@ -228,7 +231,13 @@ class ModelProfileService:
             "availableModels": [str(item) for item in data.get("availableModels", [])], "enabled": bool(data.get("enabled", True)),
             "settings": {"temperature": float(settings.get("temperature", .3)), "maxTokens": int(settings.get("maxTokens", 2000)),
                          "timeout": float(settings.get("timeout", 30)), "streaming": bool(settings.get("streaming", True)),
-                         "jsonSchema": bool(settings.get("jsonSchema", True)), "toolCalling": bool(settings.get("toolCalling", False)),
+                         "jsonSchema": bool(settings.get("jsonSchema", True)), "toolCalling": native_tool_calling,
+                         "nativeToolCalling": native_tool_calling,
+                         "streamedToolCalls": bool(settings.get("streamedToolCalls", native_tool_calling)),
+                         "reasoningContent": bool(settings.get("reasoningContent", provider_type == "deepseek")),
+                         "thinkingControl": str(settings.get("thinkingControl", "provider-default")),
+                         "parallelToolCalls": bool(settings.get("parallelToolCalls", False)),
+                         "reasoningEffort": str(settings.get("reasoningEffort", "")),
                          "organizationId": str(settings.get("organizationId", "")), "customHeaders": settings["customHeaders"]},
         }
         api_key = str(data.get("apiKey", ""))

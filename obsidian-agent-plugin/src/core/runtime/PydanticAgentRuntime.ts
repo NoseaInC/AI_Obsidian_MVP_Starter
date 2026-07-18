@@ -9,7 +9,7 @@ import type {
 
 export interface PydanticRuntimeTransport {
   streamAssistant(body: unknown, onEvent: (event: any) => void, signal?: AbortSignal): Promise<void>;
-  confirmAssistantRun(runId: string, confirmed: boolean, onEvent: (event: any) => void, signal?: AbortSignal): Promise<void>;
+  confirmAssistantRun(runId: string, response: {confirmed: boolean; answer?: string; scope?: string}, onEvent: (event: any) => void, signal?: AbortSignal): Promise<void>;
   assistantRunEvents(runId: string, after?: number): Promise<{items: any[]; schemaVersion: 3}>;
   cancelAssistantRun(runId: string): Promise<unknown>;
   compactAssistantRun(runId: string): Promise<any>;
@@ -58,8 +58,8 @@ export class PydanticAgentRuntime implements AgentRuntime {
     yield* this.consume(callback => this.transport.streamAssistant(turn.payload, callback, signal));
   }
 
-  async *confirm(runId: string, confirmed: boolean, signal?: AbortSignal): AsyncGenerator<AgentChunk> {
-    yield* this.consume(callback => this.transport.confirmAssistantRun(runId, confirmed, callback, signal));
+  async *confirm(runId: string, confirmed: boolean, signal?: AbortSignal, answer = "", scope = ""): AsyncGenerator<AgentChunk> {
+    yield* this.consume(callback => this.transport.confirmAssistantRun(runId, {confirmed, answer, scope}, callback, signal));
   }
 
   async reconnect(runId: string, afterSequence: number): Promise<AgentChunk[]> {

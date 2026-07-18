@@ -56,9 +56,17 @@ class PydanticAssistantRuntime:
         self,
         run_id: str,
         confirmed: bool,
+        *,
+        answer: str = "",
+        scope: str = "",
     ) -> Iterator[dict[str, Any]]:
         return sync_iter_async(
-            lambda: self._resume(run_id, confirmed)
+            lambda: self._resume(
+                run_id,
+                confirmed,
+                answer=answer,
+                scope=scope,
+            )
         )
 
     def events(
@@ -186,6 +194,9 @@ class PydanticAssistantRuntime:
         self,
         run_id: str,
         confirmed: bool,
+        *,
+        answer: str = "",
+        scope: str = "",
     ) -> AsyncIterator[dict[str, Any]]:
         snapshot = self.persistence.load(run_id)
         if snapshot.status in {"completed", "cancelled", "failed"}:
@@ -209,6 +220,27 @@ class PydanticAssistantRuntime:
                 if confirmed
                 else ToolDenied("用户在当前对话中取消了这次修改")
             )
+        for call in requests.calls:
+            if confirmed and answer.strip():
+                results.calls[call.tool_call_id] = answer.strip()[:20_000]
+            else:
+                results.calls[call.tool_call_id] = ToolDenied(
+                    "用户取消了这个问题"
+                )
+
+        if (
+            confirmed
+            and scope
+            and snapshot.confirmation
+            and snapshot.confirmation.kind == "write"
+            and scope in snapshot.confirmation.scope_candidates
+        ):
+            key = f"assistant_session_allow_roots:{snapshot.conversation_id}"
+            current = self.service.store.get_setting(key, [])
+            roots = list(current) if isinstance(current, list) else []
+            if scope not in roots:
+                roots.append(scope)
+                self.service.store.set_setting(key, roots)
 
         prepared = self._restore_request(snapshot)
         history = ModelMessagesTypeAdapter.validate_json(
@@ -220,6 +252,7 @@ class PydanticAssistantRuntime:
             "inline.confirmation.resolved",
             conversationId=snapshot.conversation_id,
             confirmed=confirmed,
+            answered=bool(answer.strip()),
             proposalId=(
                 snapshot.confirmation.proposal_id
                 if snapshot.confirmation
@@ -445,6 +478,7 @@ class PydanticAssistantRuntime:
                         "run.waiting_confirmation",
                         conversationId=conversation_id,
                         proposalId=confirmation.proposal_id,
+                        kind=confirmation.kind,
                     )
                     return
 
@@ -584,13 +618,6 @@ class PydanticAssistantRuntime:
                 )
             attachments.append(attachment)
 
-        prepared = self.service.context_material.prepare(
-            conversation_id,
-            user_row,
-            attachments,
-            body,
-        )
-
         routes = self.service.model_routing()
         route = routes.get("assistant_chat") or routes.get(
             "assistant",
@@ -629,10 +656,10 @@ class PydanticAssistantRuntime:
             if isinstance(body.get("active_note"), dict)
             else {}
         )
-        focus = prepared.get("focus") or {}
-        understanding = (
-            prepared.get("materialBundle") or {}
-        ).get("understanding") or {}
+        focus = self.service.store.get_conversation_focus(
+            conversation_id
+        ) or {}
+        understanding: dict[str, Any] = {}
         sources = [
             {
                 "id": item.get("id"),
@@ -657,46 +684,44 @@ class PydanticAssistantRuntime:
             if isinstance(body.get("options"), dict)
             else {}
         )
-        intent = prepared.get("intent") or {}
-        write_requested = bool(intent.get("writeRequested"))
-        proposal_only = any(
-            marker in message
-            for marker in (
-                "只创建修改提案", "仅创建修改提案", "只创建提案", "仅创建提案",
-                "不要执行", "不要应用", "不执行保存", "不应用修改",
-            )
-        )
-        # Once the model has built a concrete Change Set, the Harness—not a
-        # brittle keyword classifier—must decide whether to auto-apply, ask in
-        # the current conversation, or block. Only an explicit proposal-only
-        # request suppresses the commit/authorization step.
-        commit_required = not proposal_only
-        autonomy = self.service.autonomy_status()
-        autonomy_mode = str(
-            autonomy.get("mode")
-            or autonomy.get("autonomyMode")
-            or "balanced"
-        )
         run_id = f"run-{uuid.uuid4().hex}"
         assistant_message_id = f"msg-{uuid.uuid4().hex}"
-        resolved_request = redact_secret_text(
-            str(prepared.get("resolvedMessage") or message)
+        session_roots = self.service.store.get_setting(
+            f"assistant_session_allow_roots:{conversation_id}",
+            [],
+        )
+        if not isinstance(session_roots, list):
+            session_roots = []
+        recent = self.service.intake.recent_messages(
+            conversation_id,
+            12,
         )
         prompt_context = redact_model_context({
-            "user_request": resolved_request,
-            "conversation_focus": focus,
-            "material_understanding": understanding,
-            "current_note": active_note,
+            "conversationId": conversation_id,
+            "conversationFocus": focus,
+            "recentMessages": [
+                {
+                    "role": str(item.get("role") or ""),
+                    "content": str(item.get("content") or "")[:4_000],
+                }
+                for item in recent
+            ],
+            "activeNote": {
+                "path": str(active_note.get("path") or ""),
+                "selectionAvailable": bool(
+                    str(active_note.get("selection") or "").strip()
+                ),
+            },
             "attachments": sources,
-            "write_requested": write_requested,
-            "commit_required": commit_required,
-            "proposal_only": proposal_only,
-            "autonomy_mode": autonomy_mode,
+            "permissionMode": "commit-default-ask",
+            "sessionAllowCreateRoots": session_roots,
+            "networkAuthorized": options.get("allow_network") is True,
         })
         prompt = (
-            f"{resolved_request}\n\n"
-            "本地 Runtime 已解析的上下文：\n"
-            f"{json.dumps(prompt_context, ensure_ascii=False)}"
+            f"{message}\n\n"
+            "<runtime-context>\n"
+            f"{json.dumps(prompt_context, ensure_ascii=False)}\n"
+            "</runtime-context>"
         )
 
         request_snapshot = redact_model_context({
@@ -712,10 +737,7 @@ class PydanticAssistantRuntime:
             "focus": focus,
             "understanding": understanding,
             "sources": sources,
-            "write_requested": write_requested,
-            "commit_required": commit_required,
-            "proposal_only": proposal_only,
-            "autonomy_mode": autonomy_mode,
+            "session_allow_create_roots": session_roots,
             "assistant_message_id": assistant_message_id,
             "prompt": prompt,
         })
@@ -731,9 +753,7 @@ class PydanticAssistantRuntime:
             "sources": sources,
             "active_note": active_note,
             "attachment_ids": raw_attachment_ids,
-            "write_requested": write_requested,
-            "commit_required": commit_required,
-            "autonomy_mode": autonomy_mode,
+            "session_allow_create_roots": session_roots,
             "allow_network": options.get("allow_network") is True,
             "max_tokens": int(settings.get("maxTokens", 3000)),
             "request_snapshot": request_snapshot,
@@ -756,14 +776,9 @@ class PydanticAssistantRuntime:
             "sources": request.get("sources") or [],
             "active_note": body.get("active_note") or {},
             "attachment_ids": body.get("attachments") or [],
-            "write_requested": bool(
-                request.get("write_requested")
-            ),
-            "commit_required": bool(
-                request.get("commit_required")
-            ),
-            "autonomy_mode": str(
-                request.get("autonomy_mode") or "balanced"
+            "session_allow_create_roots": self.service.store.get_setting(
+                f"assistant_session_allow_roots:{snapshot.conversation_id}",
+                request.get("session_allow_create_roots") or [],
             ),
             "allow_network": bool(
                 (body.get("options") or {}).get("allow_network")
@@ -794,19 +809,13 @@ class PydanticAssistantRuntime:
             attachment_ids=list(
                 prepared.get("attachment_ids") or []
             ),
-            write_requested=bool(
-                prepared.get("write_requested")
-            ),
-            autonomy_mode=str(
-                prepared.get("autonomy_mode") or "balanced"
-            ),
             allow_network=bool(
                 prepared.get("allow_network")
             ),
             fetch_public_web=self.service.fetch_public_web,
             search_public_web=self.service.search_public_web,
-            commit_required=bool(
-                prepared.get("commit_required")
+            session_allow_create_roots=list(
+                prepared.get("session_allow_create_roots") or []
             ),
         )
 
@@ -815,10 +824,33 @@ class PydanticAssistantRuntime:
         run_id: str,
         requests: DeferredToolRequests,
     ) -> InlineConfirmation:
-        if not requests.approvals:
-            raise RuntimeError(
-                "deferred_request_has_no_approval"
+        if requests.calls:
+            call = requests.calls[0]
+            metadata = (
+                requests.metadata.get(call.tool_call_id, {})
+                if requests.metadata
+                else {}
             )
+            arguments = call.args if isinstance(call.args, dict) else {}
+            options = metadata.get("options") or arguments.get("options") or []
+            return InlineConfirmation(
+                run_id=run_id,
+                kind="question",
+                title=str(metadata.get("title") or "知序需要你的选择"),
+                summary=str(metadata.get("reason") or "回答后将继续同一个任务"),
+                risk_level="low",
+                tool_name="ask_user",
+                question=str(
+                    metadata.get("question")
+                    or arguments.get("question")
+                    or "请提供继续任务所需的信息"
+                ),
+                options=[str(item) for item in options][:8],
+                reason=str(metadata.get("reason") or ""),
+                actions=["answer", "cancel"],
+            )
+        if not requests.approvals:
+            raise RuntimeError("deferred_request_has_no_supported_call")
         call = requests.approvals[0]
         metadata = (
             requests.metadata.get(call.tool_call_id, {})
@@ -836,6 +868,7 @@ class PydanticAssistantRuntime:
         )
         return InlineConfirmation(
             run_id=run_id,
+            kind="write",
             proposal_id=proposal_id,
             title=str(
                 metadata.get("title")
@@ -852,6 +885,10 @@ class PydanticAssistantRuntime:
                 else "medium"
             ),
             writes=list(metadata.get("writes") or []),
+            reason=str(metadata.get("reason") or ""),
+            scope_candidates=[
+                str(item) for item in metadata.get("scopeCandidates") or []
+            ],
         )
 
     def _emit(
@@ -881,6 +918,10 @@ class PydanticAssistantRuntime:
                 return f"读取最近 {len(content.get('items') or [])} 条对话"
             if tool_name == "get_conversation_focus":
                 return "读取会话焦点"
+            if tool_name == "list_vault_folder":
+                return f"列出文件夹 · {len(content.get('items') or [])} 篇笔记"
+            if tool_name == "ask_user":
+                return "已收到用户回答"
             if tool_name == "get_attachment_metadata":
                 return f"读取附件元数据 · {str(content.get('displayName') or '附件')}"
             if isinstance(content.get("items"), list):
@@ -978,6 +1019,7 @@ class PydanticAssistantRuntime:
             "get_current_note": "读取当前笔记",
             "get_current_selection": "读取当前选区",
             "search_vault": "搜索知识库",
+            "list_vault_folder": "列出知识库文件夹",
             "read_vault_note": "读取笔记正文",
             "find_related_notes": "查找相关笔记",
             "get_conversation_focus": "读取会话焦点",
@@ -987,6 +1029,7 @@ class PydanticAssistantRuntime:
             "search_pdf": "搜索 PDF",
             "search_public_web": "搜索公开网页",
             "fetch_public_url": "读取公开网页",
+            "ask_user": "询问用户",
             "propose_vault_change": "生成修改方案",
             "commit_vault_change": "提交 Obsidian 修改",
         }.get(name, name)

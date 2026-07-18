@@ -6,8 +6,8 @@ from typing import Any
 from pydantic_ai import (
     Agent,
     ApprovalRequired,
+    CallDeferred,
     DeferredToolRequests,
-    ModelRetry,
     RunContext,
 )
 
@@ -17,7 +17,7 @@ from .contracts import (
     WriteCommitResult,
 )
 from .dependencies import ZhixuDependencies
-from .policy import assess_proposal
+from .policy import ToolPermissionGate
 
 
 INSTRUCTIONS = """
@@ -28,19 +28,15 @@ INSTRUCTIONS = """
 2. 只要任务依赖当前笔记、Vault、PDF、附件、网页或最近对话，就主动调用工具。
 3. 每次工具返回后重新判断下一步；结果不足时换查询、读取命中笔记或扩大准确页码范围。
 4. 不要求用户重复提供已经存在于当前会话、当前笔记、附件或 Conversation Focus 中的信息。
-5. 普通问题直接自然回答，不生成学习包、研究包或文件修改。
-6. 用户要求保存、创建或更新笔记，或当前对话已经自然推进到写入阶段时：
-   - 先读取目标笔记和相关上下文；
-   - 调用 propose_vault_change 创建真实 Change Set；
-   - 必须紧接着调用 commit_vault_change，不要在创建提案后用文字声称“等待确认”；
-   - 真正的等待确认由 commit_vault_change 和 Runtime 触发并暂停同一个 Run。
-7. 不要因为用户只说“好”“继续”“就这样”而报错。如果模型已经形成具体写入方案，先创建
-   Change Set，再由 commit_vault_change 交给 Harness 决定自动执行、在对话中询问或阻止。
-8. commit_vault_change 的安全决策由 Runtime Harness 完成。低风险新建 Draft 可以自动应用；
-   更新已有笔记、缺少明确写入授权、超出允许目录或风险较高时，Runtime 会在当前对话中
-   展示目标、文件和风险并要求用户确认一次。
+5. 工具无法消除关键歧义，或选择只能由用户本人决定时，调用 ask_user；能通过读取、搜索或
+   检查附件解决的问题不得反问用户，也不要在普通文本中模拟等待回答。
+6. 普通问题直接自然回答，不生成学习包、研究包或文件修改。
+7. 需要保存、创建或更新笔记时，先读取目标与相关上下文，再调用 propose_vault_change。
+   用户只要求查看方案时可停在提案；用户要求实际写入时再调用 commit_vault_change。
+8. commit_vault_change 的安全决策只由 Runtime Harness 完成。提交默认在当前对话询问；仅当
+   本会话已有范围化的新建目录授权时可自动执行。越界、受保护或过期修改会直接拒绝。
 9. 不得声称已经读取、搜索、写入或验证，除非相应工具真实成功返回。
-10. 不显示私有思维链，只在自然回答中给出结论、证据、未完成事项和必要说明。
+10. 不显示私有思维链，只给出结论、证据、未完成事项和必要的简短行动说明。
 11. 使用 Obsidian Markdown；公式使用 $...$ 和 $$...$$；内部链接使用 [[...]]。
 12. reviewed/core、受保护笔记、路径逃逸、过期 base hash 和策略拒绝永远不能绕过。
 """
@@ -100,6 +96,29 @@ def build_zhixu_agent(model):
         return await ctx.deps.call_registered_tool(
             "search_vault",
             {"query": query, "limit": min(max(limit, 1), 30)},
+        )
+
+    @agent.tool
+    async def list_vault_folder(
+        ctx: RunContext[ZhixuDependencies],
+        path: str,
+        recursive: bool = False,
+        limit: int = 50,
+        cursor: int = 0,
+    ) -> dict[str, Any]:
+        """列出指定 Obsidian 文件夹中的 Markdown 文件。
+
+        当用户明确要求读取某个文件夹，或任务必须知道目录中的完整文件清单时使用。
+        此工具只返回受控知识目录中的路径和元数据；正文应随后用 read_vault_note 读取。
+        """
+        return await ctx.deps.call_registered_tool(
+            "list_vault_folder",
+            {
+                "path": path,
+                "recursive": recursive,
+                "limit": min(max(limit, 1), 100),
+                "cursor": max(cursor, 0),
+            },
         )
 
     @agent.tool
@@ -238,6 +257,32 @@ def build_zhixu_agent(model):
         )
 
     @agent.tool
+    async def ask_user(
+        ctx: RunContext[ZhixuDependencies],
+        question: str,
+        options: list[str] | None = None,
+        reason: str = "",
+    ) -> str:
+        """暂停当前 Run，向用户询问一个无法通过现有工具解决的必要问题。
+
+        只用于用户专属选择、缺失且不可检索的必要信息或不可逆的外部决定。
+        回答会作为真实工具结果交回同一个 Run，模型随后继续规划。
+        """
+        clean_question = question.strip()
+        clean_options = [item.strip() for item in (options or []) if item.strip()]
+        if not clean_question:
+            raise ValueError("ask_user_question_required")
+        if len(clean_options) > 8 or any(len(item) > 160 for item in clean_options):
+            raise ValueError("ask_user_options_invalid")
+        raise CallDeferred(metadata={
+            "kind": "question",
+            "question": clean_question,
+            "options": clean_options,
+            "reason": reason.strip()[:1000],
+            "title": "知序需要你的选择",
+        })
+
+    @agent.tool
     async def propose_vault_change(
         ctx: RunContext[ZhixuDependencies],
         title: str,
@@ -245,9 +290,8 @@ def build_zhixu_agent(model):
     ) -> ChangeProposalResult:
         """创建真实 Change Set 和 Diff，但不直接修改 Vault。
 
-        当当前任务已经形成具体、可验证的写入方案时调用。创建 Change Set 本身
-        不会修改 Vault；是否执行由 Harness 在 commit_vault_change 中决定。创建
-        成功后必须继续调用 commit_vault_change，不要自行用文字模拟等待确认。
+        用户只要求查看方案时可以在提案后回答；用户要求实际写入时，再调用
+        commit_vault_change。创建 Change Set 本身不会修改 Vault。
         """
         result = await asyncio.to_thread(
             ctx.deps.change_sets.create,
@@ -272,11 +316,9 @@ def build_zhixu_agent(model):
     ) -> WriteCommitResult:
         """提交已经创建的 Change Set。
 
-        低风险新建 Draft 可自动执行；更新已有笔记或中高风险操作会在
-        当前对话中要求用户确认一次。确认后仍会重新验证 base hash、
-        protected/core 和路径安全。
+        默认在当前对话中要求确认；只有本会话已有范围化的新建目录授权时才
+        可能自动执行。确认后仍会重新验证 base hash、protected/core 和路径安全。
         """
-        ctx.deps.commit_attempted = True
         validation = await asyncio.to_thread(
             ctx.deps.change_sets.validate,
             {"change_set_id": proposal_id},
@@ -293,17 +335,22 @@ def build_zhixu_agent(model):
             proposal_id,
         )
         configured_roots = ctx.deps.store.get_setting(
-            "assistant_auto_write_roots",
+            "assistant_writable_roots",
             None,
         )
-        decision = assess_proposal(
+        decision = ToolPermissionGate(configured_roots).assess_commit(
             record,
-            write_requested=ctx.deps.write_requested,
-            autonomy_mode=ctx.deps.autonomy_mode,
-            configured_roots=configured_roots,
+            session_allow_create_roots=ctx.deps.session_allow_create_roots,
         )
 
-        if not decision.auto_apply and not ctx.tool_call_approved:
+        if decision.decision == "deny":
+            return WriteCommitResult(
+                proposal_id=proposal_id,
+                state="denied",
+                message=decision.reason,
+            )
+
+        if decision.decision == "ask" and not ctx.tool_call_approved:
             raise ApprovalRequired(
                 metadata={
                     "proposalId": proposal_id,
@@ -315,22 +362,12 @@ def build_zhixu_agent(model):
                         for item in (record.get("writes") or [])
                     ],
                     "reason": decision.reason,
+                    "scopeCandidates": list(decision.scope_candidates),
                 }
             )
 
-        applied = await asyncio.to_thread(
-            ctx.deps.change_sets.apply,
-            {
-                "change_set_id": proposal_id,
-                "confirmed": True,
-            },
-        )
-        verification = await asyncio.to_thread(
-            ctx.deps.change_sets.verify_applied,
-            proposal_id,
-        )
-        if not verification.get("verified"):
-            raise RuntimeError("harness_post_apply_verification_failed")
+        applied = await ctx.deps.apply_validated_change_set(proposal_id)
+        verification = dict(applied.get("verification") or {})
         return WriteCommitResult(
             proposal_id=proposal_id,
             state="applied",
@@ -339,27 +376,9 @@ def build_zhixu_agent(model):
             verification=verification,
             message=(
                 "修改已应用并通过 Change Set 校验。"
-                if decision.auto_apply
+                if decision.decision == "allow"
                 else "用户已在当前对话中确认，修改已应用。"
             ),
         )
-
-    @agent.output_validator
-    async def require_governed_commit(
-        ctx: RunContext[ZhixuDependencies],
-        output: str | DeferredToolRequests,
-    ) -> str | DeferredToolRequests:
-        """Prevent a model from simulating approval with prose after proposing a write."""
-        if (
-            isinstance(output, str)
-            and ctx.deps.commit_required
-            and ctx.deps.proposed_change_set_ids
-            and not ctx.deps.commit_attempted
-        ):
-            raise ModelRetry(
-                "用户要求执行保存。你已经创建 Change Set；现在必须调用 "
-                "commit_vault_change。不要用文字模拟等待确认。"
-            )
-        return output
 
     return agent

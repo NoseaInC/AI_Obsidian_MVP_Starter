@@ -185,6 +185,60 @@ def vault_overview(vault: Path, payload: dict[str, Any], index: VaultReadIndex |
     return (index or VaultReadIndex(vault)).overview(payload)
 
 
+def list_vault_folder(
+    vault: Path,
+    payload: dict[str, Any],
+    index: VaultReadIndex | None = None,
+) -> dict[str, Any]:
+    """List model-visible Markdown notes below one validated Vault folder."""
+    raw = str(payload.get("path", "")).strip().replace("\\", "/").rstrip("/")
+    relative = Path(raw)
+    if not raw or relative.is_absolute() or ".." in relative.parts or not _safe_relative(relative):
+        raise ValueError("invalid_folder_path")
+    target = (vault.resolve() / relative).resolve()
+    try:
+        target.relative_to(vault.resolve())
+    except ValueError as error:
+        raise ValueError("invalid_folder_path") from error
+    if target.is_symlink() or any(
+        parent.is_symlink() for parent in [target, *target.parents] if parent != vault.resolve()
+    ):
+        raise ValueError("symlink_path_not_allowed")
+    if not target.is_dir():
+        raise FileNotFoundError("folder_not_found")
+
+    recursive = payload.get("recursive") is True
+    limit = max(1, min(100, int(payload.get("limit", 50))))
+    cursor = max(0, int(payload.get("cursor", 0)))
+    prefix = relative.as_posix()
+    rows: list[dict[str, Any]] = []
+    for entry in (index or VaultReadIndex(vault)).entries():
+        entry_path = str(entry.get("path") or "")
+        parent = str(Path(entry_path).parent.as_posix())
+        if recursive:
+            if parent != prefix and not parent.startswith(f"{prefix}/"):
+                continue
+        elif parent != prefix:
+            continue
+        rows.append({
+            "title": str(entry.get("title") or ""),
+            "path": entry_path,
+            "status": str(entry.get("status") or ""),
+            "type": str(entry.get("type") or "note"),
+            "modifiedAt": str(entry.get("modifiedAt") or ""),
+        })
+    rows.sort(key=lambda item: (item["path"].casefold(), item["path"]))
+    page = rows[cursor:cursor + limit]
+    next_cursor = cursor + len(page)
+    return {
+        "path": prefix,
+        "recursive": recursive,
+        "items": page,
+        "total": len(rows),
+        "nextCursor": next_cursor if next_cursor < len(rows) else None,
+    }
+
+
 def read_note_metadata(vault: Path, payload: dict[str, Any]) -> dict[str, Any]:
     path = safe_read_note(vault, str(payload.get("path", "")))
     if not path.is_file():

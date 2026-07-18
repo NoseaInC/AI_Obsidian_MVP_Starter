@@ -150,7 +150,7 @@ The plugin owns a provider-neutral AgentRuntime contract but registers only Pyda
 
 ## D-038 — Confirmation is a deferred tool result inside the same Run
 
-An existing-note write cannot be approved by prose or a detached review bar. The governed commit tool raises deferred approval, the current conversation displays the real tool/path/risk/Diff request, and confirm/cancel resumes the same PydanticAI Run. A model that stops after proposing an explicitly requested write is retried by an output validator rather than having the frontend fabricate progress. Backend hashes and policy remain authoritative.
+An existing-note write cannot be approved by prose or a detached review bar. The governed commit tool raises deferred approval, the current conversation displays the real tool/path/risk/Diff request, and confirm/cancel resumes the same PydanticAI Run. Whether a proposal proceeds to commit is a model decision based on the real turn; the Harness controls permission and the frontend never fabricates progress. Backend hashes and policy remain authoritative.
 
 ## D-039 — Settings persistence has one frontend boundary
 
@@ -158,4 +158,8 @@ Views may read model settings but cannot write provider Profiles or routing endp
 
 ## D-040 — Harness owns write decisions; confirmation stays in the conversation
 
-The standalone Review module is retired from the primary Obsidian navigation. A model may build a bounded Change Set but cannot decide whether it is applied. The local Harness deterministically chooses one of three outcomes: auto-apply an explicit low-risk new draft in an approved root, request one scoped confirmation inline in the current Assistant run, or block the operation. Terse continuation such as “好” or “继续” may inherit an already concrete proposal but never grants authority by itself. Every applied Change Set is revalidated before commit and hash-verified after commit. The legacy review/audit backend remains available for immutable Prepared PDF workflows and historical inspection; it is not a second daily approval inbox.
+The standalone Review module is retired from the primary Obsidian navigation. A model may build a bounded Change Set but cannot decide filesystem permission. The local Harness deterministically chooses one of three outcomes: allow a create covered by a scoped rule for this conversation, request one confirmation inline in the current Assistant run, or deny the operation. Commit defaults to ask; updates never inherit directory-wide grants. Every applied Change Set is revalidated before commit and hash-verified after commit. The legacy review/audit backend remains available for immutable Prepared PDF workflows and historical inspection; it is not a second daily approval inbox.
+
+## D-041 — Main Assistant intent is the model's tool loop, not a classifier
+
+The canonical Pydantic Assistant never calls the legacy keyword classifier and never derives `allowed_tools`, `write_requested`, `commit_required`, intent scores or tool budgets from phrases. Every turn exposes the same stable safe tools. Bounded runtime context is appended to the user turn, and the same model selects a tool, receives the Observation and replans. `ask_user` uses PydanticAI deferred calls and resumes the same Run. Conversation Focus is memory only. The legacy `context_material` classifier remains isolated to historical `submit_intake` flows and is guarded by an architecture test.

@@ -11,7 +11,7 @@ export interface AgentRuntime {
   getCapabilities(): Readonly<AgentRuntimeCapabilities>;
   prepareTurn(request: AgentTurnRequest): PreparedAgentTurn;
   query(turn: PreparedAgentTurn, signal?: AbortSignal): AsyncGenerator<AgentChunk>;
-  confirm(runId: string, confirmed: boolean, signal?: AbortSignal): AsyncGenerator<AgentChunk>;
+  confirm(runId: string, confirmed: boolean, signal?: AbortSignal, answer?: string, scope?: string): AsyncGenerator<AgentChunk>;
   reconnect(runId: string, afterSequence: number): Promise<AgentChunk[]>;
   cancel(runId: string): Promise<void>;
   compact(runId: string): Promise<AgentChunk>;

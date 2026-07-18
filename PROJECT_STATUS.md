@@ -4,7 +4,7 @@ Last updated: 2026-07-18
 
 ## Current phase
 
-PydanticAI is the sole Assistant model–tool runtime. The primary Obsidian workspace now has four outcome modules—Today, Materials, Plan and Assistant—and no standalone daily Review module. The local Harness owns every write decision: explicit low-risk new Draft/Inbox files may auto-apply, medium/high-risk or inherited requests pause inline in the current conversation, and protected operations are blocked. Applied files are hash-verified against the immutable Change Set before a Run can complete. The separate first Dragonnet `apply-prepared` gate remains untouched.
+PydanticAI is the sole Assistant model–tool runtime. The primary Obsidian workspace now has four outcome modules—Today, Materials, Plan and Assistant—and no standalone daily Review module. Main Assistant intent is model-driven: there is no keyword/regex intent router, allowed-tools classifier, `write_requested`, or `commit_required` flag. All safe tools stay available with stable schemas; observations return to the same DeepSeek run for replanning. The local Harness owns every write decision: commit defaults to an inline ask, a scoped conversation rule may auto-allow only future creates in one explicit root, and protected/invalid/stale operations are denied. Applied files are hash-verified against the immutable Change Set before a Run can complete. The separate first Dragonnet `apply-prepared` gate remains untouched.
 
 ## Completed before autonomous run
 
@@ -109,20 +109,22 @@ PydanticAI is the sole Assistant model–tool runtime. The primary Obsidian work
 - Latest installed/build hashes are identical: `main.js` `599864272b08dca8b9d54b5da4ec2192ce13a788203a0deb65bd5f79882232b7`; `styles.css` `f632f3ea547b5f51bc2d0b52debfa758dbe6529c7774e7f8ea5a2d927aacf7ec`.
 - Installed plugin artifacts were rebuilt on 2026-07-17: `main.js` `7d9e342b9ef5da73afed67356aa12efb796e4a69756a4bd31c8e7e049fb39d6c`; `styles.css` `b47e9b289d6c99edf422a599c4e5283d9135b1515b0f0b291b92e8986018b7fb`.
 - Provider-neutral frontend contracts now include AgentRuntime, capabilities, registry, turn preparation, normalized chunks and durable conversation state. Reconnect, cancel, compact, fork and regenerate call real backend endpoints.
-- PydanticAI deferred-tool approval is the canonical confirmation path. A model that proposes a requested write but stops with prose is retried by an output validator until it invokes the governed commit tool; proposal-only requests remain proposal-only.
+- PydanticAI deferred tools are the canonical confirmation path for both governed writes and `ask_user`. The model decides whether a concrete Change Set is proposal-only or should proceed to commit; no keyword marker or output validator forces that choice.
 - Tool Trace and write Diff are generated from real ordered events. Diff bodies are generated on demand and never copied into SQLite; public confirmation payloads omit private payload references.
 - The CodeMirror Inline Edit extension captures document snapshot, selection offsets and selected text and rejects stale acceptance with “原文已变化，请重新生成。” Backend base-hash verification remains mandatory.
 - Provider/profile and model-routing writes now pass through the frontend SettingsService. Architecture tests prohibit core→feature, runtime→DOM, UI→Python/PydanticAI, legacy coordinator and direct settings-write regressions.
 - A real DeepSeek `deepseek-v4-pro` smoke in a temporary Vault passed `get_current_note → propose_vault_change → commit_vault_change → inline confirmation → reject/resume`. The temporary note was byte-for-byte unchanged before confirmation and after rejection; no real Vault note or PDF was read or modified.
 - The standalone Review navigation and tab were retired. Backward-compatible commands now open Assistant, where scoped confirmation is rendered inline and resumes the same Run. The legacy audit/review backend remains for Prepared PDF history and does not grant model authority.
-- Terse continuation after a concrete write plan no longer fails with `explicit_write_intent_required`. A Change Set is built first; Harness policy then auto-applies, asks inline, or blocks.
+- The canonical Runtime exposes a stable 16-tool set including real Vault folder listing and typed `ask_user`. The Harness then allows a scoped create, asks inline, or denies; permission is never inferred from natural-language markers.
 - A repeatable real-model topic smoke (`scripts/real_harness_topic_smoke.py`) passed with the configured `deepseek-v4-pro` in a temporary Vault: `get_conversation_focus → search_vault → read_vault_note ×2 → find_related_notes ×2 → propose_vault_change → commit_vault_change`. The generated PSM note passed topic, assumption, limitation, source-link and post-apply hash gates. No real Vault note was changed.
 - The rebuilt plugin was installed and hot-reloaded in Obsidian 1.12.7. Installed/build hashes are identical: `main.js` `3be69e99dabcba894429b7688c99d621d69340b89b8e8cb07e9e7ebc53e329e4`; `styles.css` `b47e9b289d6c99edf422a599c4e5283d9135b1515b0f0b291b92e8986018b7fb`.
+- The model-driven tool-loop correction is installed and Force Reloaded in Obsidian 1.12.7. Build/installed hashes match: `main.js` `f31005a2a6423f676eb1091931fe9441dd7f88ed9696917f014ad2ec0057d78c`; `styles.css` `3a197aa5f092c00197032a6b9d0410b320e7219167508afac6ecfc1dd3994a8d`. The plugin restarted the backend with a fresh Runtime ID.
+- A real installed-Obsidian `deepseek-v4-pro` read-only smoke passed on 2026-07-18: the model selected `list_vault_folder`, received the real `20-Knowledge/Concepts` observation and returned the three complete Markdown paths and statuses. No Change Set was created and no Vault note was written.
 
 ## Test status
 
 - Python ingestion/review/conversation: 40 tests passed.
-- Runtime/learning/provider/Brain/Intake/Daily Intelligence/context-material/PydanticAI assistant streaming: 151 tests passed (2 explicitly retired schema-v2 semantics skipped).
+- Runtime/learning/provider/Brain/Intake/Daily Intelligence/context-material/PydanticAI assistant streaming: 164 tests passed (2 explicitly retired schema-v2 semantics skipped).
 - Plugin: 59 logic/security/lifecycle/chat-first/context-material/daily-intelligence/study-workspace/privacy/autonomy/streaming/random/architecture tests passed; strict TypeScript check and production build passed.
 - Unified `./scripts/check.sh`: passed on 2026-07-18.
 - Right-sidebar retirement gate: 40 ingestion/review/conversation tests, 113 Runtime tests and 36 plugin tests passed; TypeScript and production build passed on 2026-07-15.
@@ -137,7 +139,7 @@ PydanticAI is the sole Assistant model–tool runtime. The primary Obsidian work
 
 - External Arxiv/Crossref/generic-search adapters are named but disabled until explicitly configured; local/imported research remains available.
 - Governed write-intent intake still returns one synchronous result after its Brain/Change Set transaction; ordinary interactive assistant work uses cancellable NDJSON streaming with persisted partial output.
-- Native model-selected tools require a provider profile with tool calling enabled; strict structured-output planning is the fallback for profiles such as DeepSeek with native Tool Calling disabled.
+- Interactive model-selected tools use the provider's native OpenAI-compatible Tool Calling through PydanticAI. Capability flags record streamed tool calls, reasoning content, thinking control, parallel calls and reasoning effort; profiles without compatible Tool Calling can still answer text but cannot perform Agent tool work.
 - Agent Artifact revision/versioning is exposed through continued assistant dialogue; immutable Prepared Bundle application remains a separately gated workflow.
 - Runtime launch is plugin-owned rather than a persistent macOS LaunchAgent by design.
 - Heading-aware field-level Diff editing and cancellable model streaming remain P2; V1 existing-draft updates use a bounded managed block.
@@ -149,4 +151,4 @@ PydanticAI is the sole Assistant model–tool runtime. The primary Obsidian work
 
 ## Resume point
 
-PydanticAI is the canonical Assistant Run Coordinator. Continue with richer scoped policy rules and full UI wiring for selection-level Inline Edit without weakening typed tool permissions, persisted observations or the Change Set boundary. The deliberate first real Dragonnet Apply gate remains separate and untouched.
+PydanticAI is the canonical Assistant Run Coordinator. Next work can expand scope-rule management and selection-level Inline Edit without reintroducing intent classifiers or weakening typed tools, persisted observations and the Change Set boundary. The deliberate first real Dragonnet Apply gate remains separate and untouched.
