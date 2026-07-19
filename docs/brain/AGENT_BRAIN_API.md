@@ -1,45 +1,41 @@
-# Agent Brain V1 API
+# Retired Python Brain API
 
-所有业务端点位于 `/api/v1`，需要内存 Bearer Token，返回 JSON 和结构化错误；`/health` 仍是有限公开健康检查。
+This document is a migration tombstone. The Python Agent Brain and its
+`/api/v1/brain/*` and `/api/v1/brain-change-sets/*` routes are no longer part of
+the production architecture.
 
-## Brain Runs
+## Canonical interactive runtime
 
-- `POST /brain/requests`：创建统一请求；支持 `Idempotency-Key`、`mode`、`text`、`active_note`、`selected_text`、`time_budget_minutes`。
-- `GET /brain/runs?limit=&offset=&status=`：分页列表。
-- `GET /brain/runs/{id}`：Run、Steps、Tool Events、Proposed Actions。
-- `GET /brain/runs/{id}/events`：可轮询事件快照。
-- `POST /brain/runs/{id}/cancel`：请求取消。
-- `POST /brain/runs/{id}/retry`：从可重试失败创建关联 Run。
-- `POST /brain/capture`、`/brain/organize`、`/brain/research`、`/brain/tutor`：显式意图快捷入口。
-- `GET /brain/capabilities`、`/brain/health`、`/brain/diagnostics`：能力、版本和脱敏诊断。
+Interactive Assistant turns use:
 
-## Interactive Assistant Runtime V3
+- `POST /api/v1/model/stream` for the Keychain-backed secure model transport;
+- `GET /api/v1/tools/contracts` and `POST /api/v1/tools/call` for typed tools and Observations;
+- `POST /api/v1/task-authorizations` for the current Turn's structured authority;
+- `POST /api/v1/agent/events` and `GET /api/v1/agent/runs/{id}/events` for durable ordered events;
+- `POST /api/v1/agent/runs/{id}/control` for Steering and Follow-up;
+- `POST /api/v1/agent/runs/{id}/cancel` for real cancellation;
+- `GET /api/v1/agent/sessions/{id}` for Session Tree and conversation recovery;
+- `GET /api/v1/actions/{id}`, `GET .../diff` and `POST .../undo` for verified action results.
 
-- `POST /assistant/stream`：唯一普通助手流入口；返回 `application/x-ndjson`。
-- `GET /assistant/runs/{id}/events?after=&limit=`：读取有序 schema-v2 事件和最新 Checkpoint，用于断线重连。
-- `POST /assistant/runs/{id}/resume`：仅在正文 `{confirmed:true}` 时应用等待审批的 Change Set；重复调用幂等。
-- `POST /assistant/runs/{id}/reject`：拒绝等待审批的 Proposal，Vault 保持不变；重复调用幂等。
-- 每轮创建持久化 Brain Run，并先解析 Conversation Focus、当前笔记、附件和 reviewed/core 检索上下文。
-- 事件包括 `plan.decision`、Tool 生命周期、`observation.recorded`、`proposal.created`、`approval.required`、`run.awaiting_approval`、`change.applied` 和终态事件。
-- Tool Calling Profile 使用原生 Function Calling；未启用 Tool Calling 时使用严格结构化 Planner。两种模式都只允许一个动作/轮，并把真实 Observation 返回模型重新规划。
-- `run.completed.brainRunId` 可用于读取 `/brain/runs/{id}` 的完整审计状态。
-- `create_change_set` 可由模型选择，但只创建本地 Proposal。`apply_confirmed_change_set` 永不进入模型 Tool Schema，只能走明确确认 API。
+Pi Agent Core and Pi AI run the only production model–tool loop inside the
+Obsidian TypeScript plugin. Python supplies facts, secrets, policy, storage and
+execution. It never selects the next tool or replans a turn.
 
-## Research / Curriculum
+## Structured non-chat projections
 
-- `GET /research-bundles`、`GET /research-bundles/{id}`。
-- `POST /research-bundles/{id}/save`：创建 Research Bundle Note Change Set。
-- `POST /research-bundles/{id}/add-to-plan`：创建 proposed 计划项。
-- `GET /curriculum/candidates`、`POST /curriculum/refresh`。
-- `POST /curriculum/candidates/{id}/action`：收藏、冷却、不感兴趣、加入计划。
-- `GET /brain-change-sets/{id}`、`POST /brain-change-sets/{id}/apply`：检查并显式事务应用主脑提案。
-- `POST /plan-proposals/{id}/confirm`：将 proposed 计划转为 confirmed；不会自动提升 mastery。
+`POST /api/v1/workflows/{mode}` supports only an explicit mode supplied by the
+caller: `qa`, `tutor`, `capture`, `save`, `organize`, `material`, `research` or
+`plan`. It executes one registered workflow and does not classify natural-language
+intent. Runtime facts are exposed by `/api/v1/runtime/capabilities` and
+`/api/v1/runtime/diagnostics`.
 
-## 通用约定
+## Persistence compatibility
 
-- Brain 写请求带 `correlation_id`，响应回传；其他业务写接口延续现有结构化错误与审计字段。
-- 错误：`{ok:false,error:{code,human_message,retryable,suggested_action,correlation_id,technical_details:{}}}`。
-- 默认分页 `limit=50`，最大 100。
-- 长任务可返回 `202`；第一版离线快速 Skill 可同步执行并仍生成完整 Run 事件。
-- UI 只展示人类信息，ID 与技术字段放折叠区。
-- 不返回 Key、Authorization、Session Token、完整 Prompt 或 Python traceback。
+Some SQLite tables and migration helpers retain `brain_*` names so existing local
+state can still be opened. They are storage compatibility names, not a second
+Agent runtime. Production architecture tests prohibit imports of the retired
+Brain/Pydantic planners and prohibit the old HTTP routes.
+
+Provider `reasoning_content` may remain inside the secure provider/Pi protocol for
+continuity. It is not emitted as an `AgentChunk`, rendered in the UI, written to
+Markdown or stored as ordinary conversation text.

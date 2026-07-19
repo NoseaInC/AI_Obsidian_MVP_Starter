@@ -23,6 +23,11 @@
 | `ui/` | UI 规范、实施计划、视觉检查与版本记录 |
 | `product/` | 产品边界、插件状态、用户手册与项目交接 |
 
+Phase 11 的当前生产架构与真实模型验收分别见
+[`architecture/PI_AGENT_RUNTIME_SPEC.md`](architecture/PI_AGENT_RUNTIME_SPEC.md)
+和
+[`architecture/PI_AGENT_RUNTIME_ACCEPTANCE.md`](architecture/PI_AGENT_RUNTIME_ACCEPTANCE.md)。
+
 ## 其他目录
 
 - `design/`：设计参考图和视觉素材。

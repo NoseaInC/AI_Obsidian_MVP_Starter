@@ -1,10 +1,26 @@
 # Project Status
 
-Last updated: 2026-07-19
+Last updated: 2026-07-20
 
 ## Current phase
 
-PydanticAI is the sole Assistant model–tool runtime. The primary Obsidian workspace now has four outcome modules—Today, Materials, Plan and Assistant—and no standalone daily Review module. Main Assistant intent is model-driven: there is no keyword/regex intent router, allowed-tools classifier, `write_requested`, or `commit_required` flag. All safe tools stay available with stable schemas; observations return to the same DeepSeek run for replanning. Public web access is now a visible per-conversation opt-in with general and academic search, bounded source fetch and real Sources Inspector events. The local Harness owns every write decision: commit defaults to an inline ask, a scoped conversation rule may auto-allow only future creates in one explicit root, and protected/invalid/stale operations are denied. Applied files are hash-verified against the immutable Change Set before a Run can complete. The separate first Dragonnet `apply-prepared` gate remains untouched.
+The `pi-agent-runtime` migration is active. Pi Agent Core and Pi AI now own the only production model–tool loop in the Obsidian TypeScript plugin. Python is limited to the secure model proxy, Keychain access, typed tool execution, task authorization, reversible transactions, hybrid retrieval, capability facts and persistence. PydanticAI and the Python Brain planner have left the production path; no keyword/regex/fixed-phrase Intent Router remains. Ordinary in-scope reversible Markdown work executes through snapshot → atomic apply → verify → Action Result and conflict-safe Undo, while scope expansion, irreversible work and external side effects remain interruptible. The first real Dragonnet `apply-prepared` gate is unchanged.
+
+## Pi runtime migration — current implementation
+
+- Exact `@earendil-works/pi-agent-core` and `@earendil-works/pi-ai` packages are bundled into the plugin; no Pi Coding Agent, TUI or sidecar is used.
+- The stable tool registry is always visible to Pi. DeepSeek chooses tools, receives real Observations and replans in the same Run.
+- Ordered Pi events are persisted before UI delivery. Session Tree, Fork, Steering, Follow-up, cancellation, token-aware compaction and stall protection are implemented.
+- Task Authorization and the unified reversible transaction service enforce safe roots, protected/reviewed/core, symlinks, base hashes, snapshots, verification, idempotency and multi-file Undo.
+- Hybrid exact/metadata, FTS/BM25 and graph/context retrieval use RRF and degrade safely when optional local embeddings are unavailable.
+- Capability probes cache facts without keys and conservatively resolve Tool Calling, streaming, parallelism, strict schema, usage and reasoning options.
+- Developer workspaces use isolated Git worktrees, structured commands, a minimal environment and a deny-by-default network/shell policy.
+- Conversation turns and final answers use stable message IDs, are persisted idempotently and hydrate Pi after a plugin/runtime restart.
+- Provider thinking blocks remain inside the provider/Pi protocol only. The public UI/event/persistence contract exposes real tool state and brief action summaries, never private reasoning content.
+- The first structured write plan freezes concrete paths, roots and operations for the Turn; a later plan cannot silently expand authority.
+- Developer deployment is a two-phase handshake: Python validates a merged clean commit, while the plugin owns fixed check/build/install/restart/health steps and governed rollback.
+- Real Keychain-backed DeepSeek A–H acceptance passed against a temporary Vault and project. It covered read, retrieval, direct verified write, exact-byte Undo, plan-only, developer worktree/test/build/merge/activation, Steering and three queued Follow-ups without exposing the Key or touching real knowledge notes.
+- The verified plugin build is installed at `.obsidian/plugins/obsidian-learning-agent/`. Built and installed SHA-256 hashes match: `main.js` `0308110e001f1d3257d7bef70778fce0d64f35db8425a5675d69d65014279ba6`; `styles.css` `424075822de3474aabe7b248b38d92fae1ad68f0c6d1c10366c18bde0dc9ac3e`.
 
 ## Completed before autonomous run
 
@@ -28,7 +44,12 @@ PydanticAI is the sole Assistant model–tool runtime. The primary Obsidian work
 - Phase 5: reviewed-only due/future/new-learning recommendations, 70/30 routing, quizzes, mastery suggestion plus explicit confirmation, rescheduling and proposed weekly plans.
 - Phase 6: textbook PDFs use the Prepared workflow; AI conversations create immutable local bundles, retain the full raw export locally and mark assistant claims `needs-verification`.
 
-## Current work
+## Historical milestones
+
+The following entries describe earlier product stages. Where they mention Brain,
+PydanticAI, deterministic intent routing, ordinary write confirmation or visible
+provider reasoning, they are superseded by D-042 through D-044 and the Pi runtime
+migration above.
 
 - Chat-first V1 implemented: unified conversations, binary/URL/path/folder attachments, deterministic multi-Intent routing, idempotent submit and seven versioned Artifact types.
 - Assistant is the only universal input and authorization surface. Materials is a one-column status center; Plan is today blocks plus weekend preview; Today is five queues plus a single learning detail. The former standalone Review UI is retained only as unreachable legacy audit code for Prepared history.
@@ -130,8 +151,7 @@ PydanticAI is the sole Assistant model–tool runtime. The primary Obsidian work
 - Real installed-Obsidian acceptance on 2026-07-19 passed a configured `deepseek-v4-pro` web turn. The model called actual search/fetch tools, returned three Pydantic official documentation sources and populated the Sources Inspector; no Change Set or Vault write was created.
 - Assistant UI V7 removes the crowded action header. The header now contains only the conversation title; model and network state live in the composer, and all secondary actions are grouped under the composer `+` menu.
 - A real installed `deepseek-v4-pro` mixed-write regression passed: one new knowledge draft and one protected MOC update became a single confirmable Change Set whose protected operation was redirected to a local update suggestion. The same Run is intentionally paused at inline confirmation; neither candidate file was applied and the MOC was not modified.
-- Provider-returned reasoning is now a first-class, optional stream block. `ThinkingPart` deltas are normalized as ordered `reasoning.started/delta/completed` events, rendered in a nested collapsible “模型推理” disclosure and persisted only with the Local-Only conversation message; final answer text, Tool Trace and provider reasoning remain separate.
-- The UI does not synthesize or reconstruct hidden chain-of-thought. Models or profiles that return no reasoning block show no reasoning disclosure, and provider-private signatures/metadata are never exposed. The installed plugin was reloaded after the change; build/installed SHA-256 hashes match: `main.js` `aeb211662fce04d365ce08676890f9669acc2c0077c7968109c032a5322bd40c`; `styles.css` `be199015a62269fac52c84250368fa785dae9818addcc7ceb9b9fea818826257`.
+- A historical UI experiment rendered provider-returned reasoning blocks. Phase 11 retires that surface: provider thinking is now protocol-private and only actual tool events plus brief execution summaries are public.
 - Assistant reasoning now has an explicit `Auto / 深度` runtime mode in the composer model menu. Auto keeps the provider default; DeepSeek Deep sends `thinking=enabled` plus `reasoning_effort=max`, raises the per-turn budget to at least 8192 tokens, compacts oversized history by complete request/response pairs, and adds evidence/edge-case/final-verification instructions.
 - A real Keychain-backed `deepseek-v4-pro` temporary-Vault smoke on 2026-07-19 completed with `reasoning_effort=max`: 5,395 streamed reasoning characters, 4,362 answer characters and two real tool calls. It ended `run.completed`, produced no API error and wrote zero Markdown files. The smoke output recorded only counts/status, never the key or reasoning text.
 - The rebuilt plugin was installed and reloaded in Obsidian 1.12.7. The live model popover exposes the Deep switch and the composer reports `Auto · 深度` after activation. Build/installed hashes match: `main.js` `5f7936000ff0609c7284844baf6661015c20fb7adbac041fedf082841e44dd1d`; `styles.css` `cf9bb0581fe87d6012ac1c68b3705c69dcaaf3c4ea753eab56a15144baf011f5`.
@@ -140,12 +160,13 @@ PydanticAI is the sole Assistant model–tool runtime. The primary Obsidian work
 - The original failed Obsidian turn was then retried in place after restart. Live Run `run-2f45f3eab68a4d4ab17a369d63fcdec3` completed with 24 real Tool calls, successfully fetched AI21 Jamba, Meta Llama 4, DeepSeek-V3, Mamba-2 and Google Gemma sources, and emitted `run.completed` instead of `PermissionError`.
 - Repository documentation was consolidated on 2026-07-19. The Vault root now contains only eight engineering entry/safety files; 74 stage specifications and implementation records live under `docs/{architecture,assistant,brain,learning,materials,product,ui}` with `docs/README.md` as the index. Three legacy empty root placeholders were preserved under `99-Archive/Legacy-Root-Placeholders/`; no specification or history file was deleted, and explicit stale root-path references were eliminated.
 
-## Test status
+## Phase 11 release gate
 
 - Python ingestion/review/conversation: 40 tests passed.
-- Runtime/learning/provider/Brain/Intake/Daily Intelligence/context-material/PydanticAI assistant streaming: 180 tests passed (2 explicitly retired schema-v2 semantics skipped).
-- Plugin: 62 logic/security/lifecycle/chat-first/context-material/daily-intelligence/study-workspace/privacy/autonomy/streaming/random/architecture tests passed; strict TypeScript check and production build passed.
-- Unified `./scripts/check.sh`: passed on 2026-07-19.
+- Phase 11 backend suite: 144 tests passed.
+- Phase 11 plugin suite: 72 tests passed; strict TypeScript check and production build passed.
+- Unified `./scripts/check.sh` passed.
+- Real DeepSeek A–H acceptance passed with the configured `deepseek-v4-pro`; details are in `docs/architecture/PI_AGENT_RUNTIME_ACCEPTANCE.md`.
 - Right-sidebar retirement gate: 40 ingestion/review/conversation tests, 113 Runtime tests and 36 plugin tests passed; TypeScript and production build passed on 2026-07-15.
 - Today randomized gates passed for 1,000 plans, 10,000 state actions, 1,000 lesson blueprints, 110 responsive widths and 20 reproducible regression seeds.
 - Daily ranking performance with 1,000 candidates: median 0.436 ms, P95 0.559 ms; localhost health response measured 0.018 s.
@@ -157,12 +178,13 @@ PydanticAI is the sole Assistant model–tool runtime. The primary Obsidian work
 ## Known lower-priority limits
 
 - Public search relies on several unauthenticated public endpoints, so an individual provider can rate-limit or change its response format. Federation, bounded failures and DuckDuckGo fallback keep the Run recoverable, but this is not an availability SLA.
-- Governed write-intent intake still returns one synchronous result after its Brain/Change Set transaction; ordinary interactive assistant work uses cancellable NDJSON streaming with persisted partial output.
-- Interactive model-selected tools use the provider's native OpenAI-compatible Tool Calling through PydanticAI. Capability flags record streamed tool calls, reasoning content, thinking control, parallel calls and reasoning effort; profiles without compatible Tool Calling can still answer text but cannot perform Agent tool work.
+- Explicit non-chat workflows remain synchronous projections; ordinary interactive assistant work uses Pi with cancellable streaming and durable ordered events.
+- Interactive model-selected tools require a provider with compatible Tool Calling. Capability facts conservatively disable unsupported options; providers without Tool Calling can answer text but cannot perform Agent tool work.
 - Agent Artifact revision/versioning is exposed through continued assistant dialogue; immutable Prepared Bundle application remains a separately gated workflow.
 - Runtime launch is plugin-owned rather than a persistent macOS LaunchAgent by design.
 - Heading-aware field-level Diff editing and cancellable model streaming remain P2; V1 existing-draft updates use a bounded managed block.
 - Study Workspace V1 has no outstanding visual-state gap; its 21-image matrix is stored under `artifacts/today-study-workspace-v1-screenshots/`.
+- Several legacy Python tests leave SQLite connections for interpreter cleanup and emit non-failing `ResourceWarning` messages; this is P2 resource hygiene, not a transaction or data-integrity failure.
 
 ## P0 / P1
 
@@ -170,4 +192,4 @@ PydanticAI is the sole Assistant model–tool runtime. The primary Obsidian work
 
 ## Resume point
 
-PydanticAI is the canonical Assistant Run Coordinator. Next work can expand scope-rule management and selection-level Inline Edit without reintroducing intent classifiers or weakening typed tools, persisted observations and the Change Set boundary. The deliberate first real Dragonnet Apply gate remains separate and untouched.
+Reload the installed plugin in Obsidian, then use the `pi-agent-runtime` PR for review. The deliberate first real Dragonnet Apply gate remains separate and untouched.

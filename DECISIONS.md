@@ -96,9 +96,9 @@ Current-message entities, authorized attachments, active artifacts and recent co
 
 Material Bundles describe what the input contains; Organization Plans decide what Obsidian result should exist. This separation keeps source understanding reusable while filesystem policy remains deterministic.
 
-## D-025 — Explicit save authorizes bounded high-autonomy writes
+## D-025 — Superseded by task-scoped authorization
 
-In high mode, an explicit save/update request may create a marked draft or append a managed block to an ordinary draft without another confirmation. Snapshot, hash verification, audit and Undo are mandatory. Protected/core and large/destructive work still require Change Set confirmation.
+The former autonomy-mode write exception is replaced by D-042. Permission is derived from the current structured Task Authorization, not from prose matching or a global autonomy level.
 
 ## D-026 — Turn bundles store references, not raw prose
 
@@ -136,30 +136,42 @@ Python retains local security, model, PDF, SQLite and transaction authority beca
 
 Provider SSE deltas are cumulative state, not disposable plain text. The Obsidian client renders them at a bounded cadence into a detached staging node and atomically swaps only completed Markdown DOM. `message.completed` supplies the persisted message metadata, so ordinary completion adds actions and timestamps in place and must not clear the node or rebuild the whole workspace.
 
-## D-035 — A write confirmation inherits a proposal, never the command text
+## D-035 — Superseded: prose is never the permission boundary
 
-A terse confirmation such as `写入` has no standalone document meaning. It may inherit only a recent explicit assistant proposal with an allowlisted Markdown target and provenance message. The inherited result is one pending Change Set; reviewed/core becomes an update suggestion, and application still requires explicit Diff confirmation. If no proposal exists the system requests a target. Creation and apply validation both reject command-only note artifacts so stale historical proposals cannot bypass the corrected resolver.
+The runtime no longer interprets terse phrases as approval. Pi decides whether a tool is needed; the Harness validates the concrete operation against the Task Authorization. Ordinary in-scope reversible Markdown writes execute directly and return an Action Result with Diff and Undo.
 
 ## D-036 — Agent planning is Observation-driven and authority remains local
 
 Each Assistant Runtime V3 round selects exactly one action: call one currently allowed typed tool, answer, or request one minimal clarification. The resulting Observation returns to the model before the next decision. Native Function Calling and strict JSON Planner mode share the same Tool Registry, permission levels, schemas and resource-scope checks. The model may see `create_change_set` as a proposal capability but can never see or invoke `apply_confirmed_change_set`. Ordered events and checkpoints are runtime metadata; request prose, note excerpts and Change Set bodies remain private files outside SQLite.
 
-## D-037 — PydanticAI is the sole model–tool kernel
+## D-037 — Superseded by Pi runtime
 
-The plugin owns a provider-neutral AgentRuntime contract but registers only PydanticAgentRuntime. Python PydanticAI owns model/tool iteration, observations, retries and deferred approval; TypeScript normalizes ordered NDJSON into AgentChunk and renders it. This boundary permits future adapter replacement without introducing Claude Code, Codex CLI, OpenCode, Pi or duplicated provider implementations.
+The PydanticAI production kernel described here has been retired. D-044 defines the only supported production loop.
 
-## D-038 — Confirmation is a deferred tool result inside the same Run
+## D-038 — Questions and scope expansion stay inside the same Run
 
-An existing-note write cannot be approved by prose or a detached review bar. The governed commit tool raises deferred approval, the current conversation displays the real tool/path/risk/Diff request, and confirm/cancel resumes the same PydanticAI Run. Whether a proposal proceeds to commit is a model decision based on the real turn; the Harness controls permission and the frontend never fabricates progress. Backend hashes and policy remain authoritative.
+Inline interruption is reserved for `ask_user`, scope expansion, irreversible work and external side effects. Ordinary authorized Markdown changes do not pause the Run. Backend hashes, protection policy and transactions remain authoritative and cannot be overridden by confirmation.
 
 ## D-039 — Settings persistence has one frontend boundary
 
 Views may read model settings but cannot write provider Profiles or routing endpoints directly. SettingsService is the only frontend persistence boundary; the backend still validates URLs, protected headers, known routes and Keychain references. API keys never enter plugin persistence.
 
-## D-040 — Harness owns write decisions; confirmation stays in the conversation
+## D-040 — Superseded: Harness validates actions, not intentions
 
-The standalone Review module is retired from the primary Obsidian navigation. A model may build a bounded Change Set but cannot decide filesystem permission. The local Harness deterministically chooses one of three outcomes: allow a create covered by a scoped rule for this conversation, request one confirmation inline in the current Assistant run, or deny the operation. Commit defaults to ask; updates never inherit directory-wide grants. Every applied Change Set is revalidated before commit and hash-verified after commit. The legacy review/audit backend remains available for immutable Prepared PDF workflows and historical inspection; it is not a second daily approval inbox.
+The Harness validates actual tool calls against task scope, safe roots, hashes and protection state. It directly executes authorized reversible work, asks only for a real scope expansion, and denies non-bypassable policy violations. There is no ordinary-write approval inbox.
 
 ## D-041 — Main Assistant intent is the model's tool loop, not a classifier
 
-The canonical Pydantic Assistant never calls the legacy keyword classifier and never derives `allowed_tools`, `write_requested`, `commit_required`, intent scores or tool budgets from phrases. Every turn exposes the same stable safe tools. Bounded runtime context is appended to the user turn, and the same model selects a tool, receives the Observation and replans. `ask_user` uses PydanticAI deferred calls and resumes the same Run. Conversation Focus is memory only. The legacy `context_material` classifier remains isolated to historical `submit_intake` flows and is guarded by an architecture test.
+Pi exposes the stable typed tool set on every turn. The same DeepSeek Agent selects a tool, receives its Observation and replans. No production or legacy intake path uses keyword, regex, token or fixed-phrase intent routing; structured intake modes remain explicit API fields.
+
+## D-042 — Explicit task authorization replaces repetitive write approval
+
+Once the user gives an explicit task, that Turn authorizes reversible operations inside its bounded resource and operation scope. The Agent may directly execute controlled Markdown or developer-workspace changes. The first structured plan establishes and freezes the concrete operation/path scope for that Turn; later plans cannot silently add paths, roots or operations. Safety comes from path policy, protected status, snapshots, base hashes, atomic transactions, verification and conflict-safe Undo—not repeated confirmation. Only scope expansion, irreversible operations or external side effects pause the user.
+
+## D-043 — Action Journal is recovery infrastructure, not an approval inbox
+
+Action, Snapshot, Diff, Transaction and Undo records remain private recovery infrastructure. The product does not expose a standalone audit center or pending-approval list. Normal interaction presents only the operation result, View Changes and Undo.
+
+## D-044 — Pi is the sole Agent kernel
+
+Pi Agent Core and Pi AI own the model/tool loop, Session Tree, Steering, Follow-up, Compaction and events in the Obsidian TypeScript process. Python retains the secure model proxy, Keychain, governed tool execution, hybrid index, transactions and persistence. PydanticAI no longer participates in production. Runtime upgrades use a two-phase handshake: Python validates the merged clean commit, while the plugin owns fixed check/build/install/restart/health operations and invokes governed rollback on failure.
