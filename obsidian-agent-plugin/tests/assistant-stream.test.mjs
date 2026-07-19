@@ -29,32 +29,6 @@ test("five thousand real token chunks preserve exact order and Unicode", async (
   assert.equal(state.lastSequence, 5_002);
 });
 
-test("provider reasoning blocks stream separately and remain collapsible metadata", async () => {
-  const mod = await moduleUnderTest();
-  let state = mod.initialAssistantLiveRun();
-  state = mod.reduceAssistantStream(state, event(1, "run.started", {model: "deepseek-reasoner"}));
-  state = mod.reduceAssistantStream(state, event(2, "reasoning.started", {blockId: "reasoning-1", provider: "deepseek"}));
-  state = mod.reduceAssistantStream(state, event(3, "reasoning.delta", {blockId: "reasoning-1", provider: "deepseek", delta: "先读取上下文。"}));
-  state = mod.reduceAssistantStream(state, event(4, "reasoning.delta", {blockId: "reasoning-1", provider: "deepseek", delta: "再形成答案。"}));
-  state = mod.reduceAssistantStream(state, event(5, "reasoning.completed", {blockId: "reasoning-1", provider: "deepseek"}));
-  state = mod.reduceAssistantStream(state, event(6, "message.delta", {delta: "最终回答"}));
-  assert.equal(state.reasoningBlocks.length, 1);
-  assert.deepEqual(state.reasoningBlocks[0], {
-    id: "reasoning-1",
-    provider: "deepseek",
-    content: "先读取上下文。再形成答案。",
-    status: "completed",
-  });
-  assert.equal(state.content, "最终回答");
-
-  const chunkEvent = mod.agentChunkToAssistantEvent({
-    type: "reasoning", runId: "run-1", conversationId: "conv-1", sequence: 7,
-    blockId: "reasoning-2", provider: "openai", content: "摘要", phase: "delta",
-  });
-  assert.equal(chunkEvent.type, "reasoning.delta");
-  assert.equal(chunkEvent.delta, "摘要");
-});
-
 test("twenty thousand run events are deterministic, deduplicated and bounded", async () => {
   const mod = await moduleUnderTest();
   let first = mod.initialAssistantLiveRun();
@@ -179,13 +153,14 @@ test("confirmation-only turn keeps the proposal inline", async () => {
   assert.equal(state.confirmation.proposal_id, "assistant-cs-1");
 });
 
-test("assistant production surface uses stream endpoint, stop and three inspector tabs", async () => {
+test("assistant production surface uses Pi model proxy, stop and three inspector tabs", async () => {
   const [views, api, css] = await Promise.all([
     readFile(new URL("../src/views.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/api.ts", import.meta.url), "utf8"),
     readFile(new URL("../styles.css", import.meta.url), "utf8"),
   ]);
-  assert.match(api, /\/assistant\/stream/);
+  assert.match(api, /\/model\/stream/);
+  assert.match(api, /cancelRuntimeRun/);
   assert.match(api, /response\.body\.getReader/);
   assert.match(views, /停止生成/);
   assert.match(views, /reduceAssistantStream/);
@@ -195,9 +170,10 @@ test("assistant production surface uses stream endpoint, stop and three inspecto
   assert.match(views, /复制消息/);
   assert.match(views, /重新生成/);
   assert.match(views, /ProgressiveAssistantMarkdown/);
-  assert.match(views, /PydanticAgentRuntime/);
+  assert.match(views, /PiAgentRuntime/);
+  assert.doesNotMatch(views, /PydanticAgentRuntime/);
   assert.match(views, /resumeInlineConfirmation/);
-  assert.match(api, /cancelAssistantRun/);
+  assert.doesNotMatch(api, /cancelAssistantRun/);
   assert.doesNotMatch(views, /markdown\.empty\(\); await this\.markdown\.render/);
   assert.match(css, /\.la-message-markdown strong \{[\s\S]*display:\s*inline/);
   for (const label of ["上下文", "来源", "变更", "新会话", "搜索对话"]) assert.match(views, new RegExp(label));
@@ -246,14 +222,14 @@ test("assistant production surface uses stream endpoint, stop and three inspecto
   assert.match(css, /aspect-ratio:\s*1 \/ 1/);
   assert.match(css, /\.la-composer-submit__stop/);
   assert.match(css, /\.la-composer-submit\.is-running/);
-  assert.match(views, /推理与执行过程/);
-  assert.match(views, /供应商真实返回 reasoning block/);
+  assert.match(views, /执行过程/);
+  assert.match(views, /不展示模型私有思维链/);
   assert.match(views, /previousDetails\?\.open/);
-  assert.match(views, /previousProviderReasoning\?\.open/);
   assert.match(views, /fallbackStatus = run\.status === "completed"/);
   assert.match(css, /\.la-live-trace__thinking/);
-  assert.match(css, /\.la-provider-reasoning/);
-  assert.match(views, /显示供应商返回的 Reasoning Content/);
+  assert.doesNotMatch(css, /\.la-provider-reasoning/);
+  assert.doesNotMatch(views, /renderProviderReasoning/);
+  assert.match(views, /支持深度推理协议/);
   assert.match(views, /assistantReasoningMode:\s*"auto"\s*\|\s*"deep"/);
   assert.match(views, /reasoning_mode:\s*this\.assistantReasoningMode/);
   assert.match(views, /深度思考/);

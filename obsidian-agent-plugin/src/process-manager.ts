@@ -83,6 +83,21 @@ export class AgentProcessManager {
 
   async restart(): Promise<void> { await this.stop(); await this.ensureRunning(true); }
 
+  async activateRuntimeUpgrade(request: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const project = String(request.project ?? "");
+    if (!project || project !== this.vaultPath) throw new Error("runtime_upgrade_project_mismatch");
+    await this.runFixedRepositoryScript("check.sh", 15 * 60_000);
+    await this.runFixedRepositoryScript("install-plugin.sh", 15 * 60_000);
+    await this.restart();
+    if (!await this.isHealthy()) throw new Error("runtime_upgrade_health_check_failed");
+    return {
+      installed: true,
+      restarted: true,
+      healthy: true,
+      mergedHead: String(request.mergedHead ?? ""),
+    };
+  }
+
   async stop(): Promise<void> {
     const child = this.child;
     this.child = null;
@@ -93,5 +108,33 @@ export class AgentProcessManager {
       if (child.exitCode === null) child.kill("SIGKILL");
     }
     this.log?.end(); this.log = null;
+  }
+
+  private async runFixedRepositoryScript(name: "check.sh" | "install-plugin.sh", timeoutMs: number): Promise<void> {
+    const script = join(this.vaultPath, "scripts", name);
+    if (!existsSync(script)) throw new Error(`runtime_upgrade_script_missing:${name}`);
+    const environment = Object.fromEntries(
+      Object.entries(process.env).filter(([key]) => !/(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i.test(key)),
+    ) as NodeJS.ProcessEnv;
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn("/bin/zsh", [script], {
+        cwd: this.vaultPath,
+        env: environment,
+        stdio: "ignore",
+      });
+      const timer = window.setTimeout(() => {
+        child.kill("SIGKILL");
+        reject(new Error(`runtime_upgrade_timeout:${name}`));
+      }, timeoutMs);
+      child.once("error", error => {
+        window.clearTimeout(timer);
+        reject(new Error(`runtime_upgrade_spawn_failed:${name}:${error.message}`));
+      });
+      child.once("exit", code => {
+        window.clearTimeout(timer);
+        if (code === 0) resolve();
+        else reject(new Error(`runtime_upgrade_script_failed:${name}`));
+      });
+    });
   }
 }

@@ -69,7 +69,6 @@ interface AgentChunkBase {
 
 export type AgentChunk =
   | (AgentChunkBase & {type: "text"; content: string; messageId?: string})
-  | (AgentChunkBase & {type: "reasoning"; blockId: string; provider: string; content: string; phase: "started" | "delta" | "completed"})
   | (AgentChunkBase & {type: "tool_use"; id: string; name: string; input: Record<string, unknown>; status: AgentToolStatus})
   | (AgentChunkBase & {type: "tool_result"; id: string; name: string; result: Record<string, unknown>; summary: string; status: AgentToolStatus})
   | (AgentChunkBase & {type: "write_diff"; proposalId: string; title: string; writes: Array<Record<string, unknown>>})

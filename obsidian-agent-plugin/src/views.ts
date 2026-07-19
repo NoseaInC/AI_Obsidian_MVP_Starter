@@ -62,7 +62,8 @@ import {
 import {isAssistantReadableVaultPath, referencedVaultNotePath} from "./vault-note-policy";
 import {renderInlineAgentConfirmation} from "./assistant-inline-confirmation";
 import type {AgentRuntime} from "./core/runtime/AgentRuntime";
-import {PydanticAgentRuntime} from "./core/runtime/PydanticAgentRuntime";
+import {PiAgentRuntime} from "./core/runtime/PiAgentRuntime";
+import {AgentRuntimeRegistry} from "./core/runtime/AgentRuntimeRegistry";
 import {SettingsService} from "./core/settings/SettingsService";
 
 export const MAIN_VIEW = "learning-agent-main";
@@ -511,7 +512,9 @@ export class LearningAgentMainView extends ItemView {
     super(leaf);
     this.dailyEngine = new LocalDailyIntelligenceEngine(client, () => this.dailyPreferences().trackingEnabled);
     this.markdown = new ObsidianAssistantMarkdownRenderer(this.app, this);
-    this.agentRuntime = new PydanticAgentRuntime(client);
+    const runtimes = new AgentRuntimeRegistry();
+    runtimes.register("pi-agent", () => new PiAgentRuntime(client));
+    this.agentRuntime = runtimes.create("pi-agent");
     this.settingsService = new SettingsService(client);
   }
 
@@ -661,7 +664,6 @@ export class LearningAgentMainView extends ItemView {
     progress.createEl("strong", {text: `${percentage}%`});
     const bar = progress.createDiv({cls: "la-job-progress"});
     bar.createDiv({attr: {style: `width:${percentage}%`}});
-    this.navStat(stats, "需要你确认", (summary?.prepared_count ?? 0) + (summary?.review_count_pending ?? 0));
     this.navStat(stats, "运行任务", summary?.active_job_count ?? 0);
 
     const status = nav.createDiv({cls: "la-nav-runtime la-nav-runtime--footer"});
@@ -2143,6 +2145,24 @@ export class LearningAgentMainView extends ItemView {
         window.setTimeout(() => showHistoryMenu(event), 0);
       }));
       menu.addItem(item => item.setTitle("新会话").setIcon("message-square-plus").onClick(() => void startNewConversation()));
+      if (this.assistantLiveRun.status === "running" && this.assistantLiveRun.runId) {
+        menu.addSeparator();
+        menu.addItem(item => item.setTitle("调整当前任务").setIcon("corner-down-left").onClick(() => {
+          input.focus();
+          input.setAttribute("placeholder", "输入后按 Enter，在下一个安全工具边界调整当前任务");
+        }));
+        menu.addItem(item => item.setTitle("完成后继续").setIcon("list-plus").onClick(() => {
+          const text = input.value.trim();
+          if (!text) { new Notice("请先输入要在当前任务完成后继续处理的内容"); input.focus(); return; }
+          const runId = this.assistantLiveRun.runId;
+          void this.agentRuntime.followUp(runId, text).then(() => {
+            const user = messages.createDiv({cls: "la-message la-message--user"});
+            user.createDiv({cls: "la-message-copy", text: `完成后继续：${text}`});
+            input.value = ""; this.assistantDraft = "";
+            new Notice("已加入完成后队列");
+          }).catch(error => new Notice(`加入后续任务失败：${error.message}`));
+        }));
+      }
       menu.addSeparator();
       menu.addItem(item => item.setTitle("模型与 API 设置").setIcon("settings-2").onClick(openProviderDrawer));
       menu.addItem(item => item.setTitle("刷新会话").setIcon("refresh-cw").onClick(() => void this.refresh()));
@@ -2317,6 +2337,15 @@ export class LearningAgentMainView extends ItemView {
       const regenerateMessageId = this.assistantRegenerateMessageId;
       if (this.assistantLiveRun.status === "running") {
         const activeRunId = this.assistantLiveRun.runId;
+        if (content && activeRunId) {
+          await this.agentRuntime.steer(activeRunId, content);
+          const user = messages.createDiv({cls: "la-message la-message--user"});
+          user.createDiv({cls: "la-message-copy", text: content});
+          input.value = ""; this.assistantDraft = "";
+          input.setAttribute("placeholder", "运行中：输入可调整当前任务；也可从 + 选择完成后继续");
+          messages.scrollTop = messages.scrollHeight;
+          return;
+        }
         this.abort?.abort();
         if (activeRunId) {
           await this.agentRuntime.cancel(activeRunId).catch(() => undefined);
@@ -2329,7 +2358,6 @@ export class LearningAgentMainView extends ItemView {
         return;
       }
       if (!content && !this.pendingAttachments.length) return;
-      input.disabled = true;
       let progressiveMarkdown: ProgressiveAssistantMarkdown | null = null;
       let awaitingInlineConfirmation = false;
       try {
@@ -2360,6 +2388,7 @@ export class LearningAgentMainView extends ItemView {
         this.paintAssistantLiveTrace(trace, this.assistantLiveRun);
         this.abort?.abort(); this.abort = new AbortController();
         paintSendButton(true);
+        input.setAttribute("placeholder", "运行中：输入可调整当前任务；也可从 + 选择完成后继续");
         const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
         const selection = markdownView?.editor?.getSelection() ?? "";
         let frame = 0;
@@ -2461,6 +2490,7 @@ export class LearningAgentMainView extends ItemView {
         this.abort = null;
         input.disabled = awaitingInlineConfirmation;
         paintSendButton(false);
+        input.setAttribute("placeholder", "今天帮你做些什么？  @ 引用对话文件，/ 调用技能与指令");
         if (!awaitingInlineConfirmation) input.focus();
       }
     };
@@ -2510,10 +2540,8 @@ export class LearningAgentMainView extends ItemView {
 
   private paintAssistantLiveTrace(parent: HTMLElement, run: AssistantLiveRun): void {
     const previousDetails = parent.querySelector<HTMLDetailsElement>(".la-live-trace__details");
-    const previousProviderReasoning = parent.querySelector<HTMLDetailsElement>(".la-provider-reasoning");
     const beganRunning = parent.hasClass("is-idle") && run.status === "running";
     const detailsOpen = beganRunning || (previousDetails?.open ?? run.status === "running");
-    const providerReasoningOpen = previousProviderReasoning?.open ?? run.status === "running";
     parent.empty();
     parent.className = `la-live-trace is-${run.status}`;
     const head = parent.createDiv({cls: "la-live-trace__head"});
@@ -2524,12 +2552,11 @@ export class LearningAgentMainView extends ItemView {
     copy.createEl("small", {text: run.model ? `模型 · ${run.model}` : "正在建立本地上下文"});
     const details = parent.createEl("details", {cls: "la-live-trace__details"});
     details.open = detailsOpen;
-    details.createEl("summary", {text: "推理与执行过程"});
+    details.createEl("summary", {text: "执行过程"});
     details.createDiv({
       cls: "la-live-trace__disclaimer",
-      text: "模型推理仅在供应商真实返回 reasoning block 时出现；工具状态来自实际运行事件。",
+      text: "这里只展示真实工具调用、可验证观察和简短执行摘要，不展示模型私有思维链。",
     });
-    this.renderProviderReasoning(details, run.reasoningBlocks, providerReasoningOpen);
     const thinking = details.createDiv({cls: "la-live-trace__thinking"});
     const sourceCount = run.context?.sources?.length ?? 0;
     const thinkingText = run.status === "running"
@@ -2568,9 +2595,47 @@ export class LearningAgentMainView extends ItemView {
       const call = step.id.startsWith("tool:") ? run.toolCalls.find(item => `tool:${item.id}` === step.id) : undefined;
       row.createEl("small", {text: call?.summary || (step.status === "completed" ? "完成" : step.status === "running" ? "进行中" : step.status === "failed" ? "失败" : "等待")});
     }
+    const appliedCall = [...run.toolCalls].reverse().find(
+      item => item.tool === "apply_vault_change" && item.status === "completed",
+    );
+    const nestedResult = appliedCall?.result?.result;
+    const action = nestedResult && typeof nestedResult === "object"
+      ? nestedResult as Record<string, any>
+      : null;
+    if (action?.actionId && action.state === "applied") {
+      const result = details.createDiv({cls: "la-live-trace__action-result"});
+      const resultHead = result.createDiv({cls: "la-live-trace__action-result-head"});
+      setIcon(resultHead.createSpan(), "file-check-2");
+      const resultCopy = resultHead.createDiv();
+      resultCopy.createEl("strong", {text: "已整理完成"});
+      const files = Array.isArray(action.files) ? action.files : [];
+      const added = files.reduce((sum: number, item: any) => sum + Number(item.added ?? 0), 0);
+      const deleted = files.reduce((sum: number, item: any) => sum + Number(item.deleted ?? 0), 0);
+      resultCopy.createEl("small", {text: `${files.length} 个文件 · +${added} -${deleted} · 已校验`});
+      const fileList = result.createDiv({cls: "la-live-trace__action-files"});
+      for (const item of files.slice(0, 10)) {
+        const file = fileList.createEl("button", {text: String(item.path ?? "Markdown 文件")});
+        file.onclick = () => void this.app.workspace.openLinkText(String(item.path ?? ""), "", false);
+      }
+      const actions = result.createDiv({cls: "la-live-trace__action-actions"});
+      button(actions, "查看变化", async () => {
+        const diff = await this.client.agentActionDiff(String(action.actionId));
+        const preview = (Array.isArray(diff.files) ? diff.files : []).map((item: any) =>
+          `${String(item.path ?? "")}  +${Number(item.added ?? 0)} -${Number(item.deleted ?? 0)}\n\n${String(item.diff ?? "")}`,
+        ).join("\n\n");
+        new TextPreviewModal(this.app, "本次修改", preview || "没有文本变化").open();
+      });
+      if (action.undoAvailable) button(actions, "撤销", async () => {
+        await this.client.undoAgentAction(String(action.actionId));
+        new Notice("已安全撤销本次修改");
+        action.state = "undone";
+        action.undoAvailable = false;
+        this.paintAssistantLiveTrace(parent, run);
+      });
+    }
     if (run.proposalRequired) {
       const notice = details.createDiv({cls: "la-live-trace__proposal"}); setIcon(notice.createSpan(), "file-diff");
-      notice.createSpan({text: "涉及知识写入：必须先生成 Change Set 与 Diff，再由你确认。"});
+      notice.createSpan({text: "该操作超出当前任务授权，需要在当前对话中处理。"});
     }
   }
 
@@ -2595,9 +2660,9 @@ export class LearningAgentMainView extends ItemView {
       const text = recovery.createDiv(); text.createEl("strong", {text: failure.title}); text.createEl("p", {text: failure.message});
       const actions = text.createDiv({cls: "la-assistant-recovery__actions"});
       for (const action of failure.actions) button(actions, action.label, async () => {
-        if (action.id === "retry" && task.technical?.runId) {
-          const response = await this.client.post<any>(`/brain/runs/${encodeURIComponent(task.technical.runId)}/retry`, {});
-          this.assistantRun = response.run; await this.refresh(); return;
+        if (action.id === "retry") {
+          setComposer("请根据刚才保留的上下文重试这个任务，并从失败的工具步骤继续。");
+          return;
         }
         if (action.id === "change-model") { this.assistantDrawerOpen = true; await this.refresh(); return; }
         setComposer(action.id === "trusted-research" ? "请搜索可信网页和论文后继续这个任务" : action.id === "limited-guide" ? "先生成来源范围明确的概念导读" : "请调整并继续这个任务");
@@ -2717,7 +2782,7 @@ export class LearningAgentMainView extends ItemView {
         });
         const changeSetId = String(change.changeSetId ?? change.changeSet?.id ?? "");
         if (changeSetId) button(actions, "查看 Diff", async () => {
-          const detail = await this.client.get<any>(`/brain-change-sets/${encodeURIComponent(changeSetId)}`);
+          const detail = await this.client.get<any>(`/change-sets/${encodeURIComponent(changeSetId)}`);
           const changeSet = detail.change_set ?? {};
           const writes = (changeSet.writes ?? []).map((item: any) => `${String(item.action ?? "update").toUpperCase()}  ${item.path}`).join("\n");
           new TextPreviewModal(this.app, changeSet.title ?? "Change Set", `${changeSet.preview ?? "等待确认"}\n\n${writes || "暂无候选写入"}`).open();
@@ -2839,7 +2904,6 @@ export class LearningAgentMainView extends ItemView {
     const copy = root.createDiv({cls: "la-message-copy"});
     if (message.role === "user") copy.createEl("p", {text: String(message.content ?? "")});
     else {
-      this.renderProviderReasoning(copy, Array.isArray(message.reasoningBlocks) ? message.reasoningBlocks : [], false);
       void this.markdown.render(copy.createDiv({cls: "la-message-markdown"}), String(message.content ?? ""));
     }
     // User metadata is deliberately outside the painted message body. Keeping it
@@ -2862,27 +2926,6 @@ export class LearningAgentMainView extends ItemView {
       return;
     }
     this.renderAssistantMessageActions(meta, message, previousUserMessage);
-  }
-
-  private renderProviderReasoning(
-    parent: HTMLElement,
-    blocks: Array<{id?: string; provider?: string; content?: string; status?: string}>,
-    open: boolean,
-  ): void {
-    const visible = blocks.filter(block => String(block.content ?? "").trim());
-    if (!visible.length) return;
-    const details = parent.createEl("details", {cls: "la-provider-reasoning"});
-    details.open = open;
-    const summary = details.createEl("summary");
-    setIcon(summary.createSpan({cls: "la-provider-reasoning__icon"}), "brain-circuit");
-    summary.createSpan({text: "模型推理"});
-    const providers = [...new Set(visible.map(block => String(block.provider ?? "provider")).filter(Boolean))];
-    const streaming = visible.some(block => block.status === "streaming");
-    summary.createEl("small", {text: `供应商返回${providers.length ? ` · ${providers.join(" / ")}` : ""}${streaming ? " · 接收中" : ""}`});
-    const body = details.createDiv({cls: "la-provider-reasoning__body"});
-    for (const block of visible) {
-      body.createEl("pre", {text: String(block.content ?? "")});
-    }
   }
 
   private renderAssistantMessageActions(copy: HTMLElement, message: any, previousUserMessage: any = null): void {
@@ -2951,108 +2994,6 @@ export class LearningAgentMainView extends ItemView {
     if (!["change_set", "quiz"].includes(artifact.type)) button(actions, "继续调整", () => { new Notice("在下方继续描述修改要求，将生成同一成果的新版本。" ); });
   }
 
-  private async renderBrainRun(parent: HTMLElement, run: any): Promise<void> {
-    parent.addClass("la-brain-run");
-    const head = parent.createDiv({cls: "la-brain-run__head"});
-    const status = statusLabel(String(run.status ?? "running"));
-    badge(head, run.status === "failed" ? "error" : run.status === "completed" ? "review" : "learn", status);
-    head.createEl("strong", {text: this.brainIntentLabel(String(run.primary_intent ?? ""))});
-    const timeline = parent.createDiv({cls: "la-brain-timeline", attr: {"aria-label": "主脑执行过程"}});
-    const stages = [
-      ["理解", "理解目标与上下文"], ["计划", "选择 Skill"], ["策略", "检查权限"],
-      ["执行", "调用受限 Tool"], ["校验", "验证结果"], ["提案", "等待确认"],
-    ];
-    const statusIndex = ({created: 0, understanding: 0, planning: 1, awaiting_authorization: 2, running: 3, verifying: 4, awaiting_confirmation: 5, completed: 6, failed: 6, cancelled: 6} as Record<string, number>)[run.status] ?? 0;
-    stages.forEach(([label, description], index) => {
-      const row = timeline.createDiv({cls: index < statusIndex ? "is-done" : index === statusIndex ? "is-current" : ""});
-      setIcon(row.createSpan(), index < statusIndex ? "check-circle-2" : index === statusIndex ? "loader-circle" : "circle");
-      const copy = row.createDiv(); copy.createEl("strong", {text: label}); copy.createEl("small", {text: description});
-    });
-    if (run.status === "failed") {
-      const error = parent.createDiv({cls: "la-brain-error"});
-      setIcon(error.createSpan(), "circle-alert");
-      const copy = error.createDiv(); copy.createEl("strong", {text: run.error_message || "主脑执行失败"}); copy.createEl("small", {text: run.error_code || "brain_error"});
-      const actions = parent.createDiv({cls: "la-brain-result-actions"});
-      button(actions, "重试", async () => {
-        const response = await this.client.post<any>(`/brain/runs/${encodeURIComponent(run.id)}/retry`, {});
-        this.assistantRun = response.run; await this.refresh();
-      }, "mod-cta");
-      return;
-    }
-    for (const result of run.result?.results ?? []) await this.renderBrainResult(parent, run, result);
-    if (["running", "planning", "understanding", "verifying"].includes(run.status)) {
-      button(parent, "取消任务", async () => {
-        const response = await this.client.post<any>(`/brain/runs/${encodeURIComponent(run.id)}/cancel`, {});
-        this.assistantRun = response.run; await this.refresh();
-      });
-    }
-    const technical = parent.createEl("details", {cls: "la-technical"});
-    technical.createEl("summary", {text: "执行详情"});
-    technical.createEl("p", {text: `${run.steps?.length ?? 0} 个步骤 · ${run.tool_events?.length ?? 0} 次受限工具调用`});
-    technical.createEl("code", {text: String(run.id ?? "")});
-  }
-
-  private async renderBrainResult(parent: HTMLElement, run: any, result: any): Promise<void> {
-    const card = parent.createDiv({cls: "la-brain-result"});
-    if (result.kind === "tutor") {
-      card.createEl("h3", {text: "学习回答"}); await this.markdown.render(card.createDiv({cls: "la-brain-result__markdown"}), String(result.answer ?? ""));
-      if (result.evidence?.length) card.createEl("small", {text: `依据：${result.evidence.map((item: any) => item.title).join("、")}`});
-    } else if (result.kind === "research-bundle") {
-      card.createEl("h3", {text: result.bundle?.title ?? "Research Bundle"});
-      card.createEl("p", {text: `已找到 ${result.sources?.length ?? 0} 个可追溯来源，预计 ${result.bundle?.estimated_minutes ?? 0} 分钟。`});
-      const list = card.createDiv({cls: "la-brain-source-list"});
-      for (const source of result.sources ?? []) {
-        const row = list.createDiv(); badge(row, source.source_type === "local_vault" ? "review" : "learn", source.source_type); row.createEl("strong", {text: source.title}); row.createEl("small", {text: source.reason});
-      }
-      button(card, "加入计划", async () => {
-        await this.client.post(`/research-bundles/${encodeURIComponent(result.bundle.id)}/add-to-plan`, {});
-        new Notice("阅读任务已作为 proposed 计划加入");
-      }, "mod-cta");
-    } else if (result.kind === "curriculum") {
-      card.createEl("h3", {text: "课程候选池"});
-      card.createEl("p", {text: result.generated ? `新增 ${result.generated} 个基于薄弱点的候选知识；不会自动创建正式笔记。` : "当前没有新的可去重候选。"});
-    } else if (result.kind === "plan-proposal") {
-      card.createEl("h3", {text: result.proposal?.title ?? "学习计划提案"});
-      card.createEl("p", {text: `${result.proposal?.tasks?.length ?? 0} 项任务 · proposed，等待你在计划页调整和确认。`});
-      button(card, "打开计划", () => this.setTab("plan"), "mod-cta");
-    } else if (["capture", "organized-text", "save-proposal"].includes(result.kind)) {
-      card.createEl("h3", {text: result.kind === "capture" ? "保存提案" : "整理提案"});
-      for (const note of result.proposed_notes ?? []) {
-        const noteCard = card.createDiv({cls: "la-brain-note-preview"});
-        noteCard.createEl("strong", {text: note.title}); noteCard.createEl("small", {text: note.path});
-        await this.markdown.render(noteCard.createDiv({cls: "la-brain-note-markdown"}), String(note.content ?? ""), String(note.path ?? ""));
-      }
-    } else {
-      card.createEl("h3", {text: "执行结果"});
-      card.createEl("p", {text: result.message || "任务已完成。"});
-    }
-    const changeSet = result.change_set;
-    if (changeSet?.id) {
-      const proposal = card.createDiv({cls: "la-change-set-proposal"});
-      setIcon(proposal.createSpan(), "file-diff");
-      const copy = proposal.createDiv(); copy.createEl("strong", {text: changeSet.title || "Change Set"}); copy.createEl("small", {text: `${changeSet.writes?.length ?? 0} 个候选写入 · 尚未应用`});
-      const actions = card.createDiv({cls: "la-brain-result-actions"});
-      button(actions, "取消", async () => {
-        const response = await this.client.post<any>(`/brain/runs/${encodeURIComponent(run.id)}/cancel`, {});
-        this.assistantRun = response.run; await this.refresh();
-      });
-      button(actions, "确认并应用", () => new ExplicitConfirmModal(
-        this.app,
-        "确认应用主脑提案",
-        "系统会重新校验路径、基础版本、reviewed/core 权限并通过跨文件事务提交。",
-        async () => {
-          await this.client.post(`/brain-change-sets/${encodeURIComponent(changeSet.id)}/apply`, {confirmed: true});
-          this.assistantRun = (await this.client.get<any>(`/brain/runs/${encodeURIComponent(run.id)}`)).run;
-          await this.refresh(); new Notice("Change Set 已事务应用");
-        },
-      ).open(), "mod-cta");
-    }
-  }
-
-  private brainIntentLabel(intent: string): string {
-    return ({ask_question: "回答问题", learn_topic: "辅导学习", research_topic: "研究资料", capture_text: "保存内容", organize_text: "整理内容", organize_vault: "整理知识库", create_study_plan: "规划学习", generate_recommendations: "生成推荐", generate_quiz: "生成短测", evaluate_explanation: "检查复述"} as Record<string, string>)[intent] ?? "处理任务";
-  }
-
   private renderProviderDrawer(root: HTMLElement, profiles: ModelProfile[], routes: any): void {
     const header = root.createDiv({cls: "la-pane-header la-inspector-head"});
     const title = header.createDiv();
@@ -3107,7 +3048,7 @@ export class LearningAgentMainView extends ItemView {
     const jsonSchema = capability("支持 JSON Schema");
     const toolCalling = capability("原生 Tool Calling（支持工具调用）");
     const streamedToolCalls = capability("流式 Tool Call 参数");
-    const reasoningContent = capability("显示供应商返回的 Reasoning Content");
+    const reasoningContent = capability("支持深度推理协议");
     const parallelToolCalls = capability("并行 Tool Calls");
     const reasoningWrap = advanced.createDiv({cls: "la-form-field"});
     reasoningWrap.createEl("label", {text: "Reasoning Effort"});
@@ -3116,6 +3057,48 @@ export class LearningAgentMainView extends ItemView {
       reasoningEffort.createEl("option", {value, text: value || "Provider 默认"});
     }
     const headers = advanced.createEl("textarea", {attr: {placeholder: "自定义 Headers JSON（禁止 Authorization / Host / Content-Length）", "aria-label": "自定义 Headers"}});
+
+    const probeCard = form.createDiv({cls: "la-capability-probe"});
+    const probeHead = probeCard.createDiv({cls: "la-capability-probe__head"});
+    probeHead.createEl("strong", {text: "模型能力探测"});
+    const probeButton = button(probeHead, "重新探测", async () => {
+      if (!picker.value) throw new Error("请先保存并选择配置");
+      probeButton.disabled = true;
+      probeButton.setText("探测中…");
+      try {
+        const result = await this.client.probeModelCapabilities(picker.value);
+        renderProbe(result);
+      } finally {
+        probeButton.disabled = false;
+        probeButton.setText("重新探测");
+      }
+    });
+    const probeBody = probeCard.createDiv({cls: "la-capability-probe__body"});
+    const capabilityLabels: Record<string, string> = {
+      basicStreaming: "流式响应", nativeToolCalling: "原生工具调用",
+      streamedToolCalls: "流式工具参数", preservesToolCallId: "Tool Call ID",
+      parallelToolCalls: "并行工具", reasoningContent: "深度推理协议",
+      usageReporting: "Usage", contextWindow: "上下文窗口",
+      maxOutputTokens: "最大输出",
+    };
+    const renderProbe = (payload: any): void => {
+      probeBody.empty();
+      const probe = payload?.probe ?? payload;
+      const values = probe?.capabilities ?? {};
+      if (!Object.keys(values).length) {
+        probeBody.createEl("small", {text: "尚未探测。运行时会采用保守参数，不会把偏好开关当作真实能力。"});
+        return;
+      }
+      for (const [keyName, label] of Object.entries(capabilityLabels)) {
+        const state = values[keyName];
+        if (!state) continue;
+        const row = probeBody.createDiv({cls: "la-capability-probe__row"});
+        row.createSpan({text: label});
+        const status = String(state.status ?? "inconclusive");
+        row.createEl("code", {text: state.value == null ? status : `${status} · ${state.value}`, cls: `is-${status}`});
+      }
+      probeBody.createEl("small", {text: probe.checkedAt ? `最近探测：${new Date(probe.checkedAt).toLocaleString()}` : "结果来自安全能力缓存"});
+    };
 
     const load = (profile?: ModelProfile): void => {
       providerType.value = profile?.providerType ?? "openai-compatible";
@@ -3139,7 +3122,15 @@ export class LearningAgentMainView extends ItemView {
       headers.value = JSON.stringify(profile?.settings?.customHeaders ?? {}, null, 2);
     };
     load();
-    picker.onchange = () => load(profiles.find(item => item.id === picker.value));
+    picker.onchange = () => {
+      load(profiles.find(item => item.id === picker.value));
+      probeBody.empty();
+      if (!picker.value) return renderProbe(null);
+      void this.client.modelCapabilities(picker.value)
+        .then(renderProbe)
+        .catch(() => renderProbe(null));
+    };
+    renderProbe(null);
 
     const actions = scroll.createDiv({cls: "la-provider-actions"});
     button(actions, "保存", async () => {
@@ -3197,7 +3188,7 @@ export class LearningAgentMainView extends ItemView {
       }).open();
     });
     scroll.createEl("h3", {text: "任务模型路由"});
-    for (const [task, label] of [["brain_orchestrator", "主脑编排"], ["intent_router", "意图识别"], ["curriculum_planner", "课程候选"], ["daily_knowledge_generator", "每日新知识"], ["claim_extractor", "Claim 提取"], ["claim_verifier", "Claim 验证"], ["lesson_generator", "微型课程"], ["research_synthesis", "研究综合"], ["tutor", "学习辅导"], ["quiz", "短测"], ["evaluation", "复述评估"], ["pdf_prepare", "PDF / 教材 Prepare"], ["assistant_chat", "助手对话"]]) {
+    for (const [task, label] of [["agent_runtime", "Pi Agent Runtime"], ["curriculum_planner", "课程候选"], ["daily_knowledge_generator", "每日新知识"], ["claim_extractor", "Claim 提取"], ["claim_verifier", "Claim 验证"], ["lesson_generator", "微型课程"], ["research_synthesis", "研究综合"], ["tutor", "学习辅导"], ["quiz", "短测"], ["evaluation", "复述评估"], ["pdf_prepare", "PDF / 教材 Prepare"], ["assistant_chat", "助手对话"]]) {
       const row = scroll.createDiv({cls: "la-routing-row"});
       row.createEl("span", {text: label});
       const select = row.createEl("select");
