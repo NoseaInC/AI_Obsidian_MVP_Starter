@@ -4,6 +4,8 @@ from openai import AsyncOpenAI
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 
+from agent.core.models import normalized_model_settings
+
 
 def build_pydantic_model(
     model_profile_service,
@@ -16,7 +18,7 @@ def build_pydantic_model(
         item for item in model_profile_service.store.list_model_profiles()
         if item["id"] == profile_id
     )
-    settings = dict(profile_record.get("settings") or {})
+    settings = normalized_model_settings(profile_record)
     client = AsyncOpenAI(
         api_key=provider.api_key,
         base_url=provider.base_url,
@@ -33,8 +35,9 @@ def build_pydantic_model(
                 if settings.get("reasoningContent") is True
                 else None
             ),
-            # Hidden reasoning may be used by the provider for subsequent tool
-            # turns, but is never emitted as UI text or persisted to Markdown.
+            # Provider-returned thinking parts remain available for subsequent
+            # tool turns and may be shown in the local conversation UI. They are
+            # never promoted into synchronized Markdown knowledge artifacts.
             openai_chat_send_back_thinking_parts="field"
             if settings.get("reasoningContent") is True
             else False,

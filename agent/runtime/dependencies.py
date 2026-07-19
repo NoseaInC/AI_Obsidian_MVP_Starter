@@ -55,6 +55,7 @@ class ZhixuDependencies:
     allow_network: bool
     fetch_public_web: Callable[[str], dict[str, Any]]
     search_public_web: Callable[[str, int], dict[str, Any]]
+    search_academic_web: Callable[[str, int], dict[str, Any]]
     session_allow_create_roots: list[str] = field(default_factory=list)
     proposed_change_set_ids: list[str] = field(default_factory=list)
 

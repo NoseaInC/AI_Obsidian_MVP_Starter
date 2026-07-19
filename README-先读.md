@@ -5,6 +5,19 @@
 1. 资料能否稳定转化为可追溯的知识。
 2. 知识能否驱动每天复习和未来两天的学习推荐。
 
+## 工程文档从哪里读
+
+根目录只保留项目入口、当前状态、安全约束和关键决策。按以下顺序恢复开发上下文：
+
+1. `AGENTS.md`
+2. `PROJECT_STATUS.md`
+3. `PROJECT_ROADMAP.md`
+4. `DECISIONS.md`
+5. `SECURITY.md`
+6. `docs/README.md`
+
+助手、运行时、学习、资料摄入和 UI 的阶段性规范已经按专题归入 `docs/`，不再堆放在 Vault 根目录。
+
 ## 一、导入方式
 
 把压缩包解压后，将其中的文件夹复制到你的 Obsidian Vault 根目录。

@@ -17,16 +17,19 @@ from pydantic_ai import (
     FunctionToolResultEvent,
     ModelMessagesTypeAdapter,
     PartDeltaEvent,
+    PartEndEvent,
     PartStartEvent,
     TextPart,
+    ThinkingPart,
     ToolDenied,
     UsageLimits,
 )
-from pydantic_ai.messages import RetryPromptPart, TextPartDelta
+from pydantic_ai.messages import RetryPromptPart, TextPartDelta, ThinkingPartDelta
 
 from agent.core.redaction import redact_model_context, redact_secret_text
+from agent.core.models import normalized_model_settings
 
-from .agent_factory import build_zhixu_agent
+from .agent_factory import DEEP_MODE_INSTRUCTIONS, build_zhixu_agent
 from .contracts import InlineConfirmation
 from .dependencies import ZhixuDependencies
 from .model_factory import build_pydantic_model
@@ -48,6 +51,57 @@ class PydanticAssistantRuntime:
         self.model_factory = build_pydantic_model
         self._cancelled: set[str] = set()
         self._cancel_lock = threading.RLock()
+
+    @staticmethod
+    def _bounded_history(
+        history: list[Any],
+        reasoning_mode: str,
+    ) -> tuple[list[Any], dict[str, int] | None]:
+        """Keep complete recent request/response pairs inside a turn budget."""
+        budget = 48_000 if reasoning_mode == "deep" else 96_000
+        encoded = ModelMessagesTypeAdapter.dump_json(history)
+        if len(encoded) <= budget or len(history) <= 2:
+            return history, None
+
+        # Stored PydanticAI history alternates ModelRequest/ModelResponse. Work
+        # backwards in pairs so a tool result or response is never orphaned.
+        complete_end = len(history) - (len(history) % 2)
+        if complete_end < 2:
+            return history, None
+        selected = history[complete_end - 2:complete_end]
+        cursor = complete_end - 2
+        while cursor >= 2:
+            candidate = history[cursor - 2:complete_end]
+            if len(ModelMessagesTypeAdapter.dump_json(candidate)) > budget:
+                break
+            cursor -= 2
+            selected = candidate
+        if not selected:
+            selected = history[-2:]
+        return selected, {
+            "messagesBefore": len(history),
+            "messagesAfter": len(selected),
+            "bytesBefore": len(encoded),
+            "bytesAfter": len(ModelMessagesTypeAdapter.dump_json(selected)),
+        }
+
+    @staticmethod
+    def _turn_model_settings(prepared: dict[str, Any]) -> dict[str, Any] | None:
+        if prepared.get("reasoning_mode") != "deep":
+            return None
+        settings: dict[str, Any] = {
+            "max_tokens": min(
+                32_768,
+                max(8_192, int(prepared.get("max_tokens") or 3_000)),
+            ),
+        }
+        provider_type = str(prepared.get("provider_type") or "")
+        if provider_type == "deepseek":
+            settings["extra_body"] = {"thinking": {"type": "enabled"}}
+            settings["openai_reasoning_effort"] = "max"
+        elif provider_type == "openai":
+            settings["openai_reasoning_effort"] = "high"
+        return settings
 
     def stream(self, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
         return sync_iter_async(lambda: self._start(body))
@@ -182,6 +236,25 @@ class PydanticAssistantRuntime:
         history = ModelMessagesTypeAdapter.validate_json(
             history_json
         )
+        history, compacted = self._bounded_history(
+            history,
+            prepared["reasoning_mode"],
+        )
+        if compacted:
+            self.persistence.save_history(
+                run_id,
+                ModelMessagesTypeAdapter.dump_json(history),
+            )
+            checkpoint_id = f"checkpoint-{uuid.uuid4().hex}"
+            self.persistence.update_checkpoint(run_id, checkpoint_id)
+            yield self._emit(
+                run_id,
+                "context.compacted",
+                conversationId=conversation_id,
+                checkpointId=checkpoint_id,
+                reasoningMode=prepared["reasoning_mode"],
+                **compacted,
+            )
 
         async for event in self._execute_agent(
             prepared,
@@ -292,6 +365,15 @@ class PydanticAssistantRuntime:
         output_value: str | DeferredToolRequests | None = None
         message_started = False
         assistant_text: list[str] = []
+        reasoning_blocks: list[dict[str, str]] = []
+        reasoning_block_serial = 0
+        turn_model_settings = self._turn_model_settings(prepared)
+        turn_max_tokens = int(
+            (turn_model_settings or {}).get(
+                "max_tokens",
+                prepared["max_tokens"],
+            )
+        )
 
         try:
             async with agent.iter(
@@ -299,18 +381,25 @@ class PydanticAssistantRuntime:
                 deps=deps,
                 message_history=history,
                 deferred_tool_results=deferred_results,
+                instructions=(
+                    DEEP_MODE_INSTRUCTIONS
+                    if prepared.get("reasoning_mode") == "deep"
+                    else None
+                ),
+                model_settings=turn_model_settings,
                 usage_limits=UsageLimits(
                     request_limit=10,
                     tool_calls_limit=24,
                     output_tokens_limit=max(
                         1000,
-                        int(prepared["max_tokens"]) * 2,
+                        turn_max_tokens * 2,
                     ),
                 ),
             ) as run:
                 async for node in run:
                     self._raise_if_cancelled(run_id)
                     if Agent.is_model_request_node(node):
+                        reasoning_by_part_index: dict[int, dict[str, str]] = {}
                         async with node.stream(run.ctx) as stream:
                             cumulative = ""
                             async for model_event in stream:
@@ -339,6 +428,46 @@ class PydanticAssistantRuntime:
                                                 messageId=prepared[
                                                     "assistant_message_id"
                                                 ],
+                                                delta=initial,
+                                            )
+                                    elif isinstance(model_event.part, ThinkingPart):
+                                        reasoning_block_serial += 1
+                                        provider_name = str(
+                                            model_event.part.provider_name or ""
+                                        )
+                                        if (
+                                            provider_name == "openai"
+                                            and prepared.get("provider_type")
+                                            not in {"openai", "openai-compatible"}
+                                        ):
+                                            provider_name = str(
+                                                prepared.get("provider_type") or ""
+                                            )
+                                        block = {
+                                            "id": f"reasoning-{reasoning_block_serial}",
+                                            "provider": provider_name or prepared["model"],
+                                            "content": "",
+                                        }
+                                        reasoning_blocks.append(block)
+                                        reasoning_by_part_index[model_event.index] = block
+                                        yield self._emit(
+                                            run_id,
+                                            "reasoning.started",
+                                            conversationId=conversation_id,
+                                            blockId=block["id"],
+                                            provider=block["provider"],
+                                        )
+                                        initial = redact_secret_text(
+                                            model_event.part.content or ""
+                                        )
+                                        if initial:
+                                            block["content"] += initial
+                                            yield self._emit(
+                                                run_id,
+                                                "reasoning.delta",
+                                                conversationId=conversation_id,
+                                                blockId=block["id"],
+                                                provider=block["provider"],
                                                 delta=initial,
                                             )
                                 elif isinstance(model_event, PartDeltaEvent):
@@ -372,6 +501,40 @@ class PydanticAssistantRuntime:
                                                     "assistant_message_id"
                                                 ],
                                                 delta=delta,
+                                            )
+                                    elif isinstance(
+                                        model_event.delta,
+                                        ThinkingPartDelta,
+                                    ):
+                                        block = reasoning_by_part_index.get(
+                                            model_event.index
+                                        )
+                                        delta = redact_secret_text(
+                                            model_event.delta.content_delta or ""
+                                        )
+                                        if block is not None and delta:
+                                            block["content"] += delta
+                                            yield self._emit(
+                                                run_id,
+                                                "reasoning.delta",
+                                                conversationId=conversation_id,
+                                                blockId=block["id"],
+                                                provider=block["provider"],
+                                                delta=delta,
+                                            )
+                                elif isinstance(model_event, PartEndEvent):
+                                    if isinstance(model_event.part, ThinkingPart):
+                                        block = reasoning_by_part_index.pop(
+                                            model_event.index,
+                                            None,
+                                        )
+                                        if block is not None:
+                                            yield self._emit(
+                                                run_id,
+                                                "reasoning.completed",
+                                                conversationId=conversation_id,
+                                                blockId=block["id"],
+                                                provider=block["provider"],
                                             )
 
                     elif Agent.is_call_tools_node(node):
@@ -418,6 +581,7 @@ class PydanticAssistantRuntime:
                                         )
                                     )
                                     public_result = self._public_tool_result(
+                                        tool_event.part.tool_name,
                                         tool_event.part.content
                                     )
                                     yield self._emit(
@@ -523,6 +687,7 @@ class PydanticAssistantRuntime:
                     "assistant",
                     final_text,
                     "markdown",
+                    reasoning_blocks=reasoning_blocks,
                 )
                 usage = run.result.usage
                 yield self._emit(
@@ -661,7 +826,7 @@ class PydanticAssistantRuntime:
             or route.get("modelOverride")
             or profile["defaultModel"]
         )
-        settings = profile["settings"]
+        settings = normalized_model_settings(profile)
         active_note = (
             body.get("active_note")
             if isinstance(body.get("active_note"), dict)
@@ -695,6 +860,11 @@ class PydanticAssistantRuntime:
             if isinstance(body.get("options"), dict)
             else {}
         )
+        reasoning_mode = str(
+            options.get("reasoning_mode") or "auto"
+        )
+        if reasoning_mode not in {"auto", "deep"}:
+            reasoning_mode = "auto"
         run_id = f"run-{uuid.uuid4().hex}"
         assistant_message_id = f"msg-{uuid.uuid4().hex}"
         session_roots = self.service.store.get_setting(
@@ -727,6 +897,7 @@ class PydanticAssistantRuntime:
             "permissionMode": "commit-default-ask",
             "sessionAllowCreateRoots": session_roots,
             "networkAuthorized": options.get("allow_network") is True,
+            "reasoningMode": reasoning_mode,
         })
         prompt = (
             f"{message}\n\n"
@@ -766,6 +937,10 @@ class PydanticAssistantRuntime:
             "attachment_ids": raw_attachment_ids,
             "session_allow_create_roots": session_roots,
             "allow_network": options.get("allow_network") is True,
+            "reasoning_mode": reasoning_mode,
+            "provider_type": str(
+                profile.get("providerType") or "openai-compatible"
+            ),
             "max_tokens": int(settings.get("maxTokens", 3000)),
             "request_snapshot": request_snapshot,
         }
@@ -773,6 +948,19 @@ class PydanticAssistantRuntime:
     def _restore_request(self, snapshot) -> dict[str, Any]:
         request = snapshot.request
         body = request["body"]
+        profile = next(
+            (
+                item
+                for item in self.service.store.list_model_profiles()
+                if item["id"] == snapshot.profile_id
+            ),
+            {},
+        )
+        settings = normalized_model_settings(profile)
+        options = body.get("options") or {}
+        reasoning_mode = str(options.get("reasoning_mode") or "auto")
+        if reasoning_mode not in {"auto", "deep"}:
+            reasoning_mode = "auto"
         return {
             "run_id": snapshot.run_id,
             "conversation_id": snapshot.conversation_id,
@@ -792,9 +980,13 @@ class PydanticAssistantRuntime:
                 request.get("session_allow_create_roots") or [],
             ),
             "allow_network": bool(
-                (body.get("options") or {}).get("allow_network")
+                options.get("allow_network")
             ),
-            "max_tokens": 3000,
+            "reasoning_mode": reasoning_mode,
+            "provider_type": str(
+                profile.get("providerType") or "openai-compatible"
+            ),
+            "max_tokens": int(settings.get("maxTokens", 3000)),
             "request_snapshot": request,
         }
 
@@ -825,6 +1017,7 @@ class PydanticAssistantRuntime:
             ),
             fetch_public_web=self.service.fetch_public_web,
             search_public_web=self.service.search_public_web,
+            search_academic_web=self.service.search_academic_web,
             session_allow_create_roots=list(
                 prepared.get("session_allow_create_roots") or []
             ),
@@ -950,10 +1143,29 @@ class PydanticAssistantRuntime:
                 if folders:
                     return f"列出文件夹 · {folders} 个目录"
                 return f"列出文件夹 · {notes} 篇笔记"
+            if tool_name == "get_vault_overview":
+                return "读取知识库概览"
+            if tool_name == "get_learning_state":
+                return f"读取 {len(content.get('items') or [])} 条学习状态"
+            if tool_name == "get_due_reviews":
+                return f"找到 {len(content.get('items') or [])} 条到期复习"
+            if tool_name == "get_recent_materials":
+                return f"找到 {len(content.get('items') or [])} 条近期资料"
             if tool_name == "ask_user":
                 return "已收到用户回答"
             if tool_name == "get_attachment_metadata":
                 return f"读取附件元数据 · {str(content.get('displayName') or '附件')}"
+            if tool_name in {"search_public_web", "search_academic_sources"}:
+                count = len(content.get("results") or [])
+                provider = str(content.get("provider") or "联网来源")
+                label = "检索学术来源" if tool_name == "search_academic_sources" else "搜索公开网页"
+                return f"{label} · {count} 条 · {provider}"
+            if tool_name == "fetch_public_url":
+                title = str(content.get("title") or content.get("canonicalUrl") or "公开网页")
+                evidence = str(content.get("evidenceText") or "")
+                return f"读取网页 {title[:80]} · {len(evidence)} 字符证据"
+            if tool_name == "get_current_datetime":
+                return f"当前时间 · {str(content.get('iso') or '')}"
             if isinstance(content.get("items"), list):
                 return f"返回 {len(content['items'])} 项"
             if isinstance(content.get("pages"), list):
@@ -999,7 +1211,7 @@ class PydanticAssistantRuntime:
         return public
 
     @staticmethod
-    def _public_tool_result(content: Any) -> dict[str, Any]:
+    def _public_tool_result(tool_name: str, content: Any) -> dict[str, Any]:
         value = content.model_dump(mode="json") if isinstance(content, BaseModel) else content
         if isinstance(value, str):
             try:
@@ -1020,6 +1232,44 @@ class PydanticAssistantRuntime:
                     "recoverable": error.get("recoverable") is True,
                     "retryable": error.get("retryable") is True,
                 },
+            }
+        if value.get("available") is False:
+            return {
+                "available": False,
+                "reason": str(value.get("reason") or "tool_unavailable")[:160],
+            }
+        if tool_name in {"search_public_web", "search_academic_sources"}:
+            results = []
+            for item in list(value.get("results") or [])[:10]:
+                if not isinstance(item, dict):
+                    continue
+                results.append({
+                    "url": str(item.get("url") or "")[:2000],
+                    "title": str(item.get("title") or "")[:300],
+                    "snippet": str(item.get("snippet") or "")[:240],
+                    "domain": str(item.get("domain") or "")[:200],
+                    "provider": str(item.get("provider") or "")[:80],
+                    "sourceType": str(item.get("sourceType") or "")[:80],
+                    "publishedAt": str(item.get("publishedAt") or "")[:80],
+                    "qualityScore": float(item.get("qualityScore") or 0),
+                })
+            return {
+                "query": str(value.get("query") or "")[:500],
+                "provider": str(value.get("provider") or "")[:80],
+                "results": results,
+            }
+        if tool_name == "fetch_public_url":
+            return {
+                "source": {
+                    "id": str(value.get("id") or "")[:120],
+                    "url": str(value.get("canonicalUrl") or "")[:2000],
+                    "title": str(value.get("title") or "")[:300],
+                    "domain": str(value.get("domain") or "")[:200],
+                    "sourceType": str(value.get("sourceType") or "")[:80],
+                    "qualityScore": float(value.get("qualityScore") or 0),
+                    "publishedAt": str(value.get("publishedAt") or "")[:80],
+                    "promptInjectionDetected": value.get("promptInjectionDetected") is True,
+                }
             }
         proposal_id = str(
             value.get("proposal_id") or value.get("proposalId") or ""
@@ -1062,16 +1312,22 @@ class PydanticAssistantRuntime:
             "get_current_note": "读取当前笔记",
             "get_current_selection": "读取当前选区",
             "search_vault": "搜索知识库",
+            "get_vault_overview": "读取知识库概览",
             "list_vault_folder": "列出知识库文件夹",
             "read_vault_note": "读取笔记正文",
             "find_related_notes": "查找相关笔记",
+            "get_learning_state": "读取学习状态",
+            "get_due_reviews": "读取到期复习",
+            "get_recent_materials": "查找最近资料",
             "get_conversation_focus": "读取会话焦点",
             "get_recent_conversation_messages": "读取最近对话",
             "get_attachment_metadata": "读取附件信息",
             "read_pdf_pages": "读取 PDF 页面",
             "search_pdf": "搜索 PDF",
             "search_public_web": "搜索公开网页",
+            "search_academic_sources": "检索学术来源",
             "fetch_public_url": "读取公开网页",
+            "get_current_datetime": "读取当前时间",
             "ask_user": "询问用户",
             "propose_vault_change": "生成修改方案",
             "commit_vault_change": "提交 Obsidian 修改",

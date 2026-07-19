@@ -16,6 +16,15 @@ class ChangeProposalResult(BaseModel):
     title: str
     preview: str
     writes: list[dict[str, Any]]
+    requires_commit: bool = True
+    next_action: Literal["commit_vault_change", "preview_only"] = (
+        "commit_vault_change"
+    )
+    model_instruction: str = (
+        "If the user asked to make the change, call commit_vault_change "
+        "with proposal_id now. Do not ask for confirmation in plain text; "
+        "the Runtime will render the required inline confirmation."
+    )
     auto_applied: bool = False
     transaction_id: str | None = None
 

@@ -131,6 +131,16 @@ export class PydanticAgentRuntime implements AgentRuntime {
     };
     const type = String(event.type ?? "");
     if (type === "message.delta") return {...base, type: "text", content: String(event.delta ?? ""), messageId: String(event.messageId ?? "")};
+    if (type === "reasoning.started" || type === "reasoning.delta" || type === "reasoning.completed") {
+      return {
+        ...base,
+        type: "reasoning",
+        blockId: String(event.blockId ?? "reasoning"),
+        provider: String(event.provider ?? "provider"),
+        content: type === "reasoning.delta" ? String(event.delta ?? "") : "",
+        phase: type === "reasoning.started" ? "started" : type === "reasoning.completed" ? "completed" : "delta",
+      };
+    }
     if (type === "tool.started") return {...base, type: "tool_use", id: String(event.callId ?? ""), name: String(event.tool ?? "tool"), input: (event.input ?? event.arguments ?? {}) as Record<string, unknown>, status: "running"};
     if (type === "tool.completed") {
       const status = String(event.status ?? "completed");

@@ -70,6 +70,28 @@ class ModelTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.service.save_model_profile(self.profile(apiKey="", apiKeyReference="bad reference with spaces"))
 
+    def test_legacy_deepseek_profile_receives_reasoning_capability_defaults(self):
+        self.keys.set("legacy-deepseek", "existing-secret")
+        self.service.store.upsert_model_profile({
+            "id": "legacy-deepseek-profile",
+            "displayName": "Legacy DeepSeek",
+            "providerType": "deepseek",
+            "baseUrl": "https://api.deepseek.com",
+            "apiKeyReference": "legacy-deepseek",
+            "defaultModel": "deepseek-chat",
+            "availableModels": ["deepseek-chat"],
+            "enabled": True,
+            "settings": {"maxTokens": 4096},
+        })
+        profile = next(
+            item for item in self.service.list_model_profiles()
+            if item["id"] == "legacy-deepseek-profile"
+        )
+        self.assertTrue(profile["settings"]["reasoningContent"])
+        self.assertTrue(profile["settings"]["nativeToolCalling"])
+        self.assertEqual(profile["settings"]["thinkingControl"], "provider-default")
+        self.assertEqual(profile["settings"]["maxTokens"], 4096)
+
     def test_base_url_and_protected_headers(self):
         self.assertEqual(validate_base_url("https://api.example.com/v1/"), "https://api.example.com/v1")
         self.assertEqual(validate_base_url("http://localhost:11434/v1"), "http://localhost:11434/v1")

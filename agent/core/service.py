@@ -1171,10 +1171,22 @@ class AgentService:
         self.log("web.search-completed", {"query_length": len(query), "result_count": len(result["results"])})
         return result
 
+    def search_academic_web(self, query: str, limit: int = 8) -> dict[str, Any]:
+        result = self.web.search_academic(query, limit)
+        self.log("web.academic-search-completed", {
+            "query_length": len(query),
+            "result_count": len(result["results"]),
+            "provider_failure_count": len(result.get("providerFailures") or []),
+        })
+        return result
+
     def fetch_public_web(self, url: str) -> dict[str, Any]:
-        source = self.web.fetch(url)
+        source = self.web.fetch_for_model(url)
         self.log("web.source-fetched", {"source_id": source["id"], "domain": source["domain"], "prompt_injection_detected": source["promptInjectionDetected"]})
         return source
+
+    def web_capabilities(self) -> dict[str, Any]:
+        return self.web.capabilities()
 
     def research_public_web(self, query: str, urls: list[str] | None = None, limit: int = 5) -> dict[str, Any]:
         result = self.web.research(query, urls, limit)

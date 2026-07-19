@@ -18,4 +18,4 @@
 
 - Steps 1–6 implemented and covered by offline tests.
 - Main Today UI verified in Obsidian with real reviewed/core recommendations.
-- Remaining acceptance blocker: persisted right-sidebar leaf still appears `Uninitialized` in this workspace even though the registered view DOM contains the online dashboard. Track as P1 in `PROJECT_STATUS.md` and `PLUGIN_STATUS.md`.
+- Remaining acceptance blocker: persisted right-sidebar leaf still appears `Uninitialized` in this workspace even though the registered view DOM contains the online dashboard. Track as P1 in `PROJECT_STATUS.md` and `docs/product/PLUGIN_STATUS.md`.

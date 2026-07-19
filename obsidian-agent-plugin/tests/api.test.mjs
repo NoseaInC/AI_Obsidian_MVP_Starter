@@ -168,9 +168,14 @@ test("assistant UI uses the Pydantic runtime and inline governed confirmation", 
 
 test("assistant model picker only changes chat routing", () => {
   const views = readFileSync(new URL("../src/views.ts", import.meta.url), "utf8");
-  const handler = views.match(/selector\.onchange\s*=\s*\(\)\s*=>[^;]+;/)?.[0] ?? "";
+  const handler = views.match(/updateModelRoute\("assistant_chat", selectedProfileId\)[^;]*;/)?.[0] ?? "";
   assert.match(handler, /assistant_chat/);
   assert.doesNotMatch(handler, /brain_orchestrator/);
+  assert.match(views, /la-model-popover/);
+  assert.match(views, /Auto 模式/);
+  assert.match(views, /modelBrand/);
+  for (const provider of ["deepseek", "claude", "anthropic", "gemini", "mistral", "ollama", "huggingface", "meta", "grok", "xai", "openai", "qwen", "kimi", "minimax", "chatglm", "glm"]) assert.match(views, new RegExp(`slug: "${provider}"`));
+  assert.doesNotMatch(views, /createEl\("select", \{cls: "la-composer-model"/);
 });
 
 test("provider settings expose Keychain references and all Brain model routes", () => {

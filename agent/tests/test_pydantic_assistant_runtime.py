@@ -6,11 +6,13 @@ import unittest
 from pathlib import Path
 
 from pydantic import BaseModel
-from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+from pydantic_ai.messages import ModelMessagesTypeAdapter, ModelRequest, ModelResponse, TextPart, UserPromptPart
+from pydantic_ai.models.function import DeltaThinkingPart, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 
 from agent.core.models import FakeKeyStore
 from agent.core.service import AgentService
+from agent.core.web_research import WebResearchService
 
 
 def _tool_history(messages) -> tuple[list[str], str]:
@@ -87,9 +89,22 @@ class PydanticAssistantRuntimeTests(unittest.TestCase):
         self.service.store.close()
         self.temp.cleanup()
 
-    def _stream(self, message: str, *, active_note: str = "", model=None):
+    def _stream(
+        self,
+        message: str,
+        *,
+        active_note: str = "",
+        model=None,
+        allow_network: bool = False,
+        reasoning_mode: str = "auto",
+        profile_id: str = "",
+    ):
         self.service.assistant_runtime.model_factory = lambda *_: model or TestModel(call_tools=[], custom_output_text="离线回答")
-        body = {"message": message, "profile_id": self.profile["id"]}
+        body = {"message": message, "profile_id": profile_id or self.profile["id"]}
+        body["options"] = {
+            "allow_network": allow_network,
+            "reasoning_mode": reasoning_mode,
+        }
         if active_note:
             body["active_note"] = {"path": active_note}
         return list(self.service.assistant_stream(body))
@@ -176,12 +191,93 @@ class PydanticAssistantRuntimeTests(unittest.TestCase):
         self.assertEqual(resumed[-1]["type"], "run.completed")
         self.assertTrue((self.vault / "10-Inbox/x.md").is_file())
 
-    def test_09_reviewed_note_can_never_be_proposed_for_overwrite(self):
+    def test_09_reviewed_note_is_redirected_to_update_suggestion(self):
         path = "20-Knowledge/Protected.md"; before = "---\nstatus: reviewed\n---\n# Protected\n"
         (self.vault / path).write_text(before, encoding="utf-8")
         events = self._stream("补充到当前笔记", active_note=path, model=_write_model(path, before, before + "改写"))
-        self.assertEqual(events[-1]["type"], "run.failed")
+        confirmation = next(item for item in events if item["type"] == "inline.confirmation.required")
+        writes = confirmation["confirmation"]["writes"]
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(writes[0]["category"], "update-suggestion")
+        self.assertEqual(writes[0]["target_path"], path)
+        self.assertTrue(writes[0]["path"].startswith("90-Local-Only/AI-Drafts/Update-Suggestions/"))
         self.assertEqual((self.vault / path).read_text(encoding="utf-8"), before)
+        resumed = list(self.service.confirm_assistant_run(confirmation["runId"], True))
+        self.assertEqual(resumed[-1]["type"], "run.completed")
+        self.assertEqual((self.vault / path).read_text(encoding="utf-8"), before)
+        suggestion = self.vault / writes[0]["path"]
+        self.assertTrue(suggestion.is_file())
+        self.assertIn("目标笔记为 reviewed/core", suggestion.read_text(encoding="utf-8"))
+
+    def test_09b_mixed_new_note_and_core_update_remain_one_confirmable_change_set(self):
+        protected_path = "20-Knowledge/MOCs/LLM 与 Agent MOC.md"
+        protected = self.vault / protected_path
+        protected.parent.mkdir(parents=True)
+        before = "---\nstatus: core\n---\n# LLM 与 Agent MOC\n"
+        protected.write_text(before, encoding="utf-8")
+        new_path = "20-Knowledge/Topics/大模型架构综述.md"
+        proposal = ""
+
+        async def stream(messages, _info):
+            nonlocal proposal
+            names, observed = _tool_history(messages)
+            proposal = observed or proposal
+            if "propose_vault_change" not in names:
+                args = {
+                    "title": "新建主题并建议更新 MOC",
+                    "writes": [
+                        {"path": new_path, "content": "# 大模型架构综述\n", "category": "assistant-agent"},
+                        {"path": protected_path, "content": before + "\n- [[大模型架构综述]]\n", "category": "assistant-agent"},
+                    ],
+                }
+                yield {0: DeltaToolCall(name="propose_vault_change", json_args=json.dumps(args, ensure_ascii=False), tool_call_id="mixed-proposal")}
+                return
+            if "commit_vault_change" not in names:
+                yield {0: DeltaToolCall(name="commit_vault_change", json_args=json.dumps({"proposal_id": proposal}), tool_call_id="mixed-commit")}
+                return
+            yield "主题草稿和 MOC 更新建议已提交。"
+
+        events = self._stream("整理并写入，同时更新 MOC", model=FunctionModel(stream_function=stream))
+        self.assertNotIn("run.failed", [item["type"] for item in events])
+        confirmation = next(item for item in events if item["type"] == "inline.confirmation.required")
+        writes = confirmation["confirmation"]["writes"]
+        self.assertEqual(len(writes), 2)
+        self.assertEqual({item["category"] for item in writes}, {"assistant-agent", "update-suggestion"})
+        self.assertEqual(protected.read_text(encoding="utf-8"), before)
+        resumed = list(self.service.confirm_assistant_run(confirmation["runId"], True))
+        self.assertEqual(resumed[-1]["type"], "run.completed")
+        self.assertTrue((self.vault / new_path).is_file())
+        self.assertEqual(protected.read_text(encoding="utf-8"), before)
+        suggestion = next(self.vault.glob("90-Local-Only/AI-Drafts/Update-Suggestions/*.md"))
+        self.assertIn("[[20-Knowledge/MOCs/LLM 与 Agent MOC]]", suggestion.read_text(encoding="utf-8"))
+
+    def test_09c_proposal_result_tells_model_to_use_inline_commit(self):
+        path = "10-Inbox/Inline.md"
+        observed: dict = {}
+
+        async def stream(messages, _info):
+            nonlocal observed
+            names, proposal = _tool_history(messages)
+            proposal_results = _tool_results(messages, "propose_vault_change")
+            if "propose_vault_change" not in names:
+                args = {
+                    "title": "对话内确认写入",
+                    "writes": [{"path": path, "content": "# Inline\n", "category": "assistant-agent"}],
+                }
+                yield {0: DeltaToolCall(name="propose_vault_change", json_args=json.dumps(args, ensure_ascii=False), tool_call_id="inline-proposal")}
+                return
+            observed = proposal_results[-1]
+            if "commit_vault_change" not in names:
+                yield {0: DeltaToolCall(name="commit_vault_change", json_args=json.dumps({"proposal_id": proposal}), tool_call_id="inline-commit")}
+                return
+            yield "已完成。"
+
+        events = self._stream("整理后直接写入", model=FunctionModel(stream_function=stream))
+        self.assertTrue(observed["requires_commit"])
+        self.assertEqual(observed["next_action"], "commit_vault_change")
+        self.assertIn("Do not ask for confirmation in plain text", observed["model_instruction"])
+        self.assertIn("inline.confirmation.required", [item["type"] for item in events])
+        self.assertFalse((self.vault / path).exists())
 
     def test_10_base_hash_change_rejects_confirmed_apply(self):
         target, _, _, _, event = self._pending_update()
@@ -347,9 +443,43 @@ class PydanticAssistantRuntimeTests(unittest.TestCase):
             "get_current_note", "get_current_selection", "get_conversation_focus",
             "get_recent_conversation_messages", "search_vault", "list_vault_folder",
             "read_vault_note", "find_related_notes", "get_attachment_metadata",
-            "read_pdf_pages", "search_pdf", "search_public_web", "fetch_public_url",
+            "read_pdf_pages", "search_pdf", "search_public_web", "search_academic_sources", "fetch_public_url",
+            "get_vault_overview", "get_learning_state", "get_due_reviews", "get_recent_materials", "get_current_datetime",
             "ask_user", "propose_vault_change", "commit_vault_change",
         }.issubset(set(observed[0])))
+
+    def test_32_network_tool_is_opt_in_and_public_event_contains_bounded_sources(self):
+        self.service.web = WebResearchService(
+            self.vault,
+            self.service.store,
+            searcher=lambda _query, _limit: [{
+                "url": "https://example.com/research",
+                "title": "Trusted candidate",
+                "snippet": "A bounded public result for the model.",
+            }],
+            resolver=lambda _host: ["93.184.216.34"],
+        )
+
+        async def stream(messages, _info):
+            names, _ = _tool_history(messages)
+            if "search_public_web" not in names:
+                yield {0: DeltaToolCall(
+                    name="search_public_web",
+                    json_args=json.dumps({"query": "agent runtime", "limit": 3}),
+                    tool_call_id="web-search",
+                )}
+                return
+            yield "已完成联网检索。"
+
+        model = FunctionModel(stream_function=stream)
+        disabled = self._stream("联网看看", model=model, allow_network=False)
+        disabled_event = next(item for item in disabled if item.get("tool") == "search_public_web" and item["type"] == "tool.completed")
+        self.assertEqual(disabled_event["result"]["reason"], "network_not_authorized")
+
+        enabled = self._stream("联网看看", model=model, allow_network=True)
+        event = next(item for item in enabled if item.get("tool") == "search_public_web" and item["type"] == "tool.completed")
+        self.assertEqual(event["result"]["results"][0]["title"], "Trusted candidate")
+        self.assertNotIn("evidenceText", json.dumps(event, ensure_ascii=False))
 
     def test_22_runtime_context_contains_no_classified_intent_or_write_markers(self):
         events = self._stream("把内容整理一下")
@@ -644,6 +774,168 @@ class PydanticAssistantRuntimeTests(unittest.TestCase):
 
         self.assertEqual(events[-1]["type"], "run.failed")
         self.assertEqual(events[-1]["code"], "ValueError")
+
+    def test_33_provider_reasoning_blocks_stream_and_remain_local_only(self):
+        async def stream(_messages, _info):
+            yield {0: DeltaThinkingPart(content="先检查真实上下文。")}
+            yield {0: DeltaThinkingPart(content="再根据观察组织答案。")}
+            yield "这是最终回答。"
+
+        events = self._stream(
+            "解释当前主题",
+            model=FunctionModel(
+                stream_function=stream,
+                model_name="deepseek-reasoner-test",
+            ),
+        )
+        types = [item["type"] for item in events]
+        self.assertIn("reasoning.started", types)
+        self.assertIn("reasoning.delta", types)
+        self.assertIn("reasoning.completed", types)
+        self.assertLess(types.index("reasoning.started"), types.index("message.delta"))
+        reasoning = "".join(
+            str(item.get("delta") or "")
+            for item in events
+            if item["type"] == "reasoning.delta"
+        )
+        self.assertEqual(reasoning, "先检查真实上下文。再根据观察组织答案。")
+        completed = next(item for item in events if item["type"] == "message.completed")
+        self.assertEqual(
+            completed["message"]["reasoningBlocks"][0]["content"],
+            reasoning,
+        )
+        conversation = self.service.intake.get_conversation(
+            completed["conversationId"]
+        )
+        saved = conversation["messages"][-1]["reasoningBlocks"]
+        self.assertEqual(saved[0]["provider"], "test-model")
+        self.assertEqual(saved[0]["content"], reasoning)
+
+    def test_34_deep_mode_enables_provider_thinking_and_adds_verification_instructions(self):
+        deepseek = self.service.save_model_profile({
+            "displayName": "DeepSeek 离线测试",
+            "providerType": "deepseek",
+            "baseUrl": "https://api.deepseek.com",
+            "apiKey": "offline-deepseek-key",
+            "defaultModel": "deepseek-reasoner-test",
+            "availableModels": ["deepseek-reasoner-test"],
+            "settings": {"maxTokens": 3000},
+        })
+        observed: dict[str, object] = {}
+
+        async def stream(messages, info):
+            observed["settings"] = dict(info.model_settings or {})
+            observed["messages"] = ModelMessagesTypeAdapter.dump_json(messages).decode()
+            yield "深度模式离线回答。"
+
+        events = self._stream(
+            "结合当前知识解释这个方法",
+            model=FunctionModel(stream_function=stream),
+            reasoning_mode="deep",
+            profile_id=deepseek["id"],
+        )
+        settings = observed["settings"]
+        self.assertEqual(settings["max_tokens"], 8192)
+        self.assertEqual(settings["extra_body"], {"thinking": {"type": "enabled"}})
+        self.assertEqual(settings["openai_reasoning_effort"], "max")
+        self.assertIn("当前回合由用户启用了“深度思考”", observed["messages"])
+        run_id = events[0]["runId"]
+        snapshot = self.service.assistant_runtime.persistence.load(run_id)
+        self.assertEqual(snapshot.request["body"]["options"]["reasoning_mode"], "deep")
+
+    def test_35_history_budget_keeps_complete_recent_pairs_for_deep_mode(self):
+        history = []
+        for index in range(12):
+            history.extend([
+                ModelRequest(parts=[UserPromptPart(f"request-{index}-" + "x" * 9000)]),
+                ModelResponse(parts=[TextPart(f"response-{index}-" + "y" * 1200)]),
+            ])
+        compacted, stats = self.service.assistant_runtime._bounded_history(history, "deep")
+        self.assertIsNotNone(stats)
+        self.assertLess(len(compacted), len(history))
+        self.assertEqual(len(compacted) % 2, 0)
+        self.assertIsInstance(compacted[0], ModelRequest)
+        self.assertIsInstance(compacted[-1], ModelResponse)
+        self.assertLessEqual(len(ModelMessagesTypeAdapter.dump_json(compacted)), 48_000)
+        odd_history = history + [ModelRequest(parts=[UserPromptPart("orphan-" + "z" * 9000)])]
+        odd_compacted, _ = self.service.assistant_runtime._bounded_history(odd_history, "deep")
+        self.assertEqual(len(odd_compacted) % 2, 0)
+        self.assertIsInstance(odd_compacted[-1], ModelResponse)
+        self.assertFalse(list(self.vault.rglob("*.md")))
+
+    def test_36_public_paper_id_is_recoverable_and_same_run_replans(self):
+        observed: dict = {}
+
+        async def stream(messages, _info):
+            nonlocal observed
+            results = _tool_results(messages, "read_pdf_pages")
+            if not results:
+                yield {0: DeltaToolCall(
+                    name="read_pdf_pages",
+                    json_args=json.dumps({
+                        "attachment_id": "2505.09343v2",
+                        "page_start": 1,
+                        "page_end": 5,
+                    }),
+                    tool_call_id="not-an-attachment",
+                )}
+                return
+            observed = results[-1]
+            yield "该编号不是当前附件，已改用已有公开来源摘要继续。"
+
+        events = self._stream(
+            "读取这篇公开论文；不可用时基于摘要继续",
+            model=FunctionModel(stream_function=stream),
+            allow_network=True,
+        )
+        self.assertFalse(observed["ok"])
+        self.assertEqual(
+            observed["error"]["code"],
+            "attachment_not_in_current_context",
+        )
+        self.assertTrue(observed["error"]["recoverable"])
+        tool_event = next(
+            item for item in events
+            if item.get("tool") == "read_pdf_pages"
+            and item["type"] == "tool.completed"
+        )
+        self.assertEqual(tool_event["status"], "failed")
+        self.assertNotIn("run.failed", [item["type"] for item in events])
+        self.assertEqual(events[-1]["type"], "run.completed")
+
+    def test_37_rejected_public_url_is_observation_not_run_failure(self):
+        observed: dict = {}
+
+        async def stream(messages, _info):
+            nonlocal observed
+            results = _tool_results(messages, "fetch_public_url")
+            if not results:
+                yield {0: DeltaToolCall(
+                    name="fetch_public_url",
+                    json_args=json.dumps({"url": "http://127.0.0.1/private"}),
+                    tool_call_id="private-network-url",
+                )}
+                return
+            observed = results[-1]
+            yield "该地址被公共网络安全策略拒绝，未访问本机地址。"
+
+        events = self._stream(
+            "读取这个地址；若被安全策略拒绝就说明情况",
+            model=FunctionModel(stream_function=stream),
+            allow_network=True,
+        )
+        self.assertFalse(observed["ok"])
+        self.assertTrue(observed["error"]["recoverable"])
+        self.assertIn(
+            observed["error"]["code"],
+            {
+                "private_url_not_allowed",
+                "private_network_url_denied",
+                "dns_resolution_failed",
+            },
+        )
+        self.assertNotIn("run.failed", [item["type"] for item in events])
+        self.assertEqual(events[-1]["type"], "run.completed")
 
 
 if __name__ == "__main__":

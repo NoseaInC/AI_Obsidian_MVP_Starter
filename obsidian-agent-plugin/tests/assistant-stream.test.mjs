@@ -29,6 +29,32 @@ test("five thousand real token chunks preserve exact order and Unicode", async (
   assert.equal(state.lastSequence, 5_002);
 });
 
+test("provider reasoning blocks stream separately and remain collapsible metadata", async () => {
+  const mod = await moduleUnderTest();
+  let state = mod.initialAssistantLiveRun();
+  state = mod.reduceAssistantStream(state, event(1, "run.started", {model: "deepseek-reasoner"}));
+  state = mod.reduceAssistantStream(state, event(2, "reasoning.started", {blockId: "reasoning-1", provider: "deepseek"}));
+  state = mod.reduceAssistantStream(state, event(3, "reasoning.delta", {blockId: "reasoning-1", provider: "deepseek", delta: "先读取上下文。"}));
+  state = mod.reduceAssistantStream(state, event(4, "reasoning.delta", {blockId: "reasoning-1", provider: "deepseek", delta: "再形成答案。"}));
+  state = mod.reduceAssistantStream(state, event(5, "reasoning.completed", {blockId: "reasoning-1", provider: "deepseek"}));
+  state = mod.reduceAssistantStream(state, event(6, "message.delta", {delta: "最终回答"}));
+  assert.equal(state.reasoningBlocks.length, 1);
+  assert.deepEqual(state.reasoningBlocks[0], {
+    id: "reasoning-1",
+    provider: "deepseek",
+    content: "先读取上下文。再形成答案。",
+    status: "completed",
+  });
+  assert.equal(state.content, "最终回答");
+
+  const chunkEvent = mod.agentChunkToAssistantEvent({
+    type: "reasoning", runId: "run-1", conversationId: "conv-1", sequence: 7,
+    blockId: "reasoning-2", provider: "openai", content: "摘要", phase: "delta",
+  });
+  assert.equal(chunkEvent.type, "reasoning.delta");
+  assert.equal(chunkEvent.delta, "摘要");
+});
+
 test("twenty thousand run events are deterministic, deduplicated and bounded", async () => {
   const mod = await moduleUnderTest();
   let first = mod.initialAssistantLiveRun();
@@ -71,6 +97,25 @@ test("cancel keeps partial output and changes only a running run", async () => {
   assert.equal(mod.cancelledAssistantRun({...state, status: "completed"}).status, "completed");
 });
 
+test("terminal run events settle unfinished public execution steps", async () => {
+  const mod = await moduleUnderTest();
+  let completed = mod.initialAssistantLiveRun();
+  completed = mod.reduceAssistantStream(completed, event(1, "run.started"));
+  completed = mod.reduceAssistantStream(completed, event(2, "step.updated", {
+    step: {id: "context", label: "理解当前请求与上下文", status: "running"},
+  }));
+  completed = mod.reduceAssistantStream(completed, event(3, "run.completed"));
+  assert.equal(completed.steps[0].status, "completed");
+
+  let failed = mod.initialAssistantLiveRun();
+  failed = mod.reduceAssistantStream(failed, event(1, "run.started"));
+  failed = mod.reduceAssistantStream(failed, event(2, "step.updated", {
+    step: {id: "tool", label: "读取知识库", status: "running"},
+  }));
+  failed = mod.reduceAssistantStream(failed, event(3, "run.failed", {code: "tool_failed"}));
+  assert.equal(failed.steps[0].status, "failed");
+});
+
 test("real ordered tool events become visible execution steps", async () => {
   const mod = await moduleUnderTest();
   let state = mod.initialAssistantLiveRun();
@@ -81,6 +126,21 @@ test("real ordered tool events become visible execution steps", async () => {
   assert.deepEqual(state.toolCalls, [{id: "call-1", tool: "search_vault", status: "completed", summary: "返回 2 项", purpose: undefined, input: undefined, result: {count: 2}}]);
   assert.equal(state.steps.find(item => item.id === "tool:call-1").label, "搜索知识库");
   assert.equal(state.steps.find(item => item.id === "tool:call-1").status, "completed");
+});
+
+test("web search sources remain ordered, public and visible to the inspector", async () => {
+  const mod = await moduleUnderTest();
+  let state = mod.initialAssistantLiveRun();
+  state = mod.reduceAssistantStream(state, event(1, "run.started", {model: "deepseek-chat"}));
+  state = mod.reduceAssistantStream(state, event(2, "tool.started", {callId: "web-1", tool: "search_public_web", input: {query: "Delta Method"}}));
+  state = mod.reduceAssistantStream(state, event(3, "tool.completed", {
+    callId: "web-1", tool: "search_public_web", status: "completed", summary: "搜索公开网页 · 1 条 · bing-rss",
+    result: {provider: "bing-rss", results: [{title: "Delta Method", url: "https://example.com/delta", domain: "example.com", qualityScore: .62}]},
+  }));
+  assert.equal(state.toolCalls[0].result.results[0].domain, "example.com");
+  assert.equal(state.steps[0].label, "搜索公开网页");
+  assert.equal(mod.toolLabel("search_academic_sources"), "检索可信来源");
+  assert.equal(mod.toolLabel("get_current_datetime"), "读取当前时间");
 });
 
 test("inline confirmation is not mistaken for an applied write", async () => {
@@ -132,6 +192,7 @@ test("assistant production surface uses stream endpoint, stop and three inspecto
   assert.match(views, /paintAssistantLiveTrace\(activeTrace, this\.assistantLiveRun\)/);
   assert.match(views, /regenerateMessageId/);
   assert.match(views, /编辑后重发/);
+  assert.match(views, /复制消息/);
   assert.match(views, /重新生成/);
   assert.match(views, /ProgressiveAssistantMarkdown/);
   assert.match(views, /PydanticAgentRuntime/);
@@ -145,4 +206,59 @@ test("assistant production surface uses stream endpoint, stop and three inspecto
   assert.match(css, /\.la-live-trace/);
   assert.match(css, /@container \(max-width: 1420px\)[\s\S]*\.la-workspace--assistant \{ grid-template-columns: 72px minmax\(0, 1fr\); \}/);
   assert.match(css, /\.la-assistant-shell-v5 \.la-chat-toolbar__title \{ flex: 1 1 180px; min-width: 140px;/);
+  assert.match(views, /assistantNetworkEnabled/);
+  assert.match(views, /allow_network: this\.assistantNetworkEnabled/);
+  assert.match(views, /networkToggleButton/);
+  assert.match(views, /mode\.onclick = toggleNetwork/);
+  assert.match(views, /aria-pressed/);
+  assert.match(views, /添加内容或打开工具/);
+  assert.match(views, /开启联网/);
+  assert.match(views, /la-composer-model/);
+  assert.match(views, /la-model-popover/);
+  assert.match(views, /la-message-meta/);
+  assert.match(views, /deepseek-color\.svg/);
+  assert.match(views, /openai\.svg/);
+  assert.match(views, /qwen-color\.svg/);
+  assert.match(views, /renderModelBrand/);
+  assert.match(views, /renderAssistantAvatar/);
+  assert.match(views, /zhixu-assistant-avatar\.png/);
+  assert.doesNotMatch(views, /iconButton\(header, "history"/);
+  assert.doesNotMatch(views, /button\(header, "新会话"/);
+  assert.match(views, /search_academic_sources/);
+  assert.match(css, /\.la-assistant-shell-v7/);
+  assert.match(css, /\.la-assistant-shell-v8/);
+  assert.match(css, /\.la-assistant-shell-v8 \.la-unified-composer textarea:focus-visible[\s\S]*outline:\s*0 !important/);
+  assert.match(css, /\.la-model-popover\[hidden\]/);
+  assert.match(css, /User-message metadata belongs below the bubble/);
+  assert.match(css, /\.la-message-avatar--zhixu/);
+  assert.match(css, /\.la-composer-mode\.is-enabled/);
+  assert.match(views, /paintSendButton/);
+  assert.match(views, /la-composer-submit__arrow/);
+  assert.match(views, /la-composer-submit__stop/);
+  assert.match(css, /\.la-composer-submit__arrow/);
+  assert.match(views, /SEND_BUTTON_IDLE_VECTOR_DATA_URL/);
+  assert.match(views, /data:image\/svg\+xml/);
+  assert.doesNotMatch(css, /\.la-composer-submit__arrow\s*\{[^}]*clip-path/s);
+  assert.match(css, /button\.la-composer-submit:not\(\.is-running\)[\s\S]*background:\s*transparent !important/);
+  assert.match(css, /appearance:\s*none/);
+  assert.match(css, /border-radius:\s*50% !important/);
+  assert.match(css, /button\.la-composer-submit[\s\S]*width:\s*36px !important[\s\S]*height:\s*36px !important/);
+  assert.match(css, /aspect-ratio:\s*1 \/ 1/);
+  assert.match(css, /\.la-composer-submit__stop/);
+  assert.match(css, /\.la-composer-submit\.is-running/);
+  assert.match(views, /推理与执行过程/);
+  assert.match(views, /供应商真实返回 reasoning block/);
+  assert.match(views, /previousDetails\?\.open/);
+  assert.match(views, /previousProviderReasoning\?\.open/);
+  assert.match(views, /fallbackStatus = run\.status === "completed"/);
+  assert.match(css, /\.la-live-trace__thinking/);
+  assert.match(css, /\.la-provider-reasoning/);
+  assert.match(views, /显示供应商返回的 Reasoning Content/);
+  assert.match(views, /assistantReasoningMode:\s*"auto"\s*\|\s*"deep"/);
+  assert.match(views, /reasoning_mode:\s*this\.assistantReasoningMode/);
+  assert.match(views, /深度思考/);
+  assert.match(views, /提高推理预算，并要求证据与结果校验/);
+  assert.match(css, /\.la-model-popover__reasoning/);
+  assert.match(css, /\.la-composer-model\.is-deep/);
+  assert.match(css, /\.la-assistant-source-card\.is-web/);
 });

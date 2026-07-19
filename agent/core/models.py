@@ -26,6 +26,38 @@ ROUTING_TASKS = {
 KEY_REFERENCE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 
 
+def normalized_model_settings(profile: dict[str, Any]) -> dict[str, Any]:
+    """Return capability defaults without rewriting an existing profile.
+
+    Early profiles predate the reasoning/tool capability fields.  Treating a
+    missing field as an explicit ``False`` silently disables features after an
+    upgrade, so reads use provider-aware defaults while preserving every
+    explicit user choice.
+    """
+    provider_type = str(profile.get("providerType") or "openai-compatible")
+    settings = dict(profile.get("settings") or {})
+    native_tool_calling = bool(
+        settings.get("nativeToolCalling", settings.get("toolCalling", True))
+    )
+    defaults: dict[str, Any] = {
+        "temperature": 0.3,
+        "maxTokens": 3000,
+        "timeout": 30,
+        "streaming": True,
+        "jsonSchema": True,
+        "toolCalling": native_tool_calling,
+        "nativeToolCalling": native_tool_calling,
+        "streamedToolCalls": native_tool_calling,
+        "reasoningContent": provider_type == "deepseek",
+        "thinkingControl": "provider-default",
+        "parallelToolCalls": False,
+        "reasoningEffort": "",
+        "organizationId": "",
+        "customHeaders": {},
+    }
+    return {**defaults, **settings}
+
+
 class KeyStore(Protocol):
     def set(self, reference: str, secret: str) -> None: ...
     def get(self, reference: str) -> str | None: ...
@@ -207,7 +239,12 @@ class ModelProfileService:
 
     def _public(self, profile: dict[str, Any]) -> dict[str, Any]:
         configured = self.key_store.configured(profile["apiKeyReference"])
-        return {**profile, "configured": configured, "keyHint": "••••••••" if configured else "未配置"}
+        return {
+            **profile,
+            "settings": normalized_model_settings(profile),
+            "configured": configured,
+            "keyHint": "••••••••" if configured else "未配置",
+        }
 
     def list(self) -> list[dict[str, Any]]: return [self._public(item) for item in self.store.list_model_profiles()]
 

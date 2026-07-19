@@ -1604,6 +1604,26 @@ body .la-app .la-confidence strong {
   height: 16px;
 }
 
+.la-message-avatar--zhixu {
+  overflow: hidden;
+  border: 1px solid var(--background-modifier-border);
+  background: #fff;
+  color: var(--text-normal);
+}
+
+.la-message-avatar--zhixu img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  /* The supplied square artwork includes generous presentation whitespace.
+     Crop it inside the small conversation avatar so the robot/book mark stays
+     legible without altering the source asset. */
+  transform: scale(1.68);
+  user-select: none;
+  pointer-events: none;
+}
+
 .la-message--pending {
   color: var(--la-muted);
 }
@@ -4963,6 +4983,80 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
 .la-live-trace__head small { margin-top: 2px; color: var(--text-faint); font-size: 8.5px; }
 .la-live-trace__details { margin-top: 7px; }
 .la-live-trace__details summary { color: var(--text-muted); font-size: 9px; cursor: pointer; }
+.la-live-trace__disclaimer {
+  margin: 7px 0 0 22px;
+  color: var(--text-faint);
+  font-size: 8px;
+  line-height: 1.45;
+}
+.la-provider-reasoning {
+  margin-top: 8px;
+  border: 1px solid color-mix(in srgb, var(--la-purple) 18%, var(--la-border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--la-purple) 4%, transparent);
+  overflow: hidden;
+}
+.la-provider-reasoning > summary {
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 8px;
+  list-style: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+.la-provider-reasoning > summary::-webkit-details-marker { display: none; }
+.la-provider-reasoning > summary::after {
+  content: "›";
+  margin-left: auto;
+  color: var(--text-faint);
+  transform: rotate(90deg);
+  transition: transform var(--la-duration-fast) ease;
+}
+.la-provider-reasoning[open] > summary::after { transform: rotate(-90deg); }
+.la-provider-reasoning__icon { color: var(--la-purple); }
+.la-provider-reasoning__icon svg { width: 14px; height: 14px; }
+.la-provider-reasoning > summary small {
+  margin-left: 2px;
+  color: var(--text-faint);
+  font-size: 8px;
+}
+.la-provider-reasoning__body {
+  padding: 0 9px 8px 29px;
+  border-top: 1px solid color-mix(in srgb, var(--la-purple) 10%, transparent);
+}
+.la-provider-reasoning__body pre {
+  margin: 8px 0 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 8.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.la-live-trace__thinking {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 7px;
+  margin-top: 8px;
+  padding: 8px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--la-purple) 7%, transparent);
+  color: var(--text-muted);
+}
+.la-live-trace__thinking > span { color: var(--la-purple); }
+.la-live-trace__thinking svg { width: 14px; height: 14px; }
+.la-live-trace__thinking strong,
+.la-live-trace__thinking p,
+.la-live-trace__thinking small { display: block; margin: 0; }
+.la-live-trace__thinking strong { color: var(--text-normal); font-size: 9px; }
+.la-live-trace__thinking p { margin-top: 2px; font-size: 8.5px; line-height: 1.5; }
+.la-live-trace__thinking small { margin-top: 3px; color: var(--text-faint); font-size: 8px; }
 .la-live-trace__steps { display: grid; gap: 4px; margin-top: 7px; }
 .la-live-trace__step { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 6px; min-height: 24px; color: var(--text-muted); font-size: 9px; }
 .la-live-trace__step svg { width: 13px; height: 13px; }
@@ -5146,8 +5240,985 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   );
 }
 
+/* Assistant V6 — calm research workspace, explicit network boundary. */
+.la-assistant-shell-v6 {
+  grid-template-columns: minmax(640px, 1fr) 318px;
+  background: var(--background-primary);
+}
+
+.la-assistant-shell-v6.inspector-closed {
+  grid-template-columns: minmax(640px, 1fr) 0;
+}
+
+.la-assistant-shell-v6 .la-assistant-main {
+  background: color-mix(in srgb, var(--background-secondary) 10%, var(--background-primary));
+}
+
+.la-assistant-shell-v6 .la-chat-toolbar {
+  flex-basis: 68px;
+  gap: 8px;
+  padding: 0 18px 0 22px;
+  border-bottom: 1px solid color-mix(in srgb, var(--background-modifier-border) 78%, transparent);
+  background: color-mix(in srgb, var(--background-primary) 94%, var(--background-secondary));
+}
+
+.la-assistant-shell-v6 .la-chat-toolbar__title {
+  min-width: 180px;
+  margin-right: auto;
+}
+
+.la-assistant-shell-v6 .la-chat-toolbar__title h1 {
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -.012em;
+}
+
+.la-assistant-shell-v6 .la-chat-toolbar__title p {
+  margin-top: 3px;
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.la-assistant-shell-v6 .la-chat-toolbar select,
+.la-assistant-shell-v6 .la-chat-toolbar > button {
+  box-shadow: none;
+}
+
+.la-assistant-shell-v6 .la-network-toggle {
+  display: inline-flex;
+  align-items: center;
+  min-width: 88px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-muted);
+  font-size: 10.5px;
+}
+
+.la-assistant-shell-v6 .la-network-toggle.is-enabled {
+  border-color: color-mix(in srgb, var(--color-green) 42%, var(--background-modifier-border));
+  background: color-mix(in srgb, var(--color-green) 9%, var(--background-primary));
+  color: var(--color-green);
+}
+
+.la-assistant-shell-v6 .la-chat-stream {
+  gap: 18px;
+  padding: 28px max(24px, calc((100% - 820px) / 2)) 30px;
+}
+
+.la-assistant-shell-v6 .la-chat-welcome {
+  width: min(800px, 100%);
+  align-self: center;
+  align-items: flex-start;
+  padding: 28px;
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 18%, var(--background-modifier-border));
+  border-radius: 16px;
+  background: var(--background-primary);
+  box-shadow: 0 10px 34px color-mix(in srgb, var(--background-modifier-box-shadow) 10%, transparent);
+}
+
+.la-assistant-shell-v6 .la-chat-welcome .la-message-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  color: var(--interactive-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 11%, var(--background-primary));
+}
+
+.la-assistant-shell-v6 .la-chat-welcome .la-message-copy > strong {
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -.015em;
+}
+
+.la-assistant-shell-v6 .la-chat-welcome .la-message-copy > p {
+  margin: 7px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.la-assistant-shell-v6 .la-assistant-quick-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.la-assistant-shell-v6 .la-assistant-quick-actions button {
+  justify-content: flex-start;
+  min-height: 40px;
+  padding: 0 12px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--background-secondary) 42%, var(--background-primary));
+  color: var(--text-muted);
+  box-shadow: none;
+  font-size: 11px;
+  transition: border-color var(--la-duration-fast) ease, background var(--la-duration-fast) ease, color var(--la-duration-fast) ease;
+}
+
+.la-assistant-shell-v6 .la-assistant-quick-actions button:hover,
+.la-assistant-shell-v6 .la-assistant-quick-actions button:focus-visible {
+  border-color: color-mix(in srgb, var(--interactive-accent) 34%, var(--background-modifier-border));
+  background: color-mix(in srgb, var(--interactive-accent) 7%, var(--background-primary));
+  color: var(--text-normal);
+}
+
+.la-assistant-shell-v6 .la-message--assistant {
+  width: min(800px, 100%);
+  font-size: 13px;
+  line-height: 1.72;
+}
+
+.la-assistant-shell-v6 .la-message--user {
+  max-width: min(620px, 82%);
+  padding: 11px 14px;
+  border-radius: 14px 14px 4px 14px;
+  background: color-mix(in srgb, var(--interactive-accent) 10%, var(--background-primary));
+}
+
+.la-assistant-shell-v6 .la-message-markdown > :first-child { margin-top: 0; }
+.la-assistant-shell-v6 .la-message-markdown > :last-child { margin-bottom: 0; }
+.la-assistant-shell-v6 .la-message-markdown p { margin: .52em 0; }
+.la-assistant-shell-v6 .la-message-markdown li { margin: .25em 0; }
+.la-assistant-shell-v6 .la-message-markdown ul,
+.la-assistant-shell-v6 .la-message-markdown ol { margin-block: .55em; padding-left: 1.6em; }
+
+.la-assistant-shell-v6 .la-live-trace {
+  width: min(780px, 100%);
+  padding: 11px 13px;
+  border-radius: 11px;
+  background: var(--background-primary);
+  box-shadow: none;
+}
+
+.la-assistant-shell-v6 .la-live-trace__step {
+  grid-template-columns: 16px minmax(0, 1fr) minmax(70px, auto);
+}
+
+.la-assistant-shell-v6 .la-live-trace__step small {
+  max-width: 270px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.la-assistant-shell-v6 .la-chat-dock {
+  padding: 10px max(24px, calc((100% - 830px) / 2)) 12px;
+  border-top-color: color-mix(in srgb, var(--background-modifier-border) 72%, transparent);
+  background: color-mix(in srgb, var(--background-primary) 96%, var(--background-secondary));
+}
+
+.la-assistant-shell-v6 .la-unified-composer {
+  min-height: 86px;
+  padding: 10px 11px 8px;
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 48%, var(--background-modifier-border));
+  border-radius: 13px;
+  background: var(--background-primary);
+  box-shadow: 0 8px 25px color-mix(in srgb, var(--background-modifier-box-shadow) 12%, transparent);
+}
+
+.la-assistant-shell-v6 .la-unified-composer:focus-within {
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 12%, transparent);
+}
+
+.la-assistant-shell-v6 .la-unified-composer textarea {
+  min-height: 42px;
+  color: var(--text-normal);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.la-assistant-shell-v6 .la-composer-local {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: 9px;
+}
+
+.la-assistant-shell-v6 .la-assistant-context {
+  padding: 14px 13px 18px;
+  background: color-mix(in srgb, var(--background-secondary) 23%, var(--background-primary));
+}
+
+.la-assistant-shell-v6 .la-assistant-inspector-tabs {
+  margin-inline: -13px;
+}
+
+.la-assistant-shell-v6 .la-assistant-source-card {
+  margin-bottom: 8px;
+  border-radius: 10px;
+  background: var(--background-primary);
+  transition: border-color var(--la-duration-fast) ease, transform var(--la-duration-fast) ease;
+}
+
+.la-assistant-shell-v6 .la-assistant-source-card.is-clickable:hover {
+  border-color: color-mix(in srgb, var(--interactive-accent) 38%, var(--background-modifier-border));
+  transform: translateY(-1px);
+}
+
+.la-assistant-shell-v6 .la-assistant-source-card.is-web > span {
+  color: var(--color-green);
+  background: color-mix(in srgb, var(--color-green) 10%, transparent);
+}
+
+.la-assistant-shell-v6 .la-source-snippet {
+  display: -webkit-box;
+  margin: 5px 0 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.la-assistant-shell-v6 .la-source-empty {
+  display: grid;
+  gap: 9px;
+  justify-items: start;
+  padding: 14px;
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: 10px;
+}
+
+.la-assistant-shell-v6 .la-source-empty p { margin: 0; }
+
+.la-workspace--assistant .la-conversation-actions > button:hover,
+.la-workspace--assistant .la-conversation-search:focus-within {
+  border-color: color-mix(in srgb, var(--interactive-accent) 28%, var(--background-modifier-border));
+  background: var(--background-primary);
+}
+
+.la-workspace--assistant .la-conversation-row.is-active {
+  background: color-mix(in srgb, var(--interactive-accent) 10%, var(--background-primary));
+  box-shadow: inset 2px 0 0 var(--interactive-accent);
+}
+
+@container (max-width: 1420px) {
+  .la-assistant-shell-v6 { grid-template-columns: minmax(0, 1fr); }
+  .la-assistant-shell-v6 .la-assistant-context { display: none; }
+  .la-assistant-shell-v6 .la-network-toggle { min-width: 36px; width: 36px; padding: 0; justify-content: center; }
+  .la-assistant-shell-v6 .la-network-toggle > span:last-child { display: none; }
+}
+
+@container (max-width: 920px) {
+  .la-assistant-shell-v6 .la-chat-toolbar { padding-inline: 12px 8px; }
+  .la-assistant-shell-v6 .la-chat-toolbar__title { min-width: 96px; }
+  .la-assistant-shell-v6 .la-chat-toolbar select { width: 132px; }
+  .la-assistant-shell-v6 .la-toolbar-new,
+  .la-assistant-shell-v6 .la-context-toggle { min-width: 36px; width: 36px; padding-inline: 0; font-size: 0; }
+  .la-assistant-shell-v6 .la-chat-stream,
+  .la-assistant-shell-v6 .la-chat-dock { padding-inline: 12px; }
+  .la-assistant-shell-v6 .la-chat-welcome { padding: 20px; }
+}
+
+@container (max-width: 650px) {
+  .la-assistant-shell-v6 .la-chat-toolbar__title { display: none; }
+  .la-assistant-shell-v6 .la-assistant-quick-actions { grid-template-columns: 1fr; }
+  .la-assistant-shell-v6 .la-composer-local { display: none; }
+  .la-assistant-shell-v6 .la-message--user { max-width: 92%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .la-assistant-shell-v6 *,
+  .la-workspace--assistant * { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+}
+
+/* Assistant compact composer v7 — the conversation owns the page; secondary
+   actions live in the composer + menu instead of a persistent top toolbar. */
+.la-assistant-shell-v7 .la-chat-toolbar {
+  flex-basis: 46px;
+  min-height: 46px;
+  padding: 0 max(18px, calc((100% - 830px) / 2));
+  border-bottom-color: color-mix(in srgb, var(--background-modifier-border) 60%, transparent);
+  background: var(--background-primary);
+}
+
+.la-assistant-shell-v7 .la-chat-toolbar__title {
+  width: min(830px, 100%);
+  min-width: 0;
+  margin: 0 auto;
+}
+
+.la-assistant-shell-v7 .la-chat-toolbar__title h1 {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.la-assistant-shell-v7 .la-chat-stream {
+  padding-top: 20px;
+  padding-bottom: 22px;
+}
+
+.la-assistant-shell-v7 .la-chat-dock {
+  padding-top: 8px;
+  padding-bottom: 9px;
+  border-top-color: color-mix(in srgb, var(--background-modifier-border) 54%, transparent);
+}
+
+.la-assistant-shell-v7 .la-unified-composer {
+  min-height: 82px;
+  padding: 9px 10px 7px;
+  border-color: color-mix(in srgb, var(--interactive-accent) 34%, var(--background-modifier-border));
+  border-radius: 14px;
+  box-shadow: 0 5px 18px color-mix(in srgb, var(--background-modifier-box-shadow) 9%, transparent);
+}
+
+.la-assistant-shell-v7 .la-unified-composer textarea {
+  min-height: 39px;
+  padding: 1px 3px;
+}
+
+.la-assistant-shell-v7 .la-composer-tools {
+  gap: 6px;
+  min-height: 30px;
+}
+
+.la-assistant-shell-v7 .la-composer-plus,
+.la-assistant-shell-v7 .la-composer-tools > .la-icon-button:last-child {
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  border-radius: 9px;
+}
+
+.la-assistant-shell-v7 .la-composer-plus {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--background-secondary) 72%, var(--background-primary));
+  color: var(--text-muted);
+}
+
+.la-assistant-shell-v7 .la-composer-plus:hover,
+.la-assistant-shell-v7 .la-composer-plus:focus-visible {
+  border-color: color-mix(in srgb, var(--interactive-accent) 28%, var(--background-modifier-border));
+  color: var(--interactive-accent);
+}
+
+.la-assistant-shell-v7 .la-composer-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-faint);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.la-assistant-shell-v7 .la-composer-mode svg {
+  width: 12px;
+  height: 12px;
+}
+
+.la-assistant-shell-v7 .la-composer-mode.is-enabled {
+  color: var(--color-green);
+}
+
+.la-assistant-shell-v7 .la-composer-local {
+  margin-left: auto;
+}
+
+.la-assistant-shell-v7 .la-composer-model {
+  width: clamp(126px, 18vw, 190px);
+  min-width: 0;
+  height: 30px;
+  min-height: 30px;
+  padding: 0 24px 0 9px;
+  border-color: transparent;
+  background-color: color-mix(in srgb, var(--background-secondary) 60%, var(--background-primary));
+  color: var(--text-muted);
+  font-size: 9.5px;
+  box-shadow: none;
+}
+
+.la-assistant-shell-v7 .la-composer-model:hover,
+.la-assistant-shell-v7 .la-composer-model:focus-visible {
+  border-color: color-mix(in srgb, var(--interactive-accent) 30%, var(--background-modifier-border));
+}
+
+@container (max-width: 760px) {
+  .la-assistant-shell-v7 .la-chat-toolbar { padding-inline: 12px; }
+  .la-assistant-shell-v7 .la-chat-toolbar__title { display: block; }
+  .la-assistant-shell-v7 .la-composer-local { display: none; }
+  .la-assistant-shell-v7 .la-composer-model { width: 118px; }
+}
+
+@container (max-width: 500px) {
+  .la-assistant-shell-v7 .la-composer-mode span:last-child { display: none; }
+  .la-assistant-shell-v7 .la-composer-model { width: 102px; }
+}
+
 /* PydanticAI inline confirmation: the normal composer yields to the pending action. */
 .la-assistant-dock.is-waiting-confirmation .la-assistant-composer,
 .la-assistant-dock.is-waiting-confirmation .la-assistant-safety {
   display: none;
+}
+
+/* Assistant conversation v8 — compact messages, neutral focus, custom model
+   picker and a restrained system-font composer matching the product reference. */
+.la-assistant-shell-v8,
+.la-workspace--assistant {
+  font-family: var(--font-text), -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+
+.la-assistant-shell-v8 .la-message--assistant {
+  color: var(--text-normal);
+  font-size: 14.5px;
+  line-height: 1.78;
+  letter-spacing: .002em;
+}
+
+.la-assistant-shell-v8 .la-message--user {
+  max-width: min(610px, 80%);
+  padding: 11px 14px 8px;
+  border-color: color-mix(in srgb, var(--interactive-accent) 22%, var(--background-modifier-border));
+  border-radius: 18px 18px 5px 18px;
+  background: color-mix(in srgb, var(--interactive-accent) 8%, var(--background-primary));
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.la-assistant-shell-v8 .la-message--user .la-message-copy > p {
+  margin: 0;
+  font-size: inherit;
+  line-height: inherit;
+  white-space: pre-wrap;
+}
+
+.la-assistant-shell-v8 .la-message-meta {
+  min-height: 20px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+}
+
+.la-assistant-shell-v8 .la-message-meta > small {
+  color: var(--text-faint);
+  font-size: 10px;
+  line-height: 20px;
+}
+
+.la-assistant-shell-v8 .la-message-meta--user {
+  justify-content: space-between;
+}
+
+.la-assistant-shell-v8 .la-message-meta--assistant {
+  flex-direction: row-reverse;
+  justify-content: flex-end;
+  margin-top: 7px;
+}
+
+.la-assistant-shell-v8 .la-message-meta .la-message-actions {
+  min-height: 20px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0;
+}
+
+.la-assistant-shell-v8 .la-message-meta .la-message-actions button {
+  width: 22px;
+  min-width: 22px;
+  height: 22px;
+}
+
+.la-assistant-shell-v8 .la-message-markdown {
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.la-assistant-shell-v8 .la-message-markdown p {
+  margin: .62em 0;
+}
+
+.la-assistant-shell-v8 .la-message-markdown li {
+  margin: .34em 0;
+}
+
+.la-assistant-shell-v8 .la-chat-dock {
+  padding-top: 10px;
+  padding-bottom: 12px;
+  border-top-color: transparent;
+  background: color-mix(in srgb, var(--background-primary) 97%, var(--background-secondary));
+}
+
+.la-assistant-shell-v8 .la-unified-composer {
+  min-height: 132px;
+  gap: 9px;
+  padding: 15px 16px 11px;
+  border: 1px solid color-mix(in srgb, var(--background-modifier-border) 88%, transparent);
+  border-radius: 22px;
+  background: var(--background-primary);
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--background-modifier-box-shadow) 8%, transparent);
+  transition: border-color var(--la-duration-fast) ease, box-shadow var(--la-duration-fast) ease;
+}
+
+.la-assistant-shell-v8 .la-unified-composer:focus-within {
+  border-color: color-mix(in srgb, var(--background-modifier-border) 88%, transparent);
+  outline: 0 !important;
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--background-modifier-box-shadow) 8%, transparent);
+}
+
+.la-assistant-shell-v8 .la-unified-composer textarea,
+.la-assistant-shell-v8 .la-unified-composer textarea:focus,
+.la-assistant-shell-v8 .la-unified-composer textarea:focus-visible {
+  min-height: 74px;
+  max-height: 190px;
+  padding: 0;
+  border: 0 !important;
+  outline: 0 !important;
+  background: transparent;
+  box-shadow: none !important;
+  color: var(--text-normal);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.62;
+}
+
+.la-assistant-shell-v8 .la-unified-composer textarea::placeholder {
+  color: var(--text-faint);
+  opacity: 1;
+}
+
+.la-assistant-shell-v8 .la-composer-tools {
+  min-height: 36px;
+  gap: 8px;
+}
+
+.la-assistant-shell-v8 .la-composer-local {
+  display: none;
+}
+
+.la-assistant-shell-v8 .la-composer-mode {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 9px;
+  outline: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+  transition: color var(--la-duration-fast) ease, background var(--la-duration-fast) ease;
+}
+
+.la-assistant-shell-v8 .la-composer-mode svg {
+  width: 15px;
+  height: 15px;
+}
+
+.la-assistant-shell-v8 .la-composer-mode:hover,
+.la-assistant-shell-v8 .la-composer-mode:focus-visible {
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+}
+
+.la-assistant-shell-v8 .la-composer-mode.is-enabled,
+.la-assistant-shell-v8 .la-composer-mode.is-enabled:hover,
+.la-assistant-shell-v8 .la-composer-mode.is-enabled:focus-visible {
+  color: var(--color-green);
+}
+
+.la-assistant-shell-v8 .la-composer-plus,
+.la-assistant-shell-v8 .la-composer-tools > .la-composer-submit {
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  border-radius: 50%;
+}
+
+.la-assistant-shell-v8 .la-composer-plus {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-normal);
+}
+
+.la-assistant-shell-v8 .la-composer-plus:hover,
+.la-assistant-shell-v8 .la-composer-plus:focus-visible {
+  border-color: transparent;
+  outline: 0;
+  background: var(--background-modifier-hover);
+}
+
+.la-assistant-shell-v8 .la-composer-tools > button.la-composer-submit {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 36px !important;
+  min-width: 36px !important;
+  max-width: 36px !important;
+  height: 36px !important;
+  min-height: 36px !important;
+  max-height: 36px !important;
+  flex: 0 0 36px;
+  aspect-ratio: 1 / 1;
+  margin-left: 2px;
+  padding: 0;
+  border: 0 !important;
+  border-radius: 50% !important;
+  outline: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  color: white;
+  line-height: 0;
+  box-shadow: none !important;
+  overflow: hidden;
+  transition: filter var(--la-duration-fast) ease, transform var(--la-duration-fast) ease;
+}
+
+.la-assistant-shell-v8 .la-composer-tools > button.la-composer-submit:not(.is-running),
+.la-assistant-shell-v8 .la-composer-tools > button.la-composer-submit:not(.is-running):hover,
+.la-assistant-shell-v8 .la-composer-tools > button.la-composer-submit:not(.is-running):focus-visible {
+  background: transparent !important;
+  background-image: none !important;
+}
+
+.la-assistant-shell-v8 .la-composer-tools > button.la-composer-submit:not(.is-running):hover,
+.la-assistant-shell-v8 .la-composer-tools > button.la-composer-submit:not(.is-running):focus-visible {
+  filter: brightness(.92);
+  transform: translateY(-1px);
+}
+
+.la-assistant-shell-v8 .la-composer-tools > button.la-composer-submit.is-running,
+.la-assistant-shell-v8 .la-composer-tools > button.la-composer-submit.is-running:hover,
+.la-assistant-shell-v8 .la-composer-tools > button.la-composer-submit.is-running:focus-visible {
+  background: color-mix(in srgb, var(--text-normal) 88%, black) !important;
+  filter: none;
+  transform: none;
+}
+
+.la-assistant-shell-v8 .la-composer-submit__arrow {
+  width: 36px;
+  height: 36px;
+  aspect-ratio: 1 / 1;
+  flex: 0 0 36px;
+  display: block;
+  border-radius: 50%;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.la-assistant-shell-v8 .la-composer-submit__stop {
+  width: 15px;
+  height: 15px;
+  display: block;
+  border-radius: 5px;
+  background: white;
+}
+
+.la-assistant-shell-v8 .la-model-picker {
+  position: relative;
+  flex: 0 1 auto;
+}
+
+.la-assistant-shell-v8 .la-composer-model {
+  width: auto;
+  max-width: 210px;
+  min-width: 92px;
+  height: 36px;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--background-secondary) 70%, var(--background-primary));
+  box-shadow: none;
+  color: var(--text-normal);
+  font-family: inherit;
+  font-size: 12.5px;
+}
+
+.la-assistant-shell-v8 .la-composer-model:hover,
+.la-assistant-shell-v8 .la-composer-model:focus,
+.la-assistant-shell-v8 .la-composer-model:focus-visible {
+  border: 0;
+  outline: 0;
+  background: var(--background-modifier-hover);
+  box-shadow: none;
+}
+
+.la-assistant-shell-v8 .la-composer-model__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.la-assistant-shell-v8 .la-model-icon,
+.la-assistant-shell-v8 .la-composer-model__chevron {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+}
+
+.la-assistant-shell-v8 .la-model-icon {
+  color: var(--la-model-brand, var(--interactive-accent));
+}
+
+.la-assistant-shell-v8 .la-model-icon svg {
+  width: 17px;
+  height: 17px;
+}
+
+.la-assistant-shell-v8 .la-model-icon img {
+  width: 17px;
+  height: 17px;
+  display: block;
+  object-fit: contain;
+  user-select: none;
+  pointer-events: none;
+}
+
+.la-assistant-shell-v8 .la-composer-model__chevron svg {
+  width: 14px;
+  height: 14px;
+}
+
+.la-assistant-shell-v8 .la-model-popover[hidden] {
+  display: none !important;
+}
+
+.la-assistant-shell-v8 .la-model-popover {
+  position: absolute;
+  z-index: 80;
+  right: 0;
+  bottom: calc(100% + 10px);
+  width: min(330px, calc(100vw - 44px));
+  max-height: min(480px, 62vh);
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  overflow: hidden auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 18px;
+  outline: 0;
+  background: var(--background-primary);
+  box-shadow: 0 18px 48px color-mix(in srgb, var(--background-modifier-box-shadow) 22%, transparent);
+}
+
+.la-assistant-shell-v8 .la-model-popover button {
+  width: 100%;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-normal);
+  font-family: inherit;
+  text-align: left;
+}
+
+.la-assistant-shell-v8 .la-model-popover button:hover,
+.la-assistant-shell-v8 .la-model-popover button:focus-visible {
+  outline: 0;
+  background: var(--background-modifier-hover);
+}
+
+.la-assistant-shell-v8 .la-model-popover__auto {
+  border-bottom: 1px solid var(--background-modifier-border) !important;
+  border-radius: 10px 10px 0 0 !important;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.la-assistant-shell-v8 .la-model-popover__reasoning {
+  min-height: 58px;
+  margin-bottom: 4px;
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 24%, var(--background-modifier-border)) !important;
+  background: color-mix(in srgb, var(--interactive-accent) 5%, transparent) !important;
+}
+
+.la-assistant-shell-v8 .la-model-popover__reasoning-copy {
+  min-width: 0;
+  display: grid;
+  flex: 1 1 auto;
+  gap: 2px;
+  font-weight: 600;
+}
+
+.la-assistant-shell-v8 .la-model-popover__reasoning-copy small {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.la-assistant-shell-v8 .la-composer-model.is-deep {
+  color: var(--interactive-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 8%, var(--background-secondary));
+}
+
+.la-assistant-shell-v8 .la-model-popover__label {
+  flex: 1 1 auto;
+}
+
+.la-assistant-shell-v8 .la-model-switch {
+  width: 34px;
+  height: 20px;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--background-modifier-border);
+  transition: background var(--la-duration-fast) ease;
+}
+
+.la-assistant-shell-v8 .la-model-switch > span {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--background-primary);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--background-modifier-box-shadow) 30%, transparent);
+  transition: transform var(--la-duration-fast) ease;
+}
+
+.la-assistant-shell-v8 .la-model-switch.is-on {
+  background: var(--interactive-accent);
+}
+
+.la-assistant-shell-v8 .la-model-switch.is-on > span {
+  transform: translateX(14px);
+}
+
+.la-assistant-shell-v8 .la-model-popover__list {
+  display: grid;
+  padding: 6px 0;
+}
+
+.la-assistant-shell-v8 .la-model-option.is-selected {
+  background: color-mix(in srgb, var(--interactive-accent) 9%, transparent);
+}
+
+.la-assistant-shell-v8 .la-model-option__copy {
+  min-width: 0;
+  display: grid;
+  flex: 1 1 auto;
+  gap: 1px;
+}
+
+.la-assistant-shell-v8 .la-model-option__name {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 540;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.la-assistant-shell-v8 .la-model-option__model,
+.la-assistant-shell-v8 .la-model-popover__empty {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.la-assistant-shell-v8 .la-model-option__check {
+  display: grid;
+  color: var(--interactive-accent);
+  place-items: center;
+}
+
+.la-assistant-shell-v8 .la-model-option__check svg {
+  width: 15px;
+  height: 15px;
+}
+
+.la-assistant-shell-v8 .la-model-popover__configure {
+  border-top: 1px solid var(--background-modifier-border) !important;
+  border-radius: 0 0 10px 10px !important;
+  color: var(--text-muted) !important;
+}
+
+@container (max-width: 650px) {
+  .la-assistant-shell-v8 .la-unified-composer {
+    min-height: 112px;
+    padding: 12px;
+    border-radius: 18px;
+  }
+  .la-assistant-shell-v8 .la-unified-composer textarea { min-height: 60px; }
+  .la-assistant-shell-v8 .la-composer-mode span:last-child { display: none; }
+  .la-assistant-shell-v8 .la-composer-model { min-width: 76px; max-width: 128px; }
+  .la-assistant-shell-v8 .la-message--user { max-width: 90%; }
+}
+
+/* User-message metadata belongs below the bubble, never inside its fill. */
+.la-assistant-shell-v8 .la-message--user {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.la-assistant-shell-v8 .la-message--user > .la-message-copy {
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.la-assistant-shell-v8 .la-message--user .la-message-copy > p {
+  padding: 12px 15px;
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 22%, var(--background-modifier-border));
+  border-radius: 18px 18px 5px 18px;
+  background: color-mix(in srgb, var(--interactive-accent) 8%, var(--background-primary));
+}
+
+.la-assistant-shell-v8 .la-message-meta--user {
+  min-height: 22px;
+  margin-top: 3px;
+  padding: 0 5px;
+}
+
+.la-assistant-shell-v8 .la-message-meta--user .la-message-actions {
+  opacity: .72;
+}
+
+.la-assistant-shell-v8 .la-message-meta--user > small {
+  line-height: 22px;
+}
+
+/* Keep this final rule unscoped as the persisted conversation renderer can be
+   mounted directly under an Obsidian workspace leaf while the shell hydrates. */
+.la-message.la-message--user {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.la-message.la-message--user > .la-message-copy > p {
+  margin: 0;
+  padding: 12px 15px;
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 22%, var(--background-modifier-border));
+  border-radius: 18px 18px 5px 18px;
+  background: color-mix(in srgb, var(--interactive-accent) 8%, var(--background-primary));
+}
+
+.la-message.la-message--user > .la-message-meta--user {
+  margin-top: 4px;
+  padding: 0 5px;
+  background: transparent;
 }

@@ -102,6 +102,76 @@ class BrainSecurityTests(unittest.TestCase):
             self.assertEqual(bundle["bundle"]["sourceTrustBoundary"], "untrusted_source_content")
             store.close()
 
+    def test_default_web_search_uses_bing_rss_and_returns_source_metadata(self):
+        rss = """<?xml version="1.0"?><rss><channel>
+        <item><title>Delta Method guide</title><link>https://example.com/delta</link>
+        <description>A practical guide to asymptotic variance.</description><pubDate>Sun, 19 Jul 2026 00:00:00 GMT</pubDate></item>
+        </channel></rss>"""
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td); store = StateStore(vault / "90-Local-Only/Agent/state.sqlite3")
+            web = WebResearchService(
+                vault,
+                store,
+                fetcher=lambda payload: {
+                    "url": payload["url"], "content_type": "application/rss+xml",
+                    "bytes": len(rss), "text": rss,
+                },
+                resolver=lambda _host: ["93.184.216.34"],
+            )
+            result = web.search("Delta Method", 5)
+            self.assertEqual(result["provider"], "bing-rss")
+            self.assertEqual(result["results"][0]["title"], "Delta Method guide")
+            self.assertEqual(result["results"][0]["domain"], "example.com")
+            self.assertIn("asymptotic variance", result["results"][0]["snippet"])
+            store.close()
+
+    def test_web_search_rejects_generic_keyword_noise_when_entity_is_present(self):
+        rows = [
+            {"url": "https://pydantic.dev/docs/ai/tools/", "title": "PydanticAI Function Tools", "snippet": "Official PydanticAI documentation", "qualityScore": .9},
+            {"url": "https://example.com/power-tools", "title": "Power Tools Store", "snippet": "Latest tools and equipment", "qualityScore": .9},
+        ]
+        ranked = WebResearchService._rank_search_rows("PydanticAI official tools documentation", rows, 5)
+        self.assertEqual([row["url"] for row in ranked], ["https://pydantic.dev/docs/ai/tools/"])
+
+    def test_academic_search_federates_arxiv_and_crossref_without_network_in_test(self):
+        atom = """<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">
+        <entry><id>https://arxiv.org/abs/2401.00001</id><title>Influence Functions</title>
+        <summary>Semiparametric efficiency and robust estimation.</summary><published>2024-01-02T00:00:00Z</published>
+        <author><name>A. Researcher</name></author></entry></feed>"""
+        crossref = json.dumps({"message": {"items": [{
+            "title": ["The Delta Method"], "DOI": "10.1000/delta",
+            "URL": "https://doi.org/10.1000/delta", "author": [{"given": "B", "family": "Author"}],
+            "published-online": {"date-parts": [[2025, 4, 3]]},
+        }]}})
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td); store = StateStore(vault / "90-Local-Only/Agent/state.sqlite3")
+            def fake_fetch(payload):
+                raw = atom if "arxiv" in payload["url"] else crossref
+                return {"url": payload["url"], "content_type": "application/xml" if "arxiv" in payload["url"] else "application/json", "bytes": len(raw), "text": raw}
+            web = WebResearchService(vault, store, fetcher=fake_fetch, resolver=lambda _host: ["93.184.216.34"])
+            result = web.search_academic("influence function", 6)
+            self.assertEqual({item["provider"] for item in result["results"]}, {"arxiv", "crossref"})
+            self.assertTrue(all(item["sourceType"] == "paper" for item in result["results"]))
+            self.assertEqual(result["providerFailures"], [])
+            store.close()
+
+    def test_model_evidence_is_bounded_and_never_copied_into_sqlite(self):
+        marker = "WEB-EVIDENCE-ONLY-IN-LOCAL-CACHE"
+        with tempfile.TemporaryDirectory() as td:
+            vault = Path(td); store = StateStore(vault / "90-Local-Only/Agent/state.sqlite3")
+            def fake_fetch(payload):
+                text = f"<title>Evidence</title><article>{marker} " + ("research evidence " * 1200) + "</article>"
+                return {"url": payload["url"], "content_type": "text/html", "bytes": len(text), "text": text}
+            web = WebResearchService(vault, store, fetcher=fake_fetch, resolver=lambda _host: ["93.184.216.34"])
+            source = web.fetch_for_model("https://example.com/evidence", 2_000)
+            self.assertIn(marker, source["evidenceText"])
+            self.assertLessEqual(len(source["evidenceText"]), 2_000)
+            self.assertTrue(source["evidenceTruncated"])
+            self.assertNotIn("evidenceText", store.list_web_sources()[0])
+            dump = "\n".join(store.connection.iterdump())
+            self.assertNotIn(marker, dump)
+            store.close()
+
     def test_cloud_metadata_names_are_rejected_even_with_public_resolver_result(self):
         for url in ("http://metadata.google.internal/computeMetadata/v1", "http://metadata.azure.internal/"):
             with self.assertRaisesRegex(ValueError, "private_url_not_allowed"):

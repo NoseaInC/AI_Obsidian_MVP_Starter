@@ -162,6 +162,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/brain/diagnostics": payload = self.service.brain_diagnostics()
             elif path == "/research-bundles": payload = self.service.list_research_bundles(int(query.get("limit", [50])[0]), int(query.get("offset", [0])[0]))
             elif path == "/web/sources": payload = {"sources": self.service.store.list_web_sources(int(query.get("limit", [100])[0]))}
+            elif path == "/web/capabilities": payload = self.service.web_capabilities()
             elif path == "/autonomy": payload = self.service.autonomy_status()
             elif path == "/agent-actions": payload = {"actions": self.service.store.list_agent_actions(int(query.get("limit", [100])[0]))}
             elif path.startswith("/agent-actions/"): payload = {"action": self.service.store.get_agent_action(self._identifier(path.removeprefix("/agent-actions/")))}
@@ -296,6 +297,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/brain/organize": payload = {"run": self.service.submit_brain(body, self.headers.get("Idempotency-Key", ""), mode="organize")}
             elif path == "/brain/research": payload = {"run": self.service.submit_brain(body, self.headers.get("Idempotency-Key", ""), mode="research")}
             elif path == "/web/search": payload = self.service.search_public_web(str(body.get("query") or ""), int(body.get("limit", 8)))
+            elif path == "/web/academic": payload = self.service.search_academic_web(str(body.get("query") or ""), int(body.get("limit", 8)))
             elif path == "/web/fetch": payload = {"source": self.service.fetch_public_web(str(body.get("url") or ""))}
             elif path == "/web/research": payload = self.service.research_public_web(str(body.get("query") or ""), list(body.get("urls") or []) or None, int(body.get("limit", 5)))
             elif path == "/vault/changes": payload = self.service.apply_autonomous_vault_change(body)
