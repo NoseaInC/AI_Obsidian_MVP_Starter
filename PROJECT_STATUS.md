@@ -192,4 +192,4 @@ migration above.
 
 ## Resume point
 
-Reload the installed plugin in Obsidian, then use the `pi-agent-runtime` PR for review. The deliberate first real Dragonnet Apply gate remains separate and untouched.
+Reload the installed plugin in Obsidian, then review GitHub PR #2 (`pi-agent-runtime` → `main`). The deliberate first real Dragonnet Apply gate remains separate and untouched.
