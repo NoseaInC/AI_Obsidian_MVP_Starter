@@ -2,14 +2,39 @@
 
 All business endpoints are under `/api/v1`, require the in-memory bearer token, and return structured errors. `/health` is the limited public readiness endpoint.
 
-## Agent Brain
+## Pi runtime boundary
 
-- `POST /api/v1/brain/requests` — unified request entry with `Idempotency-Key`.
-- `GET /api/v1/brain/runs` and `GET /api/v1/brain/runs/{id}` — Runs, Steps, Tool Events and proposals.
-- `POST /api/v1/brain/runs/{id}/cancel|retry` — cancellation or linked retry.
-- `POST /api/v1/brain/capture|organize|research|tutor` — explicit intent shortcuts.
-- `GET /api/v1/brain/capabilities|health|diagnostics` — redacted capability and runtime diagnostics.
-- `GET /api/v1/brain-change-sets/{id}` and `POST .../{id}/apply` — explicit, integrity-checked transactional apply.
+- `POST /api/v1/model/stream` — authenticated NDJSON secure-model transport. The proxy resolves the Profile and Keychain secret and emits normalized text, thinking, tool-call, usage, error and done events without logging prompts or raw responses.
+- `GET /api/v1/model/capabilities` and `POST /api/v1/model/capabilities/probe` — cached capability facts and explicit minimal re-probe.
+- `GET /api/v1/tools/contracts` — stable restricted Tool contracts.
+- `POST /api/v1/task-authorizations` — register a structured per-Turn Task Authorization.
+- `POST /api/v1/tools/call` — execute one governed Tool Call and return a structured Observation.
+- `POST /api/v1/agent/events` — persist ordered Pi events before UI delivery.
+- `GET /api/v1/agent/runs/{runId}/events?after=` — reconnect to durable events.
+- `POST /api/v1/agent/runs/{runId}/control` — Steering or Follow-up.
+- `POST /api/v1/agent/runs/{runId}/cancel` — durable cancellation.
+- `GET /api/v1/agent/sessions/{sessionId}` — restore the Session Tree leaf and checkpoints.
+- `GET /api/v1/actions/{actionId}` and `GET .../diff` — operation result and post-action Diff.
+- `POST /api/v1/actions/{actionId}/undo` — after-hash-checked conflict-safe Undo.
+
+`activate_runtime_upgrade` is a governed Tool contract rather than a public
+shell endpoint. It returns a fixed activation request only after the task
+branch is merged and the project tree is clean. The plugin executes the fixed
+check/build/install/restart/health sequence and calls the governed rollback
+Tool if activation fails.
+
+Pi is bundled in the plugin and is the only production Agent loop. Python owns
+facts, secrets, policy and execution but never performs model planning.
+
+## Explicit structured workflows
+
+- `POST /api/v1/workflows/{mode}` — non-chat projections for an explicit `mode`: `qa`, `tutor`, `capture`, `save`, `organize`, `material`, `research` or `plan`.
+- `GET /api/v1/runtime/capabilities` and `GET /api/v1/runtime/diagnostics` — redacted local runtime facts.
+
+These endpoints do not inspect prose to infer intent, run a model planner or own an
+Agent loop. The former `/brain/*` and `/brain-change-sets/*` production endpoints
+were removed. Interactive work always enters the Pi runtime; Markdown apply is an
+internal task-authorized reversible transaction, not a pending Brain approval.
 
 ## Research and curriculum
 
@@ -47,9 +72,7 @@ All business endpoints are under `/api/v1`, require the in-memory bearer token, 
 - `POST /api/v1/conversations/{id}/retain-summary` with `{confirmed:true}` — remove raw messages after a summary exists.
 - `DELETE /api/v1/conversations/{id}?confirm=true` — explicit single deletion.
 - `DELETE /api/v1/conversations?scope=recent-7-days|all&confirm=true` — explicit bulk deletion.
-- `POST /api/v1/assistant/stream` — canonical Runtime V3 Agent loop as schema-v2 NDJSON: model decision, one typed Tool, real Observation, replan, answer/clarification/Change Set proposal.
-- `GET /api/v1/assistant/runs/{id}/events?after=&limit=` — ordered event reconnect plus latest checkpoint.
-- `POST /api/v1/assistant/runs/{id}/resume|reject` — explicitly confirm or reject an awaiting Change Set; Apply is never exposed to the model.
+- `/intake/submit` remains a structured adapter for non-chat projections such as Study and Materials. It does not infer intent from message prose and is not an Agent loop.
 
 ## Directions, web and Vault autonomy
 

@@ -15,12 +15,13 @@ from urllib.parse import urlparse
 PROVIDER_TYPES = {"deepseek", "openai", "openai-compatible", "custom"}
 PROTECTED_HEADERS = {"authorization", "host", "content-length"}
 ROUTING_TASKS = {
-    # Agent Brain V1 routes.
-    "brain_orchestrator", "orchestrator", "intent_router", "material_analysis",
+    # Pi is the only model/tool loop. The other routes are explicit,
+    # single-purpose workflows and never classify free-form user prose.
+    "agent_runtime", "material_analysis",
     "research_synthesis", "capture_organize", "curriculum_planner", "daily_knowledge_generator",
     "claim_extractor", "claim_verifier", "lesson_generator",
     "tutor", "quiz", "evaluation", "pdf_prepare", "assistant_chat",
-    # Backward-compatible V2 routes retained for existing plugin settings.
+    # Product task aliases retained for existing settings.
     "assistant", "prepare", "review", "weekly-plan", "fast",
 }
 KEY_REFERENCE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
@@ -208,6 +209,82 @@ class OpenAICompatibleProvider:
                 finish_reason = choice.get("finish_reason")
                 if finish_reason:
                     yield {"type": "finish", "finishReason": str(finish_reason), "usage": item.get("usage") or {}}
+
+    def stream_agent(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        **options: Any,
+    ) -> Iterator[dict[str, Any]]:
+        """Stream the provider protocol needed by the TypeScript Pi runtime.
+
+        This deliberately stays below the Agent Loop: it performs one model
+        request, preserves streamed tool-call argument fragments, and never
+        executes a tool.  API keys remain inside this Python process.
+        """
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            **options,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if tools:
+            payload["tools"] = tools
+        request = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            method="POST",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                **self.headers,
+            },
+        )
+        with self.opener(request, timeout=self.timeout) as response:
+            for raw_line in response:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line or line.startswith(":"):
+                    continue
+                data = line.removeprefix("data:").strip() if line.startswith("data:") else line
+                if data == "[DONE]":
+                    yield {"type": "done"}
+                    return
+                try:
+                    item = json.loads(data)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError("Model stream returned invalid SSE JSON") from exc
+                usage = item.get("usage")
+                if isinstance(usage, dict):
+                    yield {"type": "usage", "usage": usage}
+                choice = (item.get("choices") or [{}])[0]
+                delta = choice.get("delta") or {}
+                content = delta.get("content")
+                if isinstance(content, str) and content:
+                    yield {"type": "text_delta", "delta": content}
+                reasoning = delta.get("reasoning_content")
+                if isinstance(reasoning, str) and reasoning:
+                    # Forwarded only for provider protocol continuity. The Pi
+                    # adapter discards it from user-visible and persisted text.
+                    yield {"type": "thinking_delta", "delta": reasoning}
+                for raw_call in delta.get("tool_calls") or []:
+                    function = raw_call.get("function") or {}
+                    yield {
+                        "type": "tool_call_delta",
+                        "index": int(raw_call.get("index", 0)),
+                        "id": str(raw_call.get("id") or ""),
+                        "name": str(function.get("name") or ""),
+                        "arguments_delta": str(function.get("arguments") or ""),
+                    }
+                finish_reason = choice.get("finish_reason")
+                if finish_reason:
+                    yield {
+                        "type": "finish",
+                        "finish_reason": str(finish_reason),
+                        "usage": usage or {},
+                    }
 
     def structured_output(self, model: str, messages: list[dict[str, str]], schema: dict[str, Any], **options: Any) -> dict[str, Any]:
         if self.provider_type == "deepseek":

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime
+import hashlib
 import re
 from pathlib import Path
 from threading import RLock
@@ -14,10 +15,12 @@ SCRIPTS = ROOT / "00-System/Scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 import ingest_pdf
+from agent.core.hybrid_retrieval import HybridVaultIndex
 
 
 WORD = re.compile(r"[\w\u4e00-\u9fff]+", re.UNICODE)
 WIKI_LINK = re.compile(r"\[\[([^\]|#]+)(?:\|[^\]]+)?\]\]")
+HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*$", re.MULTILINE)
 LATIN_WORD = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.+-]+")
 CJK_SEQUENCE = re.compile(r"[\u4e00-\u9fff]+")
 SAFE_ROOTS = ("00-Inbox", "01-Inbox", "10-Sources", "20-Knowledge", "30-Learning", "40-Projects")
@@ -88,6 +91,7 @@ class VaultReadIndex:
         self.vault = vault.resolve()
         self._cache: dict[str, tuple[int, int, dict[str, Any]]] = {}
         self._lock = RLock()
+        self._hybrid = HybridVaultIndex()
 
     def entries(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -127,9 +131,14 @@ class VaultReadIndex:
                         "type": str(meta.get("type", "note")),
                         "domain": str(meta.get("domain", "")),
                         "aliases": meta.get("aliases", ""),
+                        "tags": meta.get("tags", ""),
+                        "headings": HEADING.findall(text),
+                        "links": WIKI_LINK.findall(text),
+                        "body": text[:200_000],
                         "excerpt": text[:6_000],
                         "modifiedAt": datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(timespec="seconds"),
                         "mtime": stat.st_mtime,
+                        "sourceHash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
                     }
                     self._cache[key] = (stat.st_mtime_ns, stat.st_size, entry)
             for key in set(self._cache) - present:
@@ -139,24 +148,15 @@ class VaultReadIndex:
     def search(self, payload: dict[str, Any]) -> dict[str, Any]:
         query = str(payload.get("query", "")).strip()
         limit = max(1, min(50, int(payload.get("limit", 10))))
-        terms = _query_terms(query)
-        rows: list[tuple[int, dict[str, Any]]] = []
-        for entry in self.entries():
-            title = str(entry["title"]).casefold()
-            metadata = f"{entry.get('aliases', '')} {entry.get('domain', '')} {entry.get('type', '')}".casefold()
-            excerpt = str(entry.get("excerpt", "")).casefold()
-            score = sum(8 for term in terms if term in title)
-            score += sum(3 for term in terms if term in metadata)
-            score += sum(1 for term in terms if term in excerpt)
-            if query and (not terms or score == 0):
-                continue
-            rows.append((score, {
-                "title": entry["title"], "path": entry["path"],
-                "status": entry["status"], "type": entry["type"],
-                "domain": entry["domain"], "score": score,
-            }))
-        rows.sort(key=lambda row: (-row[0], row[1]["title"].casefold()))
-        return {"query": query, "items": [row[1] for row in rows[:limit]], "total": len(rows)}
+        if not query:
+            return {"query": query, "items": [], "total": 0, "schemaVersion": 1, "semanticState": "disabled"}
+        return self._hybrid.search(
+            query,
+            self.entries(),
+            limit,
+            current_note=str(payload.get("current_note") or payload.get("currentNote") or ""),
+            focus=str(payload.get("focus") or ""),
+        )
 
     def overview(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         limit = max(3, min(20, int((payload or {}).get("recent_limit", 8))))

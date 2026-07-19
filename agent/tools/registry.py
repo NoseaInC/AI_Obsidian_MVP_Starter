@@ -704,14 +704,4 @@ def build_tool_registry(
         change_sets.validate,
         permission="approval_required",
     )
-    register(
-        "apply_confirmed_change_set",
-        "事务应用已经由用户明确确认的 Change Set。",
-        change_set_ref,
-        change_sets.apply,
-        mutates=True,
-        permission="approval_required",
-        idempotent=True,
-    )
-
     return registry

@@ -8,10 +8,6 @@ from pathlib import Path
 from agent.brain.policy_engine import PolicyEngine
 from agent.core.redaction import redact, summary
 from agent.core.storage import StateStore
-from agent.brain import BrainOrchestrator, BrainRequest
-from agent.skills import build_skill_registry
-from agent.tools import build_tool_registry
-from agent.tools.change_set import ChangeSetTools
 from agent.skills.base import SkillDefinition
 from agent.tools.source_fetch import PublicRedirectHandler, fetch_user_url, validate_public_url
 from agent.core.web_research import WebResearchService, extract_web_document
@@ -182,30 +178,9 @@ class BrainSecurityTests(unittest.TestCase):
             path = Path(td) / "state.sqlite3"
             first = StateStore(path); job = first.create_job("quiz", {"old": True}); first.close()
             second = StateStore(path)
-            self.assertEqual(second.schema_version(), 8); self.assertEqual(second.get_job(job)["state"], "queued")
+            self.assertEqual(second.schema_version(), 9); self.assertEqual(second.get_job(job)["state"], "queued")
             tables = {row[0] for row in second.connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertTrue({"brain_runs", "brain_steps", "tool_events", "agent_run_events", "agent_run_checkpoints", "research_bundles", "curriculum_candidates", "learning_events", "learner_features", "lesson_versions", "assistant_task_threads", "assistant_task_steps", "artifact_groups", "conversation_summaries", "conversation_knowledge_signals", "conversation_focus", "material_bundles", "knowledge_units", "organization_plans", "organization_actions", "direction_predictions", "daily_plan_adjustments", "web_sources", "agent_actions", "file_snapshots", "file_change_log"}.issubset(tables))
             second.close()
-
-    def test_private_request_and_change_set_tampering_are_rejected(self):
-        with tempfile.TemporaryDirectory() as td:
-            vault = Path(td); (vault / "01-Inbox/Ideas").mkdir(parents=True); (vault / "20-Knowledge/Topics").mkdir(parents=True)
-            store = StateStore(vault / "90-Local-Only/Agent/state.sqlite3")
-            tools = build_tool_registry(vault, store); brain = BrainOrchestrator(vault, store, build_skill_registry(vault, store, tools))
-            run = brain.submit(BrainRequest(text="记录灵感：不可篡改", mode="capture"))
-            change_set_id = run["result"]["results"][0]["change_set"]["id"]
-            record = store.get_brain_change_set(change_set_id)
-            payload_path = vault / record["writes"][0]["payload_path"]
-            payload = json.loads(payload_path.read_text(encoding="utf-8")); payload["writes"][0]["content"] = "tampered"
-            payload_path.write_text(json.dumps(payload), encoding="utf-8")
-            with self.assertRaisesRegex(RuntimeError, "tampered"):
-                ChangeSetTools(vault, store).validate({"change_set_id": change_set_id})
-            private = vault / "90-Local-Only/Agent/brain-requests" / f"{run['id']}.json"
-            request = json.loads(private.read_text(encoding="utf-8")); request["text"] = "tampered"; private.write_text(json.dumps(request), encoding="utf-8")
-            store.request_brain_cancel(run["id"])
-            with self.assertRaisesRegex(RuntimeError, "integrity"):
-                brain.retry(run["id"])
-            store.close()
-
 
 if __name__ == "__main__": unittest.main()

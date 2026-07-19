@@ -8,10 +8,8 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 from unittest.mock import patch
-from pydantic_ai.models.test import TestModel
 
 from agent.api.server import Handler, serve
-from agent.brain import BrainRequest
 from agent.core.service import AgentService
 from agent.core.storage import StateStore
 from agent.core.models import FakeKeyStore
@@ -242,170 +240,6 @@ artifact_id: "source:concept:0"
         finally:
             server.shutdown(); server.server_close(); service.store.close(); thread.join(timeout=2)
 
-    def test_assistant_ndjson_stream_is_real_versioned_persisted_and_authenticated(self):
-        keys = FakeKeyStore(); server = self._serve_local(port=0, session_token="session", key_store=keys)
-        service = server.RequestHandlerClass.service
-        profile = service.save_model_profile({
-            "displayName": "离线流模型", "providerType": "openai-compatible",
-            "baseUrl": "http://localhost:9000/v1", "apiKey": "fake-only",
-            "defaultModel": "fake-stream", "settings": {"customHeaders": {}},
-        })
-        service.set_model_routing({"assistant_chat": {"profileId": profile["id"], "modelOverride": "fake-stream"}})
-        service.assistant_runtime.model_factory = lambda *_: TestModel(call_tools=[], custom_output_text="离线假模型回答")
-        conversation = service.create_conversation({"title": "流式测试"})
-        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
-        try:
-            body = json.dumps({"conversation_id": conversation["id"], "message": "你是哪一个模型"}, ensure_ascii=False).encode()
-            request = urllib.request.Request(
-                f"http://127.0.0.1:{server.server_port}/api/v1/assistant/stream", method="POST",
-                headers={"Authorization": "Bearer session", "Content-Type": "application/json"}, data=body,
-            )
-            with urllib.request.urlopen(request, timeout=3) as response:
-                self.assertEqual(response.headers.get_content_type(), "application/x-ndjson")
-                events = [json.loads(line) for line in response if line.strip()]
-            self.assertEqual([item["seq"] for item in events], list(range(1, len(events) + 1)))
-            self.assertEqual(events[0]["type"], "run.started")
-            self.assertIn("context.resolved", [item["type"] for item in events])
-            self.assertIn("message.delta", [item["type"] for item in events])
-            self.assertEqual(events[-1]["type"], "run.completed")
-            persisted = service.get_conversation(conversation["id"])["messages"]
-            self.assertEqual([item["role"] for item in persisted], ["user", "assistant"])
-            self.assertEqual(persisted[-1]["content"], "离线假模型回答")
-            self.assertEqual(service.list_agent_artifacts(conversation_id=conversation["id"])["items"], [])
-        finally:
-            server.shutdown(); server.server_close(); service.store.close(); thread.join(timeout=2)
-
-    @unittest.skip("legacy schema-v2 coordinator API removed; schema-v3 coverage lives in test_pydantic_assistant_runtime")
-    def test_assistant_v3_reconnect_resume_and_reject_http_api(self):
-        server = self._serve_local(port=0, session_token="session", key_store=FakeKeyStore())
-        service = server.RequestHandlerClass.service
-
-        def pending_run(suffix: str) -> tuple[str, str, Path]:
-            run_id = f"run-http-{suffix}"
-            target = self.vault / f"01-Inbox/{suffix}.md"
-            service.store.create_brain_run(run_id, BrainRequest(text=f"创建 {suffix}"))
-            service.store.update_brain_run(run_id, "awaiting_confirmation")
-            proposal = service.tools.call(
-                "create_change_set",
-                {
-                    "run_id": run_id,
-                    "title": f"HTTP {suffix}",
-                    "writes": [
-                        {
-                            "path": f"01-Inbox/{suffix}.md",
-                            "content": f"# {suffix}\n",
-                            "category": "assistant-proposal",
-                        }
-                    ],
-                },
-                run_id=run_id,
-                allowed_permissions=("proposal",),
-            )
-            service.store.save_agent_run_checkpoint(
-                run_id,
-                "awaiting_approval",
-                {"awaitingApproval": True},
-                pending_approval_id=proposal["id"],
-            )
-            service.store.append_agent_run_event(
-                run_id,
-                1,
-                "run.awaiting_approval",
-                {
-                    "schemaVersion": 2,
-                    "seq": 1,
-                    "type": "run.awaiting_approval",
-                    "runId": run_id,
-                    "conversationId": "conversation-http",
-                    "proposalId": proposal["id"],
-                },
-            )
-            return run_id, proposal["id"], target
-
-        resume_id, _, resume_target = pending_run("resume")
-        reject_id, reject_proposal, reject_target = pending_run("reject")
-        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
-        base = f"http://127.0.0.1:{server.server_port}/api/v1/assistant/runs"
-        headers = {"Authorization": "Bearer session", "Content-Type": "application/json"}
-        try:
-            request = urllib.request.Request(
-                f"{base}/{resume_id}/events?after=0&limit=10",
-                headers={"Authorization": "Bearer session"},
-            )
-            with urllib.request.urlopen(request, timeout=3) as response:
-                events = json.loads(response.read())
-            self.assertEqual(events["schemaVersion"], 2)
-            self.assertEqual(events["events"][0]["type"], "run.awaiting_approval")
-
-            request = urllib.request.Request(
-                f"{base}/{resume_id}/resume",
-                method="POST",
-                headers=headers,
-                data=json.dumps({"confirmed": True}).encode(),
-            )
-            with urllib.request.urlopen(request, timeout=3) as response:
-                resumed = json.loads(response.read())
-            self.assertEqual(resumed["run"]["status"], "completed")
-            self.assertEqual(resume_target.read_text(encoding="utf-8"), "# resume\n")
-
-            request = urllib.request.Request(
-                f"{base}/{reject_id}/reject",
-                method="POST",
-                headers=headers,
-                data=json.dumps({"reason": "用户拒绝"}, ensure_ascii=False).encode(),
-            )
-            with urllib.request.urlopen(request, timeout=3) as response:
-                rejected = json.loads(response.read())
-            self.assertEqual(rejected["run"]["status"], "cancelled")
-            self.assertFalse(reject_target.exists())
-            self.assertEqual(service.store.get_brain_change_set(reject_proposal)["state"], "rejected")
-        finally:
-            server.shutdown(); server.server_close(); service.store.close(); thread.join(timeout=2)
-
-    @unittest.skip("frontend-close semantics replaced by explicit backend cancel")
-    def test_closing_assistant_stream_persists_only_received_partial_text(self):
-        keys = FakeKeyStore(); service = AgentService(self.vault, key_store=keys)
-        profile = service.save_model_profile({
-            "displayName": "离线流模型", "providerType": "openai-compatible",
-            "baseUrl": "http://localhost:9000/v1", "apiKey": "fake-only",
-            "defaultModel": "fake-stream", "settings": {"customHeaders": {}},
-        })
-        service.set_model_routing({"assistant_chat": {"profileId": profile["id"]}})
-        service.assistant_runtime.model_factory = lambda *_: TestModel(call_tools=[], custom_output_text="离线假模型回答")
-        conversation = service.create_conversation({"title": "取消测试"})
-        stream = service.assistant_stream({"conversation_id": conversation["id"], "message": "开始回答"})
-        with patch.object(service.models, "provider", return_value=_RuntimeChatProvider()):
-            for item in stream:
-                if item["type"] == "message.delta": break
-            stream.close()
-        messages = service.get_conversation(conversation["id"])["messages"]
-        self.assertEqual(messages[-1]["messageType"], "partial")
-        self.assertEqual(messages[-1]["content"], "离线假模型回答")
-        service.store.close()
-
-    def test_assistant_regeneration_reuses_user_turn_without_duplicate_user_message(self):
-        keys = FakeKeyStore(); service = AgentService(self.vault, key_store=keys)
-        profile = service.save_model_profile({
-            "displayName": "离线流模型", "providerType": "openai-compatible",
-            "baseUrl": "http://localhost:9000/v1", "apiKey": "fake-only",
-            "defaultModel": "fake-stream", "settings": {"customHeaders": {}},
-        })
-        service.set_model_routing({"assistant_chat": {"profileId": profile["id"]}})
-        service.assistant_runtime.model_factory = lambda *_: TestModel(call_tools=[], custom_output_text="离线假模型回答")
-        conversation = service.create_conversation({"title": "重新生成测试"})
-        list(service.assistant_stream({"conversation_id": conversation["id"], "message": "解释 Delta Method"}))
-        first_messages = service.get_conversation(conversation["id"])["messages"]
-        user_message_id = first_messages[0]["id"]
-        events = list(service.assistant_stream({
-            "conversation_id": conversation["id"], "message": "不得替换原问题",
-            "regenerate_message_id": user_message_id,
-        }))
-        messages = service.get_conversation(conversation["id"])["messages"]
-        self.assertEqual([item["role"] for item in messages], ["user", "assistant", "assistant"])
-        self.assertEqual(messages[0]["content"], "解释 Delta Method")
-        self.assertEqual(events[0]["type"], "run.started")
-        service.store.close()
-
     def test_daily_contract_is_authenticated_versioned_and_idempotent(self):
         server = self._serve_local(port=0, session_token="session", key_store=FakeKeyStore())
         service = server.RequestHandlerClass.service
@@ -428,34 +262,5 @@ artifact_id: "source:concept:0"
             self.assertEqual(json.loads(caught.exception.read())["error"]["code"], "invalid_request")
         finally:
             server.shutdown(); server.server_close(); service.store.close(); thread.join(timeout=2)
-
-    def test_brain_api_is_authenticated_idempotent_auditable_and_confirmed(self):
-        server = self._serve_local(port=0, session_token="session", key_store=FakeKeyStore())
-        service = server.RequestHandlerClass.service
-        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
-        try:
-            base = f"http://127.0.0.1:{server.server_port}/api/v1"
-            headers = {"Authorization": "Bearer session", "Content-Type": "application/json", "Idempotency-Key": "capture-once"}
-            body = json.dumps({"text": "记录灵感：测试 Brain API", "mode": "capture"}, ensure_ascii=False).encode()
-            request = urllib.request.Request(f"{base}/brain/requests", method="POST", headers=headers, data=body)
-            with urllib.request.urlopen(request, timeout=3) as response: first = json.loads(response.read())["run"]
-            request = urllib.request.Request(f"{base}/brain/requests", method="POST", headers=headers, data=body)
-            with urllib.request.urlopen(request, timeout=3) as response: second = json.loads(response.read())["run"]
-            self.assertEqual(first["id"], second["id"]); self.assertEqual(first["status"], "awaiting_confirmation")
-            request = urllib.request.Request(f"{base}/brain/runs/{first['id']}/events", headers={"Authorization": "Bearer session"})
-            with urllib.request.urlopen(request, timeout=3) as response: events = json.loads(response.read())
-            self.assertEqual(len(events["steps"]), 1); self.assertEqual(len(events["tool_events"]), 2)
-            change_set_id = first["result"]["results"][0]["change_set"]["id"]
-            request = urllib.request.Request(
-                f"{base}/brain-change-sets/{change_set_id}/apply", method="POST", headers=headers,
-                data=json.dumps({"confirmed": True}).encode(),
-            )
-            with urllib.request.urlopen(request, timeout=3) as response: applied = json.loads(response.read())["change_set"]
-            self.assertEqual(applied["state"], "applied")
-            self.assertEqual(service.get_brain_run(first["id"])["status"], "completed")
-            database = service.store.path.read_bytes(); self.assertNotIn("测试 Brain API".encode(), database)
-        finally:
-            server.shutdown(); server.server_close(); service.store.close(); thread.join(timeout=2)
-
 
 if __name__ == "__main__": unittest.main()

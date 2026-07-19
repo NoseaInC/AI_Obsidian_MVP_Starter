@@ -98,10 +98,12 @@ class ChangeSetTools:
 
     def create(self, payload: dict[str, Any]) -> dict[str, Any]:
         run_id = str(payload.get("run_id", ""))
+        task_authorization_id = str(payload.get("task_authorization_id", ""))
         writes = list(payload.get("writes", []))
         if not run_id or not writes or len(writes) > 10:
             raise ValueError("change_set_requires_1_to_10_writes")
-        assistant_runtime = self.store.is_assistant_runtime_run(run_id)
+        pi_runtime = bool(task_authorization_id and self.store.get_task_authorization(task_authorization_id)["runId"] == run_id)
+        assistant_runtime = pi_runtime or self.store.is_assistant_runtime_run(run_id)
         normalized: list[dict[str, Any]] = []
         hashes: dict[str, str] = {}
         for raw in writes:
@@ -114,7 +116,7 @@ class ChangeSetTools:
             exists = path.exists()
             target_path = ""
             if exists and _protected(path):
-                if not assistant_runtime:
+                if pi_runtime or not assistant_runtime:
                     raise ValueError("reviewed_core_read_only")
                 target_path = relative
                 relative, content = _update_suggestion(relative, content, run_id)
@@ -132,7 +134,14 @@ class ChangeSetTools:
         change_set_id = f"brain-cs-{uuid.uuid4().hex}"
         self.root.mkdir(parents=True, exist_ok=True)
         payload_path = self.root / f"{change_set_id}.json"
-        bundle = {"id": change_set_id, "run_id": run_id, "title": str(payload.get("title", "Agent 提案")), "writes": normalized, "base_hashes": hashes}
+        bundle = {
+            "id": change_set_id,
+            "run_id": run_id,
+            "task_authorization_id": task_authorization_id,
+            "title": str(payload.get("title", "Agent 提案")),
+            "writes": normalized,
+            "base_hashes": hashes,
+        }
         ingest_pdf.atomic_write(payload_path, json.dumps(bundle, ensure_ascii=False, indent=2) + "\n")
         metadata = [{
             "path": item["path"],
@@ -145,10 +154,19 @@ class ChangeSetTools:
         preview = f"{bundle['title']} · {len(normalized)} 个候选写入"
         if assistant_runtime:
             self.store.create_assistant_change_set(change_set_id, run_id, bundle["title"], metadata, preview, hashes)
+            if pi_runtime:
+                self.store.update_assistant_change_set(change_set_id, "planned")
         else:
             self.store.create_brain_change_set(change_set_id, run_id, bundle["title"], metadata, preview, hashes)
         public_metadata = [{key: value for key, value in item.items() if key != "payload_path"} for item in metadata]
-        return {"id": change_set_id, "state": "proposed", "title": bundle["title"], "writes": public_metadata, "preview": preview, "requires_confirmation": True}
+        return {
+            "id": change_set_id,
+            "state": "planned" if pi_runtime else "proposed",
+            "title": bundle["title"],
+            "writes": public_metadata,
+            "preview": preview,
+            "requires_confirmation": not pi_runtime,
+        }
 
     def _bundle(self, change_set_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
         record = self.get_record(change_set_id)
@@ -180,6 +198,17 @@ class ChangeSetTools:
             return self.store.get_assistant_change_set(change_set_id)
         except RuntimeError:
             return self.store.get_brain_change_set(change_set_id)
+
+    def prepared(self, change_set_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Return the authenticated immutable bundle to the transaction boundary."""
+        return self._bundle(change_set_id)
+
+    def update_state(self, change_set_id: str, state: str, transaction_id: str | None = None) -> None:
+        try:
+            self.store.get_assistant_change_set(change_set_id)
+            self.store.update_assistant_change_set(change_set_id, state, transaction_id)
+        except RuntimeError:
+            self.store.update_brain_change_set(change_set_id, state, transaction_id)
 
     def public_record(self, change_set_id: str) -> dict[str, Any]:
         record = self.get_record(change_set_id)
@@ -220,7 +249,7 @@ class ChangeSetTools:
         record, bundle = self._bundle(change_set_id)
         if record["state"] == "applied":
             return {"id": change_set_id, "valid": True, "idempotent": True, "state": "applied"}
-        if record["state"] != "proposed":
+        if record["state"] not in {"planned", "proposed"}:
             raise RuntimeError("change_set_not_proposed")
         for item in bundle["writes"]:
             path = safe_note(self.vault, item["path"])
@@ -232,26 +261,6 @@ class ChangeSetTools:
             if path.exists() and _protected(path):
                 raise RuntimeError("reviewed_core_read_only")
         return {"id": change_set_id, "valid": True, "idempotent": False, "state": record["state"]}
-
-    def apply(self, payload: dict[str, Any]) -> dict[str, Any]:
-        change_set_id = str(payload.get("change_set_id", ""))
-        if payload.get("confirmed") is not True:
-            raise PermissionError("explicit_confirmation_required")
-        valid = self.validate({"change_set_id": change_set_id})
-        if valid["idempotent"]:
-            return {"id": change_set_id, "state": "applied", "idempotent": True}
-        _, bundle = self._bundle(change_set_id)
-        plan = ingest_pdf.WritePlan(source_id=change_set_id, vault=self.vault, writes=[
-            ingest_pdf.PlannedWrite(safe_note(self.vault, item["path"]), item["content"], item["action"], item["category"])
-            for item in bundle["writes"]
-        ])
-        transaction_id = f"brain-{uuid.uuid4().hex}"
-        journal = ingest_pdf.execute_plan(plan, transaction_id=transaction_id)
-        if self.store.is_assistant_runtime_run(str(bundle.get("run_id") or "")):
-            self.store.update_assistant_change_set(change_set_id, "applied", transaction_id)
-        else:
-            self.store.update_brain_change_set(change_set_id, "applied", transaction_id)
-        return {"id": change_set_id, "state": "applied", "idempotent": False, "transaction_id": transaction_id, "journal": str(journal.relative_to(self.vault))}
 
     def verify_applied(self, change_set_id: str) -> dict[str, Any]:
         """Verify the committed files against the immutable Change Set payload.

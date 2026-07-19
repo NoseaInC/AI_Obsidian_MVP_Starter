@@ -23,20 +23,24 @@ from agent.core import learning
 from agent.core import recommendations
 from agent.core import learning_directions
 from agent.core.models import KeyStore, ModelProfileService
+from agent.core.pi_model_proxy import PiModelProxy
+from agent.core.task_authorization import TaskAuthorizationService
+from agent.core.reversible_transaction import ReversibleTransactionService
+from agent.core.developer_workspace import DeveloperWorkspace
 from agent.core.redaction import redact, redact_secret_text
 from agent.core.storage import StateStore
 from agent.core.intake import IntakeService
-from agent.core.assistant_outcomes import AssistantOutcome, decide_assistant_outcome
+from agent.core.assistant_outcomes import AssistantOutcome, resolve_assistant_outcome
 from agent.core.conversation_intelligence import build_conversation_summary, extract_knowledge_signals
 from agent.core.web_research import WebResearchService
 from agent.core.vault_autonomy import VaultAutonomyService, render_managed_block
 from agent.core.context_material import ContextMaterialCoordinator
 from agent.core import study_workspace
-from agent.brain import BrainOrchestrator, BrainRequest
+from agent.brain import BrainRequest
 from agent.brain.errors import BrainError
 from agent.brain.schemas import IntentResult
 from agent.brain.model_gateway import BrainModelGateway
-from agent.runtime import PydanticAssistantRuntime
+from agent.core.structured_workflow import StructuredWorkflowRunner
 from agent.skills import build_skill_registry
 from agent.tools import build_tool_registry
 from agent.tools.change_set import ChangeSetTools
@@ -51,6 +55,7 @@ class AgentService:
         self.store = store or StateStore(self.vault / "90-Local-Only/Agent/agent.sqlite3")
         self.intake = IntakeService(self.vault, self.store)
         self.models = ModelProfileService(self.store, key_store)
+        self.model_proxy = PiModelProxy(self.models, self.store)
         self.web = WebResearchService(self.vault, self.store)
         self.autonomy = VaultAutonomyService(self.vault, self.store)
         self.context_material = ContextMaterialCoordinator(self.vault, self.store, self.intake, self.autonomy, self.apply_autonomous_vault_change)
@@ -62,9 +67,15 @@ class AgentService:
             allow_network=False,
         )
         self.skills = build_skill_registry(self.vault, self.store, self.tools, self.list_prepared, self.model_gateway)
-        self.brain = BrainOrchestrator(self.vault, self.store, self.skills, intent_classifier=self.model_gateway.classify_intent)
+        self.workflows = StructuredWorkflowRunner(self.vault, self.store, self.skills)
         self.brain_change_sets = ChangeSetTools(self.vault, self.store)
-        self.assistant_runtime = PydanticAssistantRuntime(self)
+        self.task_authorizations = TaskAuthorizationService(
+            self.vault, self.store, self.autonomy.classify,
+        )
+        self.reversible_transactions = ReversibleTransactionService(
+            self.vault, self.store, self.task_authorizations,
+        )
+        self.developer_workspace = DeveloperWorkspace(self.vault, self.store)
         self.store.recover_interrupted()
         self.log_path = self.vault / "90-Local-Only/Agent/logs/events.jsonl"
         self.sync_indexes()
@@ -88,18 +99,19 @@ class AgentService:
             "jobs": len(self.store.list_jobs()),
             "pid": os.getpid(),
             "runtime_id": self.runtime_id,
-            "brain_version": self.brain.version,
-            "assistant_runtime_version": self.assistant_runtime.version,
+            "workflow_version": self.workflows.version,
+            "assistant_runtime_version": "pi-agent-runtime/1",
+            "model_proxy_version": self.model_proxy.version,
             "schema_version": self.store.schema_version(),
         }
 
-    def submit_brain(self, body: dict[str, Any], idempotency_key: str = "", *, mode: str | None = None) -> dict[str, Any]:
+    def submit_workflow(self, body: dict[str, Any], idempotency_key: str = "", *, mode: str | None = None) -> dict[str, Any]:
         request_body = dict(body)
         if mode:
             request_body["mode"] = mode
         request = BrainRequest.from_dict(request_body, idempotency_key=idempotency_key)
-        result = self.brain.submit(request)
-        self.log("brain.submitted", {"run_id": result["id"], "correlation_id": result["correlation_id"], "intent": result.get("primary_intent"), "status": result["status"]})
+        result = self.workflows.submit(request)
+        self.log("workflow.submitted", {"run_id": result["id"], "correlation_id": result["correlation_id"], "workflow": result.get("primary_intent"), "status": result["status"]})
         return result
 
     def create_conversation(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -196,10 +208,6 @@ class AgentService:
         self.log("attachment.deleted", {"attachment_id": attachment_id})
         return result
 
-    @staticmethod
-    def _looks_like_revision(text: str) -> bool:
-        return any(token in text for token in ("不要拆", "只保留", "修改", "调整", "改成", "移到周末", "不是事实", "继续完善", "写详细"))
-
     def submit_intake(self, body: dict[str, Any], idempotency_key: str = "") -> dict[str, Any]:
         message = str(body.get("message") or "").strip()
         if not message or len(message) > 250_000:
@@ -252,16 +260,12 @@ class AgentService:
         context_material = self.context_material.prepare(conversation_id, message_row, attachments, body)
         resolved_message = str(context_material["resolvedMessage"])
         precise_intent = context_material["intent"]
-        outcome = decide_assistant_outcome(
-            message,
+        outcome = resolve_assistant_outcome(
+            intent=precise_intent,
             mode=str(body.get("mode") or "auto"),
             has_attachments=bool(attachments),
             personalization_enabled=bool(conversation.get("personalizationEnabled", True)),
         )
-        if precise_intent["writeRequested"]:
-            outcome = AssistantOutcome("propose_write", "resolved-explicit-write-request", True)
-        elif precise_intent["name"] == "organize_preview":
-            outcome = AssistantOutcome("create_artifact", "resolved-organize-preview", True)
         if precise_intent.get("needsTargetClarification"):
             return self._complete_local_intake_answer(
                 conversation_id, intake_id, message_row["id"], context_material,
@@ -276,7 +280,7 @@ class AgentService:
             )
         task_thread: dict[str, Any] | None = None
         active_artifact_id = str(body.get("active_artifact_id") or conversation.get("activeArtifactId") or "")
-        if active_artifact_id and not attachments and self._looks_like_revision(message):
+        if active_artifact_id and not attachments and body.get("artifact_revision") is True:
             task_thread = self.intake.create_task_thread(conversation_id, message_row["id"], "更新当前成果")
             try:
                 artifact = self.intake.revise_artifact(
@@ -335,7 +339,11 @@ class AgentService:
         try:
             if precise_intent.get("inheritedProposal"):
                 request_body["mode"] = "capture"
-            run = self.submit_brain(request_body, idempotency_key)
+            explicit_mode = str(request_body.get("mode") or "auto").casefold()
+            if explicit_mode == "auto":
+                explicit_mode = "material" if attachments else "capture" if outcome.kind == "propose_write" else "organize" if outcome.kind == "create_artifact" else "tutor"
+            request_body["mode"] = explicit_mode
+            run = self.submit_workflow(request_body, idempotency_key)
             self.intake.update_intake_item(intake_id, run["status"], 100, run["id"], run.get("error_code"))
             artifacts = self._artifacts_for_run(conversation_id, run, message_row["id"], attachments, message, outcome.kind)
             # A terse confirmation is already materialized by capture_text as
@@ -908,10 +916,12 @@ class AgentService:
         return self.store.get_brain_run(run_id, include_details=True)
 
     def cancel_brain_run(self, run_id: str) -> dict[str, Any]:
-        result = self.brain.cancel(run_id); self.log("brain.cancel-requested", {"run_id": run_id}); return result
+        self.store.request_brain_cancel(run_id)
+        self.log("workflow.cancel-requested", {"run_id": run_id})
+        return self.store.get_brain_run(run_id, include_details=True)
 
     def retry_brain_run(self, run_id: str) -> dict[str, Any]:
-        result = self.brain.retry(run_id); self.log("brain.retried", {"run_id": result["id"], "prior_run_id": run_id}); return result
+        result = self.workflows.retry(run_id); self.log("workflow.retried", {"run_id": result["id"], "prior_run_id": run_id}); return result
 
     def brain_events(self, run_id: str, after_sequence: int = 0) -> dict[str, Any]:
         run = self.get_brain_run(run_id)
@@ -948,13 +958,13 @@ class AgentService:
         }
 
     def brain_capabilities(self) -> dict[str, Any]:
-        return {"brain_version": self.brain.version, "skills": self.skills.definitions(), "tools": self.tools.definitions(), "writes_require_change_set": True, "reviewed_core_read_only": True}
+        return {"workflow_version": self.workflows.version, "skills": self.skills.definitions(), "tools": self.tools.definitions(), "pi_is_only_agent_loop": True, "reviewed_core_read_only": True}
 
     def brain_health(self) -> dict[str, Any]:
         profiles = self.list_model_profiles()
         routes = self.model_routing()
         return {
-            "ok": True, "brain_version": self.brain.version, "schema_version": self.store.schema_version(),
+            "ok": True, "workflow_version": self.workflows.version, "schema_version": self.store.schema_version(),
             "model_configured": any(item["configured"] and item["enabled"] for item in profiles),
             "model_routes": {key: bool(value.get("profileId")) for key, value in routes.items()},
             "fallback_available": True,
@@ -986,7 +996,7 @@ class AgentService:
         jobs = self.store.list_jobs()
         routes = self.model_routing()
         return {
-            "service": {"status": "online", "api_version": "v1", "brain_version": self.brain.version, "schema_version": self.store.schema_version(), "runtime_id": self.runtime_id},
+            "service": {"status": "online", "api_version": "v1", "workflow_version": self.workflows.version, "schema_version": self.store.schema_version(), "runtime_id": self.runtime_id},
             "models": [{"id": item["id"], "name": item["displayName"], "provider": item["providerType"], "base_url_host": urlparse(item["baseUrl"]).hostname or "", "configured": item["configured"], "model": item["defaultModel"]} for item in profiles],
             "brain_runs": self.store.list_brain_runs(20, 0),
             "indexes": {"reviewed": len(learning.scan_reviewed(self.vault)), "curriculum_candidates": len(self.store.list_curriculum_candidates("active")), "research_bundles": len(self.store.list_research_bundles(100, 0)), "pending_reviews": sum(item.get("review_state") == "pending" for item in self.list_reviews()), **counts},
@@ -1002,137 +1012,11 @@ class AgentService:
             "recent_error": redact(dict(latest_error)) if latest_error else None,
         }
 
-    def get_brain_change_set(self, change_set_id: str) -> dict[str, Any]:
-        record = self.store.get_brain_change_set(change_set_id)
-        return {**record, "writes": [{key: value for key, value in item.items() if key != "payload_path"} for item in record["writes"]]}
-
     def get_change_set(self, change_set_id: str) -> dict[str, Any]:
         return self.brain_change_sets.public_record(change_set_id)
 
     def diff_change_set(self, change_set_id: str) -> dict[str, Any]:
         return self.brain_change_sets.diff(change_set_id)
-
-    def apply_brain_change_set(self, change_set_id: str, confirmed: bool) -> dict[str, Any]:
-        record = self.store.get_brain_change_set(change_set_id)
-        result = self.brain_change_sets.apply({"change_set_id": change_set_id, "confirmed": confirmed})
-        run = self.store.get_brain_run(str(record["run_id"]), include_details=True)
-        if run["status"] == "awaiting_confirmation":
-            if run.get("current_step"):
-                self.store.complete_brain_step(str(run["current_step"]))
-            completion = {
-                "results": [
-                    {
-                        "kind": "change-set-applied",
-                        "change_set_id": change_set_id,
-                        "transaction_id": result.get("transaction_id"),
-                    }
-                ],
-                "reflection": {
-                    "writes_applied": len(record.get("writes") or []),
-                },
-                "applied_change_set": change_set_id,
-            }
-            self.store.finish_brain_run(
-                str(record["run_id"]),
-                "completed",
-                completion,
-            )
-            checkpoint = self.store.get_agent_run_checkpoint(str(record["run_id"])) or {}
-            state = dict(checkpoint.get("state") or {})
-            state["awaitingApproval"] = False
-            state["proposalState"] = "applied"
-            self.store.save_agent_run_checkpoint(
-                str(record["run_id"]),
-                "completed",
-                state,
-            )
-            self._append_assistant_lifecycle_event(
-                str(record["run_id"]),
-                "change.applied",
-                proposalId=change_set_id,
-                transactionId=result.get("transaction_id"),
-            )
-            self._append_assistant_lifecycle_event(
-                str(record["run_id"]),
-                "run.completed",
-                proposalId=change_set_id,
-                brainRunId=str(record["run_id"]),
-            )
-        self.log("brain-change-set.applied", {"change_set_id": change_set_id, "transaction_id": result.get("transaction_id")})
-        return result
-
-    def resume_assistant_run(
-        self,
-        run_id: str,
-        confirmed: bool,
-    ) -> dict[str, Any]:
-        if confirmed is not True:
-            raise PermissionError("explicit_confirmation_required")
-        run = self.store.get_brain_run(run_id)
-        checkpoint = self.store.get_agent_run_checkpoint(run_id) or {}
-        proposal_id = str(checkpoint.get("pendingApprovalId") or "")
-        if run["status"] == "completed":
-            return {"run": run, "idempotent": True}
-        if run["status"] != "awaiting_confirmation" or not proposal_id:
-            raise RuntimeError("assistant_run_not_awaiting_approval")
-        change_set = self.apply_brain_change_set(proposal_id, True)
-        return {
-            "run": self.store.get_brain_run(run_id),
-            "changeSet": change_set,
-            "idempotent": bool(change_set.get("idempotent")),
-        }
-
-    def reject_assistant_run(
-        self,
-        run_id: str,
-        reason: str = "",
-    ) -> dict[str, Any]:
-        run = self.store.get_brain_run(run_id, include_details=True)
-        checkpoint = self.store.get_agent_run_checkpoint(run_id) or {}
-        proposal_id = str(checkpoint.get("pendingApprovalId") or "")
-        if run["status"] == "cancelled":
-            return {"run": run, "idempotent": True}
-        if run["status"] != "awaiting_confirmation" or not proposal_id:
-            raise RuntimeError("assistant_run_not_awaiting_approval")
-        record = self.store.get_brain_change_set(proposal_id)
-        if record["state"] == "proposed":
-            self.store.update_brain_change_set(proposal_id, "rejected")
-        if run.get("current_step"):
-            self.store.complete_brain_step(str(run["current_step"]))
-        self.store.finish_brain_run(
-            run_id,
-            "cancelled",
-            {
-                "results": [
-                    {
-                        "kind": "change-set-rejected",
-                        "change_set_id": proposal_id,
-                        "reason": str(reason)[:500],
-                    }
-                ],
-                "reflection": {"writes_applied": 0},
-            },
-        )
-        state = dict(checkpoint.get("state") or {})
-        state["awaitingApproval"] = False
-        state["proposalState"] = "rejected"
-        self.store.save_agent_run_checkpoint(run_id, "rejected", state)
-        self._append_assistant_lifecycle_event(
-            run_id,
-            "proposal.rejected",
-            proposalId=proposal_id,
-            reason=str(reason)[:500],
-        )
-        self._append_assistant_lifecycle_event(
-            run_id,
-            "run.cancelled",
-            proposalId=proposal_id,
-        )
-        self.log(
-            "assistant.proposal-rejected",
-            {"run_id": run_id, "change_set_id": proposal_id},
-        )
-        return {"run": self.store.get_brain_run(run_id), "idempotent": False}
 
     def _append_assistant_lifecycle_event(
         self,
@@ -1282,7 +1166,7 @@ class AgentService:
         return {"items": self.store.list_curriculum_candidates(status), "status": status}
 
     def refresh_curriculum(self, body: dict[str, Any]) -> dict[str, Any]:
-        return self.submit_brain({**body, "text": str(body.get("text") or "根据当前知识状态生成学习计划"), "mode": "plan", "source": "curriculum"})
+        return self.submit_workflow({**body, "text": str(body.get("text") or "根据当前知识状态生成学习计划"), "mode": "plan", "source": "curriculum"})
 
     def curriculum_candidate_action(self, candidate_id: str, action: str, cooldown_until: str | None = None) -> dict[str, Any]:
         self.store.curriculum_action(candidate_id, action, cooldown_until); self.log("curriculum.action", {"candidate_id": candidate_id, "action": action}); return {"candidate_id": candidate_id, "action": action}
@@ -1446,7 +1330,7 @@ class AgentService:
         recent_adjustment = self.store.latest_daily_adjustment()
         profiles = self.models.list()
         routes = self.models.routing()
-        model_route = next((routes.get(name) for name in ("curriculum_planner", "daily_knowledge_generator", "brain_orchestrator") if routes.get(name, {}).get("profileId")), {})
+        model_route = next((routes.get(name) for name in ("curriculum_planner", "daily_knowledge_generator") if routes.get(name, {}).get("profileId")), {})
         profile = next((item for item in profiles if item["id"] == model_route.get("profileId")), None)
         return {
             **dashboard, "schemaVersion": 1, "generatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -1688,6 +1572,497 @@ class AgentService:
     def model_routing(self) -> dict[str, dict[str, str | None]]: return self.models.routing()
     def set_model_routing(self, routes: dict[str, dict[str, Any]]) -> dict[str, dict[str, str | None]]: return self.models.set_routing(routes)
 
+    def model_capabilities(self, profile_id: str = "") -> dict[str, Any]:
+        return self.model_proxy.capabilities(profile_id)
+
+    def probe_model_capabilities(self, profile_id: str) -> dict[str, Any]:
+        return self.model_proxy.probe(profile_id)
+
+    def stream_model_proxy(self, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
+        return self.model_proxy.stream(body)
+
+    def tool_contracts(self) -> dict[str, Any]:
+        # Pi receives a stable, provider-neutral tool surface. Legacy proposal
+        # tools stay available to the legacy runtime but are not exposed here.
+        permissions = {"read_only"}
+        items = [
+            item
+            for item in self.tools.definitions()
+            if str(item.get("permission_level") or "") in permissions
+        ]
+        markdown_write = {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "minLength": 1, "maxLength": 500},
+                "content": {"type": "string", "minLength": 1, "maxLength": 100000},
+                "category": {"type": "string", "maxLength": 80},
+            },
+            "required": ["path", "content"],
+            "additionalProperties": False,
+        }
+        common = {
+            "output_schema": {"type": "object", "additionalProperties": True},
+            "uses_network": False,
+            "mutates_state": True,
+            "timeout_seconds": 30,
+            "permission_level": "proposal",
+            "cancellable": False,
+            "max_result_bytes": 32000,
+        }
+        items.extend([
+            {
+                "name": "get_current_note",
+                "description": "读取当前 Turn 明确提供的活动笔记；path 必须来自 zhixu_turn_context.currentNote。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string", "minLength": 1, "maxLength": 500}},
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+                "output_schema": {"type": "object", "additionalProperties": True},
+                "uses_network": False,
+                "mutates_state": False,
+                "timeout_seconds": 20,
+                "permission_level": "read_only",
+                "idempotent": True,
+                "cancellable": False,
+                "max_result_bytes": 32000,
+            },
+            {
+                "name": "read_vault_note",
+                "description": "读取搜索结果中的一篇安全 Markdown 笔记正文；修改或综合前应先读取。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string", "minLength": 1, "maxLength": 500}},
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+                "output_schema": {"type": "object", "additionalProperties": True},
+                "uses_network": False,
+                "mutates_state": False,
+                "timeout_seconds": 20,
+                "permission_level": "read_only",
+                "idempotent": True,
+                "cancellable": False,
+                "max_result_bytes": 32000,
+            },
+            {
+                "name": "find_related_notes",
+                "description": "读取指定笔记的出链、反向链接和图谱相关笔记。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string", "minLength": 1, "maxLength": 500}},
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+                "output_schema": {"type": "object", "additionalProperties": True},
+                "uses_network": False,
+                "mutates_state": False,
+                "timeout_seconds": 20,
+                "permission_level": "read_only",
+                "idempotent": True,
+                "cancellable": False,
+                "max_result_bytes": 32000,
+            },
+            {
+                "name": "search_public_web",
+                "description": "在当前 Turn 已授权联网时搜索公开网页；结果只是待验证外部资料。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "minLength": 1, "maxLength": 500},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 10},
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+                "output_schema": {"type": "object", "additionalProperties": True},
+                "uses_network": True,
+                "mutates_state": False,
+                "timeout_seconds": 45,
+                "permission_level": "read_only",
+                "idempotent": True,
+                "cancellable": True,
+                "max_result_bytes": 32000,
+            },
+            {
+                "name": "fetch_public_url",
+                "description": "在当前 Turn 已授权联网时安全抓取一个公开 URL；正文以不可信证据边界返回。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"url": {"type": "string", "minLength": 8, "maxLength": 2000}},
+                    "required": ["url"],
+                    "additionalProperties": False,
+                },
+                "output_schema": {"type": "object", "additionalProperties": True},
+                "uses_network": True,
+                "mutates_state": False,
+                "timeout_seconds": 45,
+                "permission_level": "read_only",
+                "idempotent": True,
+                "cancellable": True,
+                "max_result_bytes": 48000,
+            },
+            {
+                **common,
+                "name": "plan_vault_change",
+                "description": "为当前任务生成内部 Markdown 写入计划和事后 Diff；不会等待人工审批。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "minLength": 1, "maxLength": 200},
+                        "writes": {"type": "array", "minItems": 1, "maxItems": 10, "items": markdown_write},
+                    },
+                    "required": ["title", "writes"],
+                    "additionalProperties": False,
+                },
+                "idempotent": False,
+            },
+            {
+                **common,
+                "name": "apply_vault_change",
+                "description": "在当前 Task Authorization 内快照、原子应用并校验内部 Change Set；返回可撤销 Action。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"change_set_id": {"type": "string", "minLength": 1, "maxLength": 128}},
+                    "required": ["change_set_id"],
+                    "additionalProperties": False,
+                },
+                "idempotent": True,
+            },
+            {
+                **common,
+                "name": "undo_agent_action",
+                "description": "冲突安全地撤销一个由当前 Harness 完成的可逆 Vault Action。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"action_id": {"type": "string", "minLength": 1, "maxLength": 128}},
+                    "required": ["action_id"],
+                    "additionalProperties": False,
+                },
+                "idempotent": True,
+            },
+        ])
+        developer_common = {
+            "output_schema": {"type": "object", "additionalProperties": True},
+            "uses_network": False,
+            "mutates_state": True,
+            "timeout_seconds": 310,
+            "permission_level": "proposal",
+            "idempotent": False,
+            "cancellable": True,
+            "max_result_bytes": 64000,
+        }
+        workspace_id = {"type": "string", "minLength": 1, "maxLength": 128}
+        run_payload = {
+            "type": "object",
+            "properties": {
+                "workspace_id": workspace_id,
+                "cwd": {"type": "string", "maxLength": 500, "default": "."},
+                "timeoutMs": {"type": "integer", "minimum": 100, "maximum": 300000},
+                "networkPolicy": {"type": "string", "enum": ["deny"]},
+                "expectedOutputs": {"type": "array", "maxItems": 50, "items": {"type": "string", "maxLength": 500}},
+            },
+            "required": ["workspace_id"],
+            "additionalProperties": False,
+        }
+        items.extend([
+            {**developer_common, "name": "create_git_worktree", "description": "为当前开发任务创建隔离的 Git worktree 和任务分支。", "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}},
+            {**developer_common, "mutates_state": False, "idempotent": True, "name": "read_workspace_file", "description": "读取当前受控开发 worktree 内的 UTF-8 文件。", "input_schema": {"type": "object", "properties": {"workspace_id": workspace_id, "path": {"type": "string", "minLength": 1, "maxLength": 500}}, "required": ["workspace_id", "path"], "additionalProperties": False}},
+            {**developer_common, "name": "write_workspace_file", "description": "在当前受控 worktree 内原子写入文件，可带 base hash 防止覆盖并发修改。", "input_schema": {"type": "object", "properties": {"workspace_id": workspace_id, "path": {"type": "string", "minLength": 1, "maxLength": 500}, "content": {"type": "string", "maxLength": 1000000}, "base_hash": {"type": "string", "maxLength": 128}}, "required": ["workspace_id", "path", "content"], "additionalProperties": False}},
+            {**developer_common, "name": "run_command", "description": "用结构化 argv 在 macOS sandbox 内运行白名单开发命令；默认断网且不继承密钥。", "input_schema": {**run_payload, "properties": {**run_payload["properties"], "executable": {"type": "string", "enum": ["git", "npm", "node", "python", "python3", "pytest", "rg", "ls", "find", "make"]}, "args": {"type": "array", "maxItems": 100, "items": {"type": "string", "maxLength": 4000}}}, "required": ["workspace_id", "executable", "args"]}},
+            {**developer_common, "name": "run_bash", "description": "仅在当前 worktree 内运行受 macOS sandbox 和永久拒绝列表约束的 zsh 脚本。优先使用 run_command。", "input_schema": {**run_payload, "properties": {**run_payload["properties"], "script": {"type": "string", "minLength": 1, "maxLength": 40000}, "riskExplanation": {"type": "string", "maxLength": 2000}}, "required": ["workspace_id", "script", "riskExplanation"]}},
+            {**developer_common, "mutates_state": False, "idempotent": True, "name": "git_status", "description": "查看受控任务分支状态。", "input_schema": {"type": "object", "properties": {"workspace_id": workspace_id}, "required": ["workspace_id"], "additionalProperties": False}},
+            {**developer_common, "mutates_state": False, "idempotent": True, "name": "git_diff", "description": "查看受控任务分支未提交 Diff。", "input_schema": {"type": "object", "properties": {"workspace_id": workspace_id}, "required": ["workspace_id"], "additionalProperties": False}},
+            {**developer_common, "name": "git_commit", "description": "在受控任务分支创建本地提交，不推送网络。", "input_schema": {"type": "object", "properties": {"workspace_id": workspace_id, "message": {"type": "string", "minLength": 1, "maxLength": 200}}, "required": ["workspace_id", "message"], "additionalProperties": False}},
+            {**developer_common, "name": "merge_task_branch", "description": "仅在主项目和任务分支都干净时，将已提交任务分支合并到当前项目；失败自动 abort。", "input_schema": {"type": "object", "properties": {"workspace_id": workspace_id}, "required": ["workspace_id"], "additionalProperties": False}},
+            {**developer_common, "name": "activate_runtime_upgrade", "description": "验证已合并任务并请求 Obsidian 进程管理器执行固定检查、构建、安装、Runtime 重启和健康检查；失败时自动调用 rollback_task_branch。", "input_schema": {"type": "object", "properties": {"workspace_id": workspace_id}, "required": ["workspace_id"], "additionalProperties": False}},
+            {**developer_common, "name": "rollback_task_branch", "description": "删除当前任务 worktree 和任务分支，撤销未合并的开发任务。", "input_schema": {"type": "object", "properties": {"workspace_id": workspace_id}, "required": ["workspace_id"], "additionalProperties": False}},
+            {**developer_common, "mutates_state": False, "idempotent": True, "name": "validate_skill_draft", "description": "校验受控 worktree 中的 Skill Draft，不启用、不读取密钥。", "input_schema": {"type": "object", "properties": {"workspace_id": workspace_id, "path": {"type": "string", "minLength": 1, "maxLength": 500}}, "required": ["workspace_id", "path"], "additionalProperties": False}},
+            {**developer_common, "mutates_state": False, "idempotent": True, "name": "validate_mcp_server", "description": "校验受控 worktree 中的 MCP manifest 与隔离权限。", "input_schema": {"type": "object", "properties": {"workspace_id": workspace_id, "path": {"type": "string", "minLength": 1, "maxLength": 500}}, "required": ["workspace_id", "path"], "additionalProperties": False}},
+            {**developer_common, "mutates_state": False, "idempotent": False, "name": "probe_mcp_server", "description": "在断网、最小环境的 sandbox 中临时启动 MCP 并执行 initialize 与 tools/list。", "input_schema": {"type": "object", "properties": {"workspace_id": workspace_id, "path": {"type": "string", "minLength": 1, "maxLength": 500}}, "required": ["workspace_id", "path"], "additionalProperties": False}},
+        ])
+        return {"schemaVersion": 1, "items": items}
+
+    def register_task_authorization(self, body: dict[str, Any]) -> dict[str, Any]:
+        authorization = dict(body.get("taskAuthorization") or {})
+        authorization["conversationId"] = str(
+            body.get("conversationId") or authorization.get("sessionId") or ""
+        )
+        authorization["model"] = str(body.get("model") or "")
+        created = self.task_authorizations.create(authorization)
+        conversation_id = str(authorization.get("conversationId") or "")
+        objective = str(authorization.get("objective") or "").strip()
+        source_message_id = str(authorization.get("sourceMessageId") or "")
+        if conversation_id and objective and source_message_id:
+            self.intake.ensure_runtime_conversation(conversation_id, objective)
+            self.intake.append_message(
+                conversation_id,
+                "user",
+                objective,
+                "pi-runtime",
+                message_id=source_message_id,
+            )
+        return {"taskAuthorization": created}
+
+    def append_pi_events(self, body: dict[str, Any]) -> dict[str, Any]:
+        run_id = str(body.get("runId") or "")
+        events = body.get("events")
+        if not run_id or not isinstance(events, list) or len(events) > 1000:
+            raise ValueError("pi_events_invalid")
+        last = self.store.append_pi_agent_events(run_id, events)
+        terminal = next(
+            (item for item in reversed(events) if item.get("type") in {"done", "error"}),
+            None,
+        )
+        if terminal:
+            status = (
+                "completed"
+                if terminal.get("type") == "done" and terminal.get("status") != "cancelled"
+                else "cancelled" if terminal.get("status") == "cancelled" else "failed"
+            )
+            self.store.complete_pi_run(run_id, status, str(terminal.get("code") or ""))
+            run = self.store.get_pi_run(run_id)
+            text = "".join(
+                str(item.get("content") or "")
+                for item in self.store.list_pi_agent_events(run_id, 0, 5000)
+                if item.get("type") == "text"
+            ).strip()
+            if text:
+                session = self.store.get_pi_session(str(run["session_id"]))
+                conversation_id = str(session.get("conversation_id") or run["session_id"])
+                self.intake.append_message(
+                    conversation_id,
+                    "assistant",
+                    text,
+                    "pi-runtime",
+                    message_id=f"pi-assistant-{run_id}",
+                )
+        return {"runId": run_id, "lastEventSequence": last}
+
+    def pi_run_events(self, run_id: str, after_sequence: int = 0) -> dict[str, Any]:
+        run = self.store.get_pi_run(run_id)
+        return {
+            "run": run,
+            "items": self.store.list_pi_agent_events(run_id, after_sequence),
+            "schemaVersion": 1,
+        }
+
+    def pi_session(self, session_id: str) -> dict[str, Any]:
+        try:
+            session: dict[str, Any] | None = self.store.get_pi_session(session_id)
+            conversation_id = str(session.get("conversation_id") or session_id)
+        except ValueError:
+            session = None
+            conversation_id = session_id
+        try:
+            history = self.intake.get_conversation(conversation_id).get("messages", [])
+        except ValueError:
+            history = []
+        return {
+            "session": session,
+            "history": [
+                {
+                    "id": str(item.get("id") or ""),
+                    "role": str(item.get("role") or ""),
+                    "content": str(item.get("content") or ""),
+                    "createdAt": str(item.get("createdAt") or ""),
+                }
+                for item in history
+                if item.get("role") in {"user", "assistant"} and item.get("content")
+            ],
+            "schemaVersion": 2,
+        }
+
+    def control_pi_run(self, run_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        control_type = str(body.get("type") or "")
+        text = str(body.get("text") or "").strip()
+        if control_type not in {"steering", "follow_up"} or not text or len(text) > 20_000:
+            raise ValueError("pi_control_invalid")
+        run = self.store.get_pi_run(run_id)
+        if str(run.get("status") or "") != "running":
+            raise RuntimeError("pi_run_not_running")
+        entry = self.store.record_pi_control(run_id, control_type, {"text": text})
+        return {"control": entry}
+
+    def cancel_pi_run(self, run_id: str) -> dict[str, Any]:
+        run = self.store.get_pi_run(run_id)
+        if str(run.get("status") or "") not in {"completed", "failed", "cancelled"}:
+            self.store.complete_pi_run(run_id, "cancelled", "user_cancelled")
+        return {"runId": run_id, "status": "cancelled"}
+
+    def get_agent_action(self, action_id: str) -> dict[str, Any]:
+        return {"action": self.reversible_transactions.get(action_id)}
+
+    def get_agent_action_diff(self, action_id: str) -> dict[str, Any]:
+        return self.reversible_transactions.diff(action_id)
+
+    def undo_agent_action(self, action_id: str) -> dict[str, Any]:
+        return {"action": self.reversible_transactions.undo(action_id)}
+
+    def call_runtime_tool(self, body: dict[str, Any]) -> dict[str, Any]:
+        tool_name = str(body.get("toolName") or "")
+        arguments = body.get("arguments")
+        if not tool_name or not isinstance(arguments, dict):
+            raise ValueError("runtime_tool_request_invalid")
+        run_id = str(body.get("runId") or "")
+        turn_id = str(body.get("turnId") or "")
+        call_id = str(body.get("toolCallId") or "")
+        if not run_id or not turn_id or not call_id:
+            raise ValueError("runtime_tool_identity_required")
+        stable_writes = {"plan_vault_change", "apply_vault_change", "undo_agent_action"}
+        stable_reads = {
+            "get_current_note", "read_vault_note", "find_related_notes",
+            "search_public_web", "fetch_public_url",
+        }
+        developer_tools = {
+            "create_git_worktree", "read_workspace_file", "write_workspace_file",
+            "run_command", "run_bash", "git_status", "git_diff", "git_commit",
+            "merge_task_branch", "activate_runtime_upgrade", "rollback_task_branch", "validate_skill_draft", "validate_mcp_server",
+            "probe_mcp_server",
+        }
+        definition = None if tool_name in stable_writes | stable_reads | developer_tools else self.tools.definition(tool_name)
+        uses_network = tool_name in {"search_public_web", "fetch_public_url"} or bool(definition and definition.uses_network)
+        if uses_network and body.get("networkAuthorized") is not True:
+            return {
+                "ok": False,
+                "error": {
+                    "code": "network_authorization_required",
+                    "message": "当前任务未授权联网",
+                    "recoverable": True,
+                    "retryable": False,
+                },
+                "isError": True,
+            }
+        try:
+            authorization_id = str(body.get("taskAuthorizationId") or "")
+            if tool_name == "plan_vault_change":
+                result = self.brain_change_sets.create({
+                    "run_id": run_id,
+                    "task_authorization_id": authorization_id,
+                    "title": str(arguments.get("title") or "Agent 写入计划"),
+                    "writes": list(arguments.get("writes") or []),
+                })
+                _, bundle = self.brain_change_sets.prepared(str(result["id"]))
+                try:
+                    planned = self.task_authorizations.plan(
+                        authorization_id,
+                        list(bundle["writes"]),
+                    )
+                except Exception:
+                    self.brain_change_sets.update_state(str(result["id"]), "failed")
+                    raise
+                result = {
+                    **result,
+                    "authorization": planned["authorization"],
+                    "diff": self.brain_change_sets.diff(str(result["id"])),
+                }
+            elif tool_name == "apply_vault_change":
+                result = self.reversible_transactions.apply_change_set(
+                    self.brain_change_sets,
+                    {
+                        "change_set_id": str(arguments.get("change_set_id") or ""),
+                        "task_authorization_id": authorization_id,
+                        "turn_id": turn_id,
+                        "source_message_id": str(body.get("sourceMessageId") or ""),
+                    },
+                )
+            elif tool_name == "undo_agent_action":
+                result = self.reversible_transactions.undo(
+                    str(arguments.get("action_id") or ""),
+                )
+            elif tool_name in {"get_current_note", "read_vault_note"}:
+                result = self.tools.call(
+                    "read_note_excerpt",
+                    {"path": str(arguments.get("path") or "")},
+                    run_id=run_id,
+                    step_id=f"{turn_id}:{call_id}",
+                    allowed_permissions=("read_only",),
+                    record_event=False,
+                )
+            elif tool_name == "find_related_notes":
+                result = self.tools.call(
+                    "get_related_notes",
+                    {"path": str(arguments.get("path") or "")},
+                    run_id=run_id,
+                    step_id=f"{turn_id}:{call_id}",
+                    allowed_permissions=("read_only",),
+                    record_event=False,
+                )
+            elif tool_name == "search_public_web":
+                result = self.web.search(
+                    str(arguments.get("query") or ""),
+                    max(1, min(10, int(arguments.get("limit") or 8))),
+                )
+            elif tool_name == "fetch_public_url":
+                result = self.web.fetch_for_model(str(arguments.get("url") or ""))
+            elif tool_name == "create_git_worktree":
+                result = self.developer_workspace.create(run_id)
+                self.task_authorizations.authorize_workspace(
+                    authorization_id, run_id, str(result["id"]), str(result["project"]),
+                )
+            elif tool_name in developer_tools:
+                workspace_id_value = str(arguments.get("workspace_id") or "")
+                self.task_authorizations.validate_workspace(
+                    authorization_id, run_id, workspace_id_value,
+                )
+                if tool_name == "read_workspace_file":
+                    result = self.developer_workspace.read(workspace_id_value, run_id, str(arguments.get("path") or ""))
+                elif tool_name == "write_workspace_file":
+                    result = self.developer_workspace.write(workspace_id_value, run_id, str(arguments.get("path") or ""), str(arguments.get("content") or ""), str(arguments.get("base_hash") or ""))
+                elif tool_name == "run_command":
+                    result = self.developer_workspace.run_command(workspace_id_value, run_id, arguments)
+                elif tool_name == "run_bash":
+                    result = self.developer_workspace.run_bash(workspace_id_value, run_id, arguments)
+                elif tool_name == "git_status":
+                    result = self.developer_workspace.git_status(workspace_id_value, run_id)
+                elif tool_name == "git_diff":
+                    result = self.developer_workspace.git_diff(workspace_id_value, run_id)
+                elif tool_name == "git_commit":
+                    result = self.developer_workspace.git_commit(workspace_id_value, run_id, str(arguments.get("message") or ""))
+                elif tool_name == "merge_task_branch":
+                    result = self.developer_workspace.merge(workspace_id_value, run_id)
+                elif tool_name == "activate_runtime_upgrade":
+                    result = self.developer_workspace.activation_request(workspace_id_value, run_id)
+                elif tool_name == "rollback_task_branch":
+                    result = self.developer_workspace.rollback(workspace_id_value, run_id)
+                elif tool_name == "validate_skill_draft":
+                    result = self.developer_workspace.validate_skill(workspace_id_value, run_id, str(arguments.get("path") or ""))
+                elif tool_name == "validate_mcp_server":
+                    result = self.developer_workspace.validate_mcp(workspace_id_value, run_id, str(arguments.get("path") or ""))
+                else:
+                    result = self.developer_workspace.probe_mcp(workspace_id_value, run_id, str(arguments.get("path") or ""))
+            else:
+                result = self.tools.call(
+                    tool_name,
+                    arguments,
+                    run_id=run_id,
+                    step_id=f"{turn_id}:{call_id}",
+                    allowed_permissions=("read_only",),
+                    # Pi lifecycle events are persisted in the assistant runtime
+                    # event store. The legacy tool_events table is FK-bound to
+                    # brain_runs and must not receive Pi run identifiers.
+                    record_event=False,
+                )
+            return {
+                "ok": True,
+                "content": result,
+                "isError": False,
+                "recoverable": False,
+                "action": result if tool_name in {"apply_vault_change", "undo_agent_action"} else None,
+            }
+        except (ValueError, FileNotFoundError, PermissionError, RuntimeError) as exc:
+            return {
+                "ok": False,
+                "error": {
+                    "code": str(exc)[:160] or type(exc).__name__,
+                    "message": "工具未能完成；请根据该 Observation 调整步骤",
+                    "recoverable": not isinstance(exc, PermissionError),
+                    "retryable": isinstance(exc, (FileNotFoundError, RuntimeError)),
+                },
+                "isError": True,
+            }
+
     def chat(self, body: dict[str, Any], stream: bool = False) -> dict[str, Any]:
         routes = self.model_routing(); route = routes.get("assistant_chat") or routes.get("assistant", {})
         profile_id = str(body.get("profile_id") or route.get("profileId") or "")
@@ -1718,44 +2093,6 @@ class AgentService:
         with (root / f"{conversation_id}.jsonl").open("a", encoding="utf-8") as handle: handle.write(json.dumps(record, ensure_ascii=False) + "\n")
         self.log("chat.completed", {"conversation_id": conversation_id, "profile_id": profile_id, "model": model, "message_count": len(clean)})
         return {"conversation_id": conversation_id, "model": model, "message": {"role": "assistant", "content": content}, "streaming": False, "stream_requested": stream}
-
-    def assistant_stream(self, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
-        """Stream one assistant turn through the single PydanticAI runtime."""
-        return self.assistant_runtime.stream(body)
-
-    def confirm_assistant_run(
-        self,
-        run_id: str,
-        confirmed: bool,
-        *,
-        answer: str = "",
-        scope: str = "",
-    ) -> Iterator[dict[str, Any]]:
-        """Resume the same deferred PydanticAI run after inline confirmation."""
-        return self.assistant_runtime.confirm(
-            run_id,
-            confirmed,
-            answer=answer,
-            scope=scope,
-        )
-
-    def assistant_run_events(
-        self,
-        run_id: str,
-        after_sequence: int = 0,
-    ) -> dict[str, Any]:
-        """Return persisted runtime events for reconnect/resume."""
-        return self.assistant_runtime.events(run_id, after_sequence)
-
-    def cancel_assistant_run(self, run_id: str) -> dict[str, Any]:
-        return self.assistant_runtime.cancel(run_id)
-
-    def compact_assistant_run(self, run_id: str) -> dict[str, Any]:
-        return self.assistant_runtime.compact(run_id)
-
-    def fork_assistant_run(self, run_id: str, sequence: int | None = None) -> dict[str, Any]:
-        return self.assistant_runtime.fork(run_id, sequence)
-
 
     def _assistant_grounding_text(self, attachments: list[dict[str, Any]], active_note: dict[str, Any]) -> str:
         sections: list[str] = []

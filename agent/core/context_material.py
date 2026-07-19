@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-"""Legacy intake/context material pipeline.
+"""Legacy structured intake and context-material pipeline.
 
-The keyword classifier in this module is retained only for the legacy
-``submit_intake`` workflow. The canonical Pydantic Assistant Runtime must not
-import or consume it; assistant tool selection is model-driven.
+The Pi assistant never routes through this module.  The remaining intake API
+uses explicit mode/attachment fields and must not infer actions from prose.
 """
 
 import hashlib
@@ -32,22 +31,6 @@ PRONOUNS = (
     "那个方法", "上述方法", "刚才的方法", "那个概念", "上述概念", "这篇", "这个材料",
     "刚才那个", "前面说的", "把它保存", "保存它", "把它整理", "继续推导", "更新那篇笔记", "第二个",
 )
-SAVE_MARKERS = (
-    "整理到 Obsidian", "保存到 Obsidian", "存入 Obsidian", "写入 Obsidian", "保存到知识库", "存入知识库",
-    "加入知识库", "整理并保存", "保存一下", "保存它", "把它保存", "写成笔记", "整理成笔记", "写进笔记",
-    "更新当前笔记", "加入当前笔记", "补充到当前笔记", "补进当前笔记", "补充当前笔记",
-    "补充进当前笔记", "追加到当前笔记", "追加进当前笔记", "添加到当前笔记", "添加进当前笔记",
-)
-NO_SAVE_MARKERS = (
-    "不要保存", "不保存", "只整理", "整理但不保存", "只预览",
-    "do not save", "don't save", "preview only",
-)
-ORGANIZE_PREVIEW_MARKERS = (
-    "整理一下", "整理这段", "整理刚才", "整理这个", "整理成预览", "整理为预览", "先整理", "帮我整理",
-    "梳理一下", "归纳一下", "提炼一下",
-    "organize as a preview", "organize into a preview", "organize this into a preview",
-)
-METHOD_HINTS = ("method", "方法", "算法", "估计量", "检验", "模型", "matching", "regression")
 ENTITY_STOP = {
     "Obsidian", "PDF", "AI", "Agent", "Markdown", "这个方法", "那个方法", "上述方法", "刚才的方法",
     "这个概念", "那个概念", "上述概念", "当前笔记", "知识库",
@@ -127,84 +110,26 @@ def extract_entities(text: str, message_id: str = "") -> list[dict[str, Any]]:
     return result[:8]
 
 
-def classify_assistant_intent(message: str, focus: dict[str, Any], attachments: list[dict[str, Any]], active_note: dict[str, Any]) -> dict[str, Any]:
-    text = " ".join(str(message).split())
-    lower = text.casefold()
-    path_write = bool(re.search(
-        r"(?:保存|写入|存入|整理).{0,16}(?:到|进)\s*(?:01-Inbox|10-Inbox|10-Sources|20-Knowledge|30-Learning|40-Projects)/",
-        text,
-        re.I,
-    ))
-    save = (any(marker.casefold() in lower for marker in SAVE_MARKERS) or path_write) and not any(marker.casefold() in lower for marker in NO_SAVE_MARKERS)
-    active_method = focus.get("activeMethod")
-    current_note_write = any(marker in text for marker in (
-        "更新当前笔记", "加入当前笔记", "写入当前笔记", "补充到当前笔记", "补进当前笔记",
-        "补充进当前笔记", "补充当前笔记", "追加到当前笔记", "追加进当前笔记", "添加到当前笔记",
-        "添加进当前笔记", "更新到我当前笔记", "加到当前笔记", "更新当前打开的笔记",
-    )) or bool(re.search(r"(?:补充|追加|添加|写入|更新).{0,4}(?:到|进)?(?:我)?(?:的)?当前(?:打开的)?笔记", text))
-    if current_note_write:
-        name = "update_current_note"
-    elif any(marker in text for marker in ("加入今天", "放到今天", "安排到今天")):
-        name = "create_daily_task"
-    elif save and (active_method or any(hint in lower for hint in METHOD_HINTS)):
-        name = "create_method_note"
-    elif save and (any(item.get("kind") == "pdf" for item in attachments) or str((focus.get("activeMaterial") or {}).get("type") or "") == "paper"):
-        name = "create_source_note"
-    elif save and any(item.get("kind") == "url" for item in attachments):
-        name = "create_source_note"
-    elif save:
-        name = "organize_and_save"
-    elif any(marker.casefold() in lower for marker in ORGANIZE_PREVIEW_MARKERS):
+def structured_intake_intent(
+    *, mode: str, attachments: list[dict[str, Any]], active_note: dict[str, Any],
+    requested_output: str = "", requested_destination: str = "",
+) -> dict[str, Any]:
+    """Build legacy intake intent exclusively from structured request fields."""
+    normalized = str(mode or "auto").casefold()
+    if normalized in {"capture", "save"}:
+        name = "update_current_note" if requested_destination and active_note else "organize_and_save"
+    elif requested_output and requested_output != "auto":
+        name = "answer_question"
+    elif normalized in {"material", "research", "plan", "organize"} or attachments:
         name = "organize_preview"
-    elif any(marker in text for marker in ("继续", "接着", "再讲", "继续推导")):
-        name = "continue_explanation"
     else:
         name = "answer_question"
     return {
         "name": name, "writeRequested": name in {"organize_and_save", "update_current_note", "create_source_note", "create_concept_note", "create_method_note", "create_topic_note"},
-        "requestedOutput": "method_note" if name == "create_method_note" else "source_note" if name == "create_source_note" else "existing_note_update" if name == "update_current_note" else "auto",
-        "requestedDestination": str(active_note.get("path") or "") if name == "update_current_note" else "",
-        "confidence": .98 if save or name == "update_current_note" else .9,
+        "requestedOutput": requested_output or ("existing_note_update" if name == "update_current_note" else "auto"),
+        "requestedDestination": requested_destination if name == "update_current_note" else "",
+        "confidence": 1.0,
     }
-
-
-_SHORT_WRITE_CONFIRMATION = re.compile(r"^(?:写入|保存|确认写入|执行写入|就这样写入|按这个写入|按此写入)[。.!！]?$", re.I)
-_WRITE_STATUS_QUESTION = re.compile(r"(?:写入|保存).{0,8}(?:到哪里|到哪了|了吗|没有|状态|结果)|(?:写到|存到).{0,5}(?:哪里|哪了)", re.I)
-_PROPOSED_TARGET = re.compile(
-    r"(?:目标路径|目标位置|写入到|整理到|保存到)?[：:\s`]*"
-    r"((?:01-Inbox|10-Sources|20-Knowledge|30-Learning|40-Projects)/[^\n`]+?\.md)",
-    re.I,
-)
-
-
-def _pending_write_from_recent(message: str, recent: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Resolve a terse confirmation against the last explicit assistant proposal.
-
-    The inherited body stays in the private conversation/request files.  Only the
-    target path and source message id are later copied into structured metadata.
-    """
-    if not _SHORT_WRITE_CONFIRMATION.fullmatch(" ".join(str(message).split())):
-        return None
-    for item in reversed(recent[:-1] if recent and str(recent[-1].get("role") or "") == "user" else recent):
-        if str(item.get("role") or "") != "assistant":
-            continue
-        content = str(item.get("content") or "").strip()
-        target_match = _PROPOSED_TARGET.search(content)
-        if not target_match:
-            continue
-        target = target_match.group(1).strip().replace("\\", "/")
-        if ".." in Path(target).parts or not target.endswith(".md"):
-            continue
-        body = re.split(r"(?im)^##\s*(?:✍️\s*)?(?:拟写入计划|写入计划|保存计划)\s*$", content, maxsplit=1)[0].strip()
-        if not body:
-            continue
-        return {
-            "targetPath": target,
-            "title": Path(target).stem,
-            "content": body,
-            "sourceMessageId": str(item.get("id") or ""),
-        }
-    return None
 
 
 class ConversationFocusService:
@@ -676,26 +601,12 @@ class ContextMaterialCoordinator:
         focus = self.focus.resolve(input_bundle); input_bundle["conversationFocus"] = focus
         resolved = self.resolved_message(str(message.get("content") or ""), focus)
         effective_attachments = list(input_bundle.get("attachments") or [])
-        intent = classify_assistant_intent(resolved, focus, effective_attachments, input_bundle.get("currentNote") or {})
-        pending_write = _pending_write_from_recent(resolved, list(input_bundle.get("recentMessages") or []))
-        if pending_write:
-            input_bundle["pendingWrite"] = pending_write
-            resolved = str(pending_write["content"])
-            intent = {
-                "name": "organize_and_save", "writeRequested": True, "requestedOutput": "existing_note_update",
-                "requestedDestination": str(pending_write["targetPath"]), "confidence": .99,
-                "inheritedProposal": True, "sourceMessageId": str(pending_write["sourceMessageId"]),
-            }
-        elif _SHORT_WRITE_CONFIRMATION.fullmatch(" ".join(str(resolved).split())):
-            intent = {
-                "name": "answer_question", "writeRequested": False, "requestedOutput": "clarification",
-                "requestedDestination": "", "confidence": .99, "needsTargetClarification": True,
-            }
-        elif _WRITE_STATUS_QUESTION.search(resolved):
-            intent = {
-                "name": "answer_question", "writeRequested": False, "requestedOutput": "write_status",
-                "requestedDestination": "", "confidence": .99, "writeStatusQuery": True,
-            }
+        intent = structured_intake_intent(
+            mode=str(body.get("mode") or "auto"), attachments=effective_attachments,
+            active_note=input_bundle.get("currentNote") or {},
+            requested_output=str(body.get("requested_output") or ""),
+            requested_destination=str(body.get("requested_destination") or ""),
+        )
         input_bundle["requestedOutput"] = intent["requestedOutput"]; input_bundle["requestedDestination"] = intent["requestedDestination"]
         bundle_id = "material-bundle-" + hashlib.sha256(f"{conversation_id}|{message.get('id')}|{resolved}".encode()).hexdigest()[:24]
         understanding, units = self.materials.understand(input_bundle, focus, intent)

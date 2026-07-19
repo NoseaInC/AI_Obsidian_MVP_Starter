@@ -5,23 +5,6 @@ import urllib.error
 from typing import Any
 
 from .errors import BrainError
-from .schemas import INTENTS
-
-
-INTENT_SCHEMA = {
-    "name": "brain_intent",
-    "schema": {
-        "type": "object",
-        "properties": {
-            "primary_intent": {"type": "string", "enum": sorted(INTENTS)},
-            "secondary_intents": {"type": "array", "items": {"type": "string", "enum": sorted(INTENTS)}, "maxItems": 3},
-            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-        },
-        "required": ["primary_intent", "secondary_intents", "confidence"],
-        "additionalProperties": False,
-    },
-}
-
 CURRICULUM_SCHEMA = {
     "name": "daily_curriculum_candidates",
     "schema": {
@@ -174,7 +157,7 @@ class BrainModelGateway:
         }
 
     def generate_curriculum_candidates(self, learning_state: list[dict[str, Any]]) -> dict[str, Any] | None:
-        route = self._route("curriculum_planner", aliases=("daily_knowledge_generator", "brain_orchestrator"))
+        route = self._route("curriculum_planner", aliases=("daily_knowledge_generator",))
         if route is None:
             return None
         profile_id, model = route
@@ -192,14 +175,7 @@ class BrainModelGateway:
             )},
             {"role": "user", "content": json.dumps({"existing_knowledge": bounded, "mainline_ratio": .7, "weekday_budget_minutes": 25}, ensure_ascii=False)},
         ]
-        result = self.structured("curriculum_planner", messages, CURRICULUM_SCHEMA, aliases=("daily_knowledge_generator", "brain_orchestrator"))
+        result = self.structured("curriculum_planner", messages, CURRICULUM_SCHEMA, aliases=("daily_knowledge_generator",))
         if result is None:
             return None
         return {**result, "_profile_id": profile_id, "_model": model}
-
-    def classify_intent(self, request: Any) -> dict[str, Any]:
-        messages = [
-            {"role": "system", "content": f"只判断用户意图并返回符合 schema 的 JSON。primary_intent 和 secondary_intents 只能从这些值中选择：{', '.join(sorted(INTENTS))}。不得生成路径、URL、命令或正文。"},
-            {"role": "user", "content": json.dumps({"text": request.text, "mode": request.mode}, ensure_ascii=False)},
-        ]
-        return self.structured("intent_router", messages, INTENT_SCHEMA, aliases=("brain_orchestrator",)) or {}
