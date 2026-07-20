@@ -26,10 +26,19 @@ interface SeenObservation {
 
 /** Execution-fact loop guard. Natural-language intent is never inspected. */
 export class PiStallGuard {
-  private readonly startedAt = Date.now();
+  private startedAt = Date.now();
   private readonly seen = new Map<string, SeenObservation>();
   private toolCalls = 0;
   private modelRequests = 0;
+
+  /** Budgets and repeated-observation detection belong to one run, not the
+   * long-lived conversation. A resumed conversation may remain open for days. */
+  reset(): void {
+    this.startedAt = Date.now();
+    this.seen.clear();
+    this.toolCalls = 0;
+    this.modelRequests = 0;
+  }
 
   beforeModelRequest(): void {
     this.modelRequests += 1;

@@ -18,6 +18,9 @@ export type AssistantStreamEventType =
   | "message.started"
   | "message.delta"
   | "message.completed"
+  | "reasoning.started"
+  | "reasoning.delta"
+  | "reasoning.completed"
   | "proposal.created"
   | "proposal.rejected"
   | "change.applied"
@@ -37,6 +40,8 @@ export interface AssistantStreamEvent {
 
   messageId?: string;
   delta?: string;
+  blockId?: string;
+  provider?: string;
   model?: string;
   profileId?: string;
 
@@ -102,6 +107,12 @@ export interface AssistantLiveRun {
     | "failed"
     | "cancelled";
   content: string;
+  reasoningBlocks: Array<{
+    id: string;
+    provider: string;
+    content: string;
+    status: "streaming" | "completed";
+  }>;
   completedMessage?: Record<string, any>;
   lastSequence: number;
   started: boolean;
@@ -145,6 +156,7 @@ export function initialAssistantLiveRun(): AssistantLiveRun {
     model: "",
     status: "idle",
     content: "",
+    reasoningBlocks: [],
     lastSequence: 0,
     started: false,
     steps: [],
@@ -177,6 +189,7 @@ export function reduceAssistantStream(
     steps: [...state.steps],
     allowedTools: [...state.allowedTools],
     toolCalls: [...state.toolCalls],
+    reasoningBlocks: state.reasoningBlocks.map(block => ({...block})),
     proposal: state.proposal
       ? {...state.proposal, writes: [...state.proposal.writes]}
       : undefined,
@@ -261,6 +274,29 @@ export function reduceAssistantStream(
     next.messageId = String(event.messageId ?? "");
   } else if (event.type === "message.delta") {
     next.content += String(event.delta ?? "");
+  } else if (
+    event.type === "reasoning.started" ||
+    event.type === "reasoning.delta" ||
+    event.type === "reasoning.completed"
+  ) {
+    const id = String(event.blockId ?? "provider-reasoning");
+    const index = next.reasoningBlocks.findIndex(block => block.id === id);
+    const existing = index >= 0 ? next.reasoningBlocks[index] : {
+      id,
+      provider: String(event.provider ?? "provider"),
+      content: "",
+      status: "streaming" as const,
+    };
+    const block = {
+      ...existing,
+      provider: String(event.provider ?? existing.provider),
+      content: event.type === "reasoning.delta"
+        ? existing.content + String(event.delta ?? "")
+        : existing.content,
+      status: event.type === "reasoning.completed" ? "completed" as const : existing.status,
+    };
+    if (index >= 0) next.reasoningBlocks[index] = block;
+    else next.reasoningBlocks.push(block);
   } else if (event.type === "write.diff") {
     next.proposalRequired = true;
     next.proposal = {
@@ -298,6 +334,15 @@ export function reduceAssistantStream(
     next.completedMessage = event.message
       ? {...event.message}
       : next.completedMessage;
+    const storedReasoning = event.message?.reasoningBlocks;
+    if (Array.isArray(storedReasoning) && storedReasoning.length) {
+      next.reasoningBlocks = storedReasoning.map((block: any, index: number) => ({
+        id: String(block.id ?? `provider-reasoning-${index + 1}`),
+        provider: String(block.provider ?? "provider"),
+        content: String(block.content ?? ""),
+        status: "completed" as const,
+      })).filter(block => block.content.trim());
+    }
     if (!next.content && typeof event.message?.content === "string") {
       next.content = event.message.content;
     }
@@ -309,6 +354,7 @@ export function reduceAssistantStream(
     next.proposalRequired = true;
   } else if (event.type === "run.completed") {
     next.status = "completed";
+    next.reasoningBlocks = next.reasoningBlocks.map(block => ({...block, status: "completed"}));
     next.steps = next.steps.map(step =>
       step.status === "pending" || step.status === "running"
         ? {...step, status: "completed"}
@@ -407,6 +453,13 @@ export function agentChunkToAssistantEvent(chunk: AgentChunk): AssistantStreamEv
     conversationId: chunk.conversationId,
   };
   if (chunk.type === "text") return {...base, type: "message.delta", delta: chunk.content, messageId: chunk.messageId};
+  if (chunk.type === "reasoning") return {
+    ...base,
+    type: `reasoning.${chunk.phase}` as "reasoning.started" | "reasoning.delta" | "reasoning.completed",
+    blockId: chunk.blockId,
+    provider: chunk.provider,
+    delta: chunk.content,
+  };
   const toolTrace = toolTraceFromAgentChunk(chunk);
   if (chunk.type === "tool_use" && toolTrace) return {...base, type: "tool.started", callId: toolTrace.id, tool: toolTrace.name, input: toolTrace.input, status: toolTrace.status};
   if (chunk.type === "tool_result" && toolTrace) return {...base, type: "tool.completed", callId: toolTrace.id, tool: toolTrace.name, result: toolTrace.result, summary: toolTrace.summary, status: toolTrace.status};

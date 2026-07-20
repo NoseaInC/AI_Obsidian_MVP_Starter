@@ -102,6 +102,26 @@ test("real ordered tool events become visible execution steps", async () => {
   assert.equal(state.steps.find(item => item.id === "tool:call-1").status, "completed");
 });
 
+test("provider reasoning blocks remain separate, ordered and collapsible from final text", async () => {
+  const mod = await moduleUnderTest();
+  let state = mod.initialAssistantLiveRun();
+  state = mod.reduceAssistantStream(state, event(1, "run.started", {model: "deepseek-reasoner"}));
+  state = mod.reduceAssistantStream(state, event(2, "reasoning.started", {blockId: "provider-reasoning-0", provider: "deepseek-reasoner"}));
+  state = mod.reduceAssistantStream(state, event(3, "reasoning.delta", {blockId: "provider-reasoning-0", provider: "deepseek-reasoner", delta: "先核对上下文，"}));
+  state = mod.reduceAssistantStream(state, event(4, "reasoning.delta", {blockId: "provider-reasoning-0", provider: "deepseek-reasoner", delta: "再形成答案。"}));
+  state = mod.reduceAssistantStream(state, event(5, "reasoning.completed", {blockId: "provider-reasoning-0", provider: "deepseek-reasoner"}));
+  state = mod.reduceAssistantStream(state, event(6, "message.delta", {delta: "这是最终回答。"}));
+  state = mod.reduceAssistantStream(state, event(7, "run.completed"));
+  assert.deepEqual(state.reasoningBlocks, [{
+    id: "provider-reasoning-0",
+    provider: "deepseek-reasoner",
+    content: "先核对上下文，再形成答案。",
+    status: "completed",
+  }]);
+  assert.equal(state.content, "这是最终回答。");
+  assert.doesNotMatch(state.content, /先核对上下文/);
+});
+
 test("web search sources remain ordered, public and visible to the inspector", async () => {
   const mod = await moduleUnderTest();
   let state = mod.initialAssistantLiveRun();
@@ -222,13 +242,15 @@ test("assistant production surface uses Pi model proxy, stop and three inspector
   assert.match(css, /aspect-ratio:\s*1 \/ 1/);
   assert.match(css, /\.la-composer-submit__stop/);
   assert.match(css, /\.la-composer-submit\.is-running/);
-  assert.match(views, /执行过程/);
-  assert.match(views, /不展示模型私有思维链/);
+  assert.match(views, /推理与执行过程/);
+  assert.match(views, /供应商真实返回独立 reasoning block/);
   assert.match(views, /previousDetails\?\.open/);
+  assert.match(views, /previousProviderReasoning\?\.open/);
   assert.match(views, /fallbackStatus = run\.status === "completed"/);
   assert.match(css, /\.la-live-trace__thinking/);
-  assert.doesNotMatch(css, /\.la-provider-reasoning/);
-  assert.doesNotMatch(views, /renderProviderReasoning/);
+  assert.match(css, /\.la-provider-reasoning/);
+  assert.match(views, /renderProviderReasoning/);
+  assert.match(views, /供应商原始返回/);
   assert.match(views, /支持深度推理协议/);
   assert.match(views, /assistantReasoningMode:\s*"auto"\s*\|\s*"deep"/);
   assert.match(views, /reasoning_mode:\s*this\.assistantReasoningMode/);

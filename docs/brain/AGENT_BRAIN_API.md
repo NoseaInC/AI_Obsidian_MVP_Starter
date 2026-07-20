@@ -36,6 +36,8 @@ state can still be opened. They are storage compatibility names, not a second
 Agent runtime. Production architecture tests prohibit imports of the retired
 Brain/Pydantic planners and prohibit the old HTTP routes.
 
-Provider `reasoning_content` may remain inside the secure provider/Pi protocol for
-continuity. It is not emitted as an `AgentChunk`, rendered in the UI, written to
-Markdown or stored as ordinary conversation text.
+Provider `reasoning_content` crosses the secure provider/Pi boundary only as a
+typed, ordered `reasoning` `AgentChunk`. The Assistant may render that exact block
+in a collapsible section, but must not synthesize or enrich it. It is never written
+to Markdown, stored as ordinary conversation text or inserted into future model
+context.

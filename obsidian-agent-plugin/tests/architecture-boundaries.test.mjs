@@ -31,17 +31,22 @@ test("tool trace renderer consumes only normalized AgentChunk contracts", () => 
   assert.doesNotMatch(renderer, /AssistantStreamEvent|PydanticAgentRuntime|AgentClient/);
 });
 
-test("provider thinking remains inside transport protocol and never becomes a public AgentChunk", () => {
+test("only provider-returned thinking crosses the runtime as a typed reasoning AgentChunk", () => {
   const read = relative => fs.readFileSync(path.resolve(relative), "utf8");
   const types = read("src/core/runtime/types.ts");
   const adapter = read("src/core/runtime/pi/PiEventAdapter.ts");
   const transport = read("src/core/runtime/pi/PiModelTransport.ts");
   const stream = read("src/assistant-stream.ts");
   assert.match(transport, /thinking_delta/);
-  assert.match(adapter, /deliberately excluded from UI chunks/);
-  assert.doesNotMatch(types, /type:\s*"reasoning"/);
-  assert.doesNotMatch(stream, /reasoning\.(started|delta|completed)/);
-  assert.doesNotMatch(stream, /reasoningBlocks/);
+  assert.match(adapter, /never synthesizes reasoning/);
+  assert.match(adapter, /thinking_start/);
+  assert.match(adapter, /thinking_delta/);
+  assert.match(adapter, /thinking_end/);
+  assert.match(types, /type:\s*"reasoning"/);
+  assert.match(stream, /reasoning\.started/);
+  assert.match(stream, /reasoning\.delta/);
+  assert.match(stream, /reasoning\.completed/);
+  assert.match(stream, /reasoningBlocks/);
 });
 
 test("main assistant no longer references the legacy coordinator", () => {

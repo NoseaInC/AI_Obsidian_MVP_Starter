@@ -52,7 +52,7 @@ const SYSTEM_PROMPT = `你是知序（Zhixu），一个运行在 Obsidian 内的
 - 用户明确要求“让改造生效”时，在合并后调用 activate_runtime_upgrade；由 Obsidian 进程管理器执行固定检查、安装、Runtime 重启和健康检查，失败自动回滚。仅要求查看实现时不得部署。
 - 回答简洁、具体，明确区分真实工具结果、推断和待验证信息。
 
-不要输出隐藏思维链。可以用一两句行动说明描述正在做什么，工具执行细节由真实事件界面展示。`;
+不要把思维链混入最终回答。供应商若通过独立 reasoning block 返回推理，由传输层原样处理；你只需保持最终回答简洁、准确，工具执行细节由真实事件界面展示。`;
 
 function createModel(identity: PiRunIdentity): Model<any> {
   const id = identity.model || "configured-assistant-model";
@@ -136,6 +136,7 @@ export class PiAgentRuntime implements AgentRuntime {
     const identity = (turn.payload as PiPreparedPayload).identity;
     const session = await this.session(identity);
     session.identity = identity;
+    session.stallGuard.reset();
     session.state = {
       conversationId: identity.conversationId,
       runId: identity.runId,

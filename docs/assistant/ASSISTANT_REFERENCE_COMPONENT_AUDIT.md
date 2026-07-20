@@ -11,7 +11,7 @@
 | AnythingLLM `4482fd6` | `frontend/src/components/WorkspaceSidebar/ThreadItem/index.jsx` | ThreadItem | 当前会话、悬停菜单、重命名/删除、键盘可达 | 在知序左栏实现会话搜索、切换和菜单，持久化仍由现有 SQLite/本地 JSON 消息文件负责 | 否 | MIT |
 | OpenCowork `6f0c047` | `src/renderer/components/ChatView.tsx` | ChatView | 真实 partial streaming；接近底部才自动滚动；会话滚动位置恢复；取消与清理 | TypeScript NDJSON reducer 批量消费增量；`AbortController` 取消；DOM 更新按帧合并 | 否 | MIT，已读取根目录 `LICENSE` |
 | OpenCowork `6f0c047` | `src/renderer/components/MessageCard.tsx` | MessageCard | 用户气泡、助手无大气泡；排队/取消状态；结构化消息块 | 定义 `AssistantMessagePart`，分别渲染文本、状态、工具、来源和错误块 | 否 | MIT |
-| OpenCowork `6f0c047` | `src/renderer/components/message/ToolUseBlock.tsx` | ToolUseBlock | 工具调用与结果合并；运行/成功/失败；耗时；可折叠 | 后端只发已验证的阶段/工具事件，前端 reducer 按 `runId + stepId` 合并，不展示模型思维链 | 否 | MIT |
+| OpenCowork `6f0c047` | `src/renderer/components/message/ToolUseBlock.tsx` | ToolUseBlock | 工具调用与结果合并；运行/成功/失败；耗时；可折叠 | 工具事件按 `runId + stepId` 合并；供应商独立返回的 reasoning 走单独事件和折叠区，二者不混合 | 否 | MIT |
 | OpenCowork `6f0c047` | `src/renderer/components/PermissionDialog.tsx` | PermissionDialog | 按风险展示明确允许/拒绝 | 继续使用现有 Change Set、`ExplicitConfirmModal`、reviewed/core 保护和事务 API | 否 | MIT |
 | OpenWork `7d72a0d` | `apps/app/src/react-app/domains/session/chat/session-page.tsx` | Session Page | 会话、中央消息、右侧面板和长任务恢复的职责分离 | 左栏会话、中央对话、右侧 Inspector 三栏；状态仍由现有 ItemView 与后端会话记录恢复 | 否 | 根目录 MIT；未读取、未使用 `/ee` |
 | OpenWork `7d72a0d` | `apps/app/src/react-app/domains/session/surface/composer/composer.tsx` | Composer | 附件、粘贴文本、提及、命令、模型和停止按钮共同组成输入面 | 用 Obsidian 原生 DOM 独立实现；保留现有安全附件入口和本地 URL/路径校验 | 否 | MIT（不含 `/ee`） |
@@ -29,6 +29,6 @@
 
 1. 会话真相来自本地 Agent 的 SQLite 索引和 `90-Local-Only/Agent/Conversations` 消息正文。
 2. 流式回复必须来自上游模型的 `stream=true` 数据流，不得把完整回复切片伪装成 streaming。
-3. Trace 只展示可验证阶段、受限工具事件和结果摘要，不展示思维链。
+3. Trace 展示可验证阶段、受限工具事件和结果摘要；只有供应商真实返回的独立 reasoning block 才能进入单独的可折叠“模型推理”区，禁止前端伪造。
 4. 所有写入继续经过快照、Diff、Change Set、确认和事务层；reviewed/core 不自动覆盖。
 5. Markdown 由 Obsidian `MarkdownRenderer` 渲染，参考项目的 HTML 渲染代码不复用。

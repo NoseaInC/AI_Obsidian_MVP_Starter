@@ -16,12 +16,14 @@ The `pi-agent-runtime` migration is active. Pi Agent Core and Pi AI now own the 
 - Capability probes cache facts without keys and conservatively resolve Tool Calling, streaming, parallelism, strict schema, usage and reasoning options.
 - Developer workspaces use isolated Git worktrees, structured commands, a minimal environment and a deny-by-default network/shell policy.
 - Conversation turns and final answers use stable message IDs, are persisted idempotently and hydrate Pi after a plugin/runtime restart.
-- Provider thinking blocks remain inside the provider/Pi protocol only. The public UI/event/persistence contract exposes real tool state and brief action summaries, never private reasoning content.
+- Provider-returned thinking blocks now cross the Pi boundary as typed, ordered `reasoning` events and appear in a separate collapsible “模型推理” block. The UI never synthesizes reasoning from tool traces or execution summaries. Reasoning remains local Run-event state: it is excluded from Markdown, ordinary conversation text and future model context.
+- Pi stall budgets now reset at the start of every Run instead of inheriting the age of a long-lived conversation. This closes the real `stall_guard_elapsed_time_limit` failure that previously rejected the first model request after a conversation had remained open for more than 30 minutes.
 - Pi model dispatch now resolves the provider-neutral `configured-assistant-model` placeholder to the selected Profile's real `defaultModel`. Provider rejections, premature NDJSON EOF and 45-second no-activity stalls always terminate the Run with a recoverable error instead of leaving “正在连接已选模型…” spinning forever. Assistant submit setup is single-flight, clears the submitted composer immediately and keeps the in-flight Stop control usable; Runtime restart also fails and releases orphaned Pi Runs.
 - The first structured write plan freezes concrete paths, roots and operations for the Turn; a later plan cannot silently expand authority.
 - Developer deployment is a two-phase handshake: Python validates a merged clean commit, while the plugin owns fixed check/build/install/restart/health steps and governed rollback.
 - Real Keychain-backed DeepSeek A–H acceptance passed against a temporary Vault and project. It covered read, retrieval, direct verified write, exact-byte Undo, plan-only, developer worktree/test/build/merge/activation, Steering and three queued Follow-ups without exposing the Key or touching real knowledge notes.
 - The verified plugin build is installed at `.obsidian/plugins/obsidian-learning-agent/`. Build/install hashes are refreshed after each accepted runtime repair; the current hashes are recorded after installation below.
+- The reasoning restoration and per-Run stall reset build is installed. Build/installed hashes match: `main.js` `bce9f1da5165d7736065d3557e4181b7e7d33d04cc96b45f87ca59ce947d527d`; `styles.css` `0777f20a598830d8e6b1264973650b1ed5a7ef2dbce1feec450203f71077fcc7`. Obsidian reload is pending because the Mac locked during the final live UI gate.
 - The stuck-model repair was installed and activated in Obsidian 1.12.7 on 2026-07-20. Runtime restart changed orphaned `pi-run-097c…` from `running` to recoverable `failed / pi_runtime_interrupted`. A real Keychain-backed UI turn using the selected `deepseek-v4-pro` completed as `pi-run-db777a10…` with the exact answer “连接修复验证通过”; the composer returned to idle and no knowledge file or Change Set was written. Runtime health returned HTTP 200 with PID `94844`. Build/installed hashes match: `main.js` `c4e9ea800f5d6d6f8c625a756add061d454ea39b2af9c3de6e55c0200514d1ff`; `styles.css` `424075822de3474aabe7b248b38d92fae1ad68f0c6d1c10366c18bde0dc9ac3e`.
 
 ## Completed before autonomous run
@@ -49,9 +51,9 @@ The `pi-agent-runtime` migration is active. Pi Agent Core and Pi AI now own the 
 ## Historical milestones
 
 The following entries describe earlier product stages. Where they mention Brain,
-PydanticAI, deterministic intent routing, ordinary write confirmation or visible
-provider reasoning, they are superseded by D-042 through D-044 and the Pi runtime
-migration above.
+PydanticAI, deterministic intent routing or ordinary write confirmation, they are
+superseded by D-042 through D-044 and the Pi runtime migration above. Provider
+reasoning visibility follows the narrower D-046 contract.
 
 - Chat-first V1 implemented: unified conversations, binary/URL/path/folder attachments, deterministic multi-Intent routing, idempotent submit and seven versioned Artifact types.
 - Assistant is the only universal input and authorization surface. Materials is a one-column status center; Plan is today blocks plus weekend preview; Today is five queues plus a single learning detail. The former standalone Review UI is retained only as unreachable legacy audit code for Prepared history.
@@ -153,7 +155,7 @@ migration above.
 - Real installed-Obsidian acceptance on 2026-07-19 passed a configured `deepseek-v4-pro` web turn. The model called actual search/fetch tools, returned three Pydantic official documentation sources and populated the Sources Inspector; no Change Set or Vault write was created.
 - Assistant UI V7 removes the crowded action header. The header now contains only the conversation title; model and network state live in the composer, and all secondary actions are grouped under the composer `+` menu.
 - A real installed `deepseek-v4-pro` mixed-write regression passed: one new knowledge draft and one protected MOC update became a single confirmable Change Set whose protected operation was redirected to a local update suggestion. The same Run is intentionally paused at inline confirmation; neither candidate file was applied and the MOC was not modified.
-- A historical UI experiment rendered provider-returned reasoning blocks. Phase 11 retires that surface: provider thinking is now protocol-private and only actual tool events plus brief execution summaries are public.
+- Provider reasoning display was restored under D-046: only an actual provider `reasoning_content` / Pi `thinking_*` block is shown, independently from the final answer and real Tool Trace. It is collapsible and absent when the provider returns none.
 - Assistant reasoning now has an explicit `Auto / 深度` runtime mode in the composer model menu. Auto keeps the provider default; DeepSeek Deep sends `thinking=enabled` plus `reasoning_effort=max`, raises the per-turn budget to at least 8192 tokens, compacts oversized history by complete request/response pairs, and adds evidence/edge-case/final-verification instructions.
 - A real Keychain-backed `deepseek-v4-pro` temporary-Vault smoke on 2026-07-19 completed with `reasoning_effort=max`: 5,395 streamed reasoning characters, 4,362 answer characters and two real tool calls. It ended `run.completed`, produced no API error and wrote zero Markdown files. The smoke output recorded only counts/status, never the key or reasoning text.
 - The rebuilt plugin was installed and reloaded in Obsidian 1.12.7. The live model popover exposes the Deep switch and the composer reports `Auto · 深度` after activation. Build/installed hashes match: `main.js` `5f7936000ff0609c7284844baf6661015c20fb7adbac041fedf082841e44dd1d`; `styles.css` `cf9bb0581fe87d6012ac1c68b3705c69dcaaf3c4ea753eab56a15144baf011f5`.
@@ -165,8 +167,8 @@ migration above.
 ## Phase 11 release gate
 
 - Python ingestion/review/conversation: 40 tests passed.
-- Phase 11 backend suite: 144 tests passed.
-- Phase 11 plugin suite: 72 tests passed; strict TypeScript check and production build passed.
+- Current backend suite: 147 tests passed.
+- Current plugin suite: 76 tests passed; strict TypeScript check and production build passed.
 - Unified `./scripts/check.sh` passed.
 - Real DeepSeek A–H acceptance passed with the configured `deepseek-v4-pro`; details are in `docs/architecture/PI_AGENT_RUNTIME_ACCEPTANCE.md`.
 - Right-sidebar retirement gate: 40 ingestion/review/conversation tests, 113 Runtime tests and 36 plugin tests passed; TypeScript and production build passed on 2026-07-15.

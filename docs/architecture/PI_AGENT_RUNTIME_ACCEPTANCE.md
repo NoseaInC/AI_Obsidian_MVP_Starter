@@ -11,8 +11,8 @@ Production model used for the real gate: `deepseek-v4-pro`
 `./scripts/check.sh` passed with:
 
 - PDF ingestion, Prepared Bundle, conversation and review: 40 tests;
-- Python Agent/Runtime/security suite: 144 tests;
-- Obsidian plugin suite: 72 tests;
+- Python Agent/Runtime/security suite: 147 tests;
+- Obsidian plugin suite: 76 tests;
 - TypeScript strict typecheck: passed;
 - production plugin build: passed.
 
@@ -62,7 +62,8 @@ process is outside a temporary-Vault acceptance run.
   boundary; it does not select the next tool.
 - PydanticAI and the old Python Brain planner are absent from production.
 - No keyword, regex, token or fixed-phrase Intent Router exists.
-- Provider reasoning remains protocol-private and is not rendered or persisted.
+- Dedicated provider reasoning is preserved as typed Pi Run events and rendered in a separate collapsible block. It is never synthesized and is excluded from Markdown, ordinary conversation text and future model context.
+- Stall limits are scoped to one Run and reset on every new Turn, so a long-lived conversation cannot fail its next request merely because the conversation itself is older than thirty minutes.
 - Ordinary in-scope reversible Markdown changes apply without a second approval
   and always produce snapshot, hashes, verification, Diff and conflict-safe Undo.
 - The first plan freezes the Turn's concrete resource/operation scope; expansion

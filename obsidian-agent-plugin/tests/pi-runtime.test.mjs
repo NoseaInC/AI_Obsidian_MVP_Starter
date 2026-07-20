@@ -97,7 +97,7 @@ test("Pi owns an observation-driven multi-turn tool loop", async () => {
   }
 });
 
-test("Pi restores durable conversation history without exposing provider thinking", async () => {
+test("Pi restores durable history and exposes only provider-returned thinking as reasoning chunks", async () => {
   const {module, dispose} = await loadRuntime();
   let restoredContext = "";
   const persisted = [];
@@ -117,9 +117,9 @@ test("Pi restores durable conversation history without exposing provider thinkin
     async streamModelProxy(body, onEvent) {
       restoredContext = JSON.stringify(body.context.messages);
       onEvent({type: "start"});
-      onEvent({type: "thinking_start"});
-      onEvent({type: "thinking_delta", delta: "供应商私有推理"});
-      onEvent({type: "thinking_end"});
+      onEvent({type: "thinking_start", contentIndex: 0});
+      onEvent({type: "thinking_delta", contentIndex: 0, delta: "供应商原始推理"});
+      onEvent({type: "thinking_end", contentIndex: 0});
       onEvent({type: "text_start"});
       onEvent({type: "text_delta", delta: "恢复成功"});
       onEvent({type: "text_end"});
@@ -132,9 +132,12 @@ test("Pi restores durable conversation history without exposing provider thinkin
     for await (const chunk of runtime.query(runtime.prepareTurn({message: "继续", conversationId: "conversation-restored"}))) chunks.push(chunk);
     assert.match(restoredContext, /旧问题/);
     assert.match(restoredContext, /旧回答/);
+    assert.doesNotMatch(restoredContext, /供应商原始推理/);
     assert.equal(chunks.filter(item => item.type === "text").map(item => item.content).join(""), "恢复成功");
-    assert.ok(chunks.every(item => item.type !== "reasoning"));
-    assert.doesNotMatch(JSON.stringify(persisted), /供应商私有推理/);
+    const reasoning = chunks.filter(item => item.type === "reasoning");
+    assert.deepEqual(reasoning.map(item => item.phase), ["started", "delta", "completed"]);
+    assert.equal(reasoning.map(item => item.content).join(""), "供应商原始推理");
+    assert.match(JSON.stringify(persisted), /供应商原始推理/);
     runtime.cleanup();
   } finally {
     await dispose();
@@ -184,6 +187,42 @@ test("Pi forwards the selected profile model instead of its construction placeho
     for await (const _chunk of runtime.query(turn)) { /* consume */ }
     assert.equal(requestedModel, "deepseek-v4-pro");
   } finally {
+    await dispose();
+  }
+});
+
+test("Pi resets stall budgets for every turn in a long-lived conversation", async () => {
+  const {module, dispose} = await loadRuntime();
+  const originalNow = Date.now;
+  let clock = Date.parse("2026-07-20T08:00:00Z");
+  Date.now = () => clock;
+  let requests = 0;
+  const transport = {
+    async registerTaskAuthorization(body) { return {taskAuthorization: body.taskAuthorization}; },
+    async appendRuntimeEvents(body) { return {lastEventSequence: body.events.at(-1)?.sequence ?? 0}; },
+    async toolContracts() { return {schemaVersion: 1, items: []}; },
+    async streamModelProxy(_body, onEvent) {
+      requests += 1;
+      onEvent({type: "start"});
+      onEvent({type: "text_start"});
+      onEvent({type: "text_delta", delta: `turn-${requests}`});
+      onEvent({type: "text_end"});
+      onEvent({type: "done", finishReason: "stop"});
+    },
+  };
+  try {
+    const runtime = new module.PiAgentRuntime(transport);
+    const first = [];
+    for await (const chunk of runtime.query(runtime.prepareTurn({message: "first", conversationId: "conversation-long"}))) first.push(chunk);
+    clock += 31 * 60_000;
+    const second = [];
+    for await (const chunk of runtime.query(runtime.prepareTurn({message: "second", conversationId: "conversation-long"}))) second.push(chunk);
+    assert.equal(requests, 2);
+    assert.equal(second.filter(item => item.type === "text").map(item => item.content).join(""), "turn-2");
+    assert.equal(second.at(-1).type, "done");
+    runtime.cleanup();
+  } finally {
+    Date.now = originalNow;
     await dispose();
   }
 });

@@ -4,8 +4,9 @@ import type {PiRunIdentity} from "./types";
 
 /**
  * Projects Pi lifecycle events into the UI protocol in their real order.
- * Provider thinking blocks are deliberately excluded from UI chunks and normal
- * conversation persistence; only observable tool activity is rendered.
+ * Provider thinking is exposed only when the provider emitted a dedicated
+ * thinking event. The adapter never synthesizes reasoning from text, tools, or
+ * internal runtime state.
  */
 export class PiEventAdapter {
   private sequence = 0;
@@ -24,6 +25,25 @@ export class PiEventAdapter {
       const update = event.assistantMessageEvent;
       if (update.type === "text_delta") {
         return [{...base(), type: "text", content: update.delta}];
+      }
+      if (
+        update.type === "thinking_start" ||
+        update.type === "thinking_delta" ||
+        update.type === "thinking_end"
+      ) {
+        const phase = update.type === "thinking_start"
+          ? "started"
+          : update.type === "thinking_end"
+            ? "completed"
+            : "delta";
+        return [{
+          ...base(),
+          type: "reasoning",
+          blockId: `provider-reasoning-${Number(update.contentIndex ?? 0)}`,
+          provider: this.identity.model || "provider",
+          content: update.type === "thinking_delta" ? update.delta : "",
+          phase,
+        }];
       }
       return [];
     }

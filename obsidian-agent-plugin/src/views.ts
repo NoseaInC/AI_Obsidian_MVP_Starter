@@ -2469,9 +2469,15 @@ export class LearningAgentMainView extends ItemView {
           this.assistantRegenerateMessageId = "";
           return;
         }
-        const completedMessage = this.assistantLiveRun.completedMessage ?? {
+        const completedMessageBase = this.assistantLiveRun.completedMessage ?? {
           id: this.assistantLiveRun.messageId, role: "assistant", content: this.assistantLiveRun.content,
           createdAt: new Date().toISOString(),
+        };
+        const completedMessage: Record<string, any> = {
+          ...completedMessageBase,
+          reasoningBlocks: this.assistantLiveRun.reasoningBlocks
+            .filter(block => block.content.trim())
+            .map(block => ({...block, status: "completed"})),
         };
         assistantCopy.createEl("small", {text: completedMessage.createdAt ? new Date(completedMessage.createdAt).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) : ""});
         this.renderAssistantMessageActions(assistantCopy, completedMessage, {content});
@@ -2555,8 +2561,10 @@ export class LearningAgentMainView extends ItemView {
 
   private paintAssistantLiveTrace(parent: HTMLElement, run: AssistantLiveRun): void {
     const previousDetails = parent.querySelector<HTMLDetailsElement>(".la-live-trace__details");
+    const previousProviderReasoning = parent.querySelector<HTMLDetailsElement>(".la-provider-reasoning");
     const beganRunning = parent.hasClass("is-idle") && run.status === "running";
     const detailsOpen = beganRunning || (previousDetails?.open ?? run.status === "running");
+    const providerReasoningOpen = previousProviderReasoning?.open ?? run.status === "running";
     parent.empty();
     parent.className = `la-live-trace is-${run.status}`;
     const head = parent.createDiv({cls: "la-live-trace__head"});
@@ -2567,11 +2575,12 @@ export class LearningAgentMainView extends ItemView {
     copy.createEl("small", {text: run.model ? `模型 · ${run.model}` : "正在建立本地上下文"});
     const details = parent.createEl("details", {cls: "la-live-trace__details"});
     details.open = detailsOpen;
-    details.createEl("summary", {text: "执行过程"});
+    details.createEl("summary", {text: "推理与执行过程"});
     details.createDiv({
       cls: "la-live-trace__disclaimer",
-      text: "这里只展示真实工具调用、可验证观察和简短执行摘要，不展示模型私有思维链。",
+      text: "模型推理仅在供应商真实返回独立 reasoning block 时出现；工具状态来自实际运行事件。",
     });
+    this.renderProviderReasoning(details, run.reasoningBlocks, providerReasoningOpen);
     const thinking = details.createDiv({cls: "la-live-trace__thinking"});
     const sourceCount = run.context?.sources?.length ?? 0;
     const thinkingText = run.status === "running"
@@ -2919,6 +2928,7 @@ export class LearningAgentMainView extends ItemView {
     const copy = root.createDiv({cls: "la-message-copy"});
     if (message.role === "user") copy.createEl("p", {text: String(message.content ?? "")});
     else {
+      this.renderProviderReasoning(copy, Array.isArray(message.reasoningBlocks) ? message.reasoningBlocks : [], false);
       void this.markdown.render(copy.createDiv({cls: "la-message-markdown"}), String(message.content ?? ""));
     }
     // User metadata is deliberately outside the painted message body. Keeping it
@@ -2941,6 +2951,27 @@ export class LearningAgentMainView extends ItemView {
       return;
     }
     this.renderAssistantMessageActions(meta, message, previousUserMessage);
+  }
+
+  private renderProviderReasoning(
+    parent: HTMLElement,
+    blocks: Array<{id?: string; provider?: string; content?: string; status?: string}>,
+    open: boolean,
+  ): void {
+    const visible = blocks.filter(block => String(block.content ?? "").trim());
+    if (!visible.length) return;
+    const details = parent.createEl("details", {cls: "la-provider-reasoning"});
+    details.open = open;
+    const summary = details.createEl("summary");
+    setIcon(summary.createSpan({cls: "la-provider-reasoning__icon"}), "brain-circuit");
+    summary.createSpan({text: "模型推理"});
+    const providers = [...new Set(visible.map(block => String(block.provider ?? "provider")).filter(Boolean))];
+    const streaming = visible.some(block => block.status === "streaming");
+    summary.createEl("small", {
+      text: `供应商原始返回${providers.length ? ` · ${providers.join(" / ")}` : ""}${streaming ? " · 接收中" : ""}`,
+    });
+    const body = details.createDiv({cls: "la-provider-reasoning__body"});
+    for (const block of visible) body.createEl("pre", {text: String(block.content ?? "")});
   }
 
   private renderAssistantMessageActions(copy: HTMLElement, message: any, previousUserMessage: any = null): void {
