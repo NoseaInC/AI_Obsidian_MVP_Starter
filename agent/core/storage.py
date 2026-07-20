@@ -1736,6 +1736,27 @@ class StateStore:
                 f"WHERE status IN ({placeholders})",
                 (now, now, *transient),
             )
+            # A Pi run lives partly in the Obsidian renderer process.  Once the
+            # local Runtime has restarted, a row still marked running cannot
+            # have a live model stream behind it and must not remain a ghost
+            # task forever.
+            self.connection.execute(
+                "UPDATE pi_agent_runs SET status='failed', error_code='pi_runtime_interrupted', "
+                "completed_at=?, updated_at=? WHERE status='running'",
+                (now, now),
+            )
+            self.connection.execute(
+                "UPDATE task_authorizations SET status='expired', updated_at=? "
+                "WHERE status='active' AND run_id IN "
+                "(SELECT run_id FROM pi_agent_runs WHERE error_code='pi_runtime_interrupted')",
+                (now,),
+            )
+            self.connection.execute(
+                "UPDATE pi_agent_sessions SET status='failed', updated_at=? "
+                "WHERE session_id IN "
+                "(SELECT session_id FROM pi_agent_runs WHERE error_code='pi_runtime_interrupted')",
+                (now,),
+            )
             self.connection.commit(); return recovered_jobs
 
     def audit(self, event: str, entity_id: str, details: dict[str, Any]) -> None:

@@ -37,6 +37,14 @@ class _AgentProvider:
         }
 
 
+class _RejectedProvider:
+    def stream_agent(self, model, messages, *, tools=None, **options):
+        error = RuntimeError("provider payload must not reach the UI")
+        error.code = 400
+        raise error
+        yield  # pragma: no cover - keep this a generator
+
+
 class PiModelProxyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -137,6 +145,30 @@ class PiModelProxyTests(unittest.TestCase):
         encoded = json.dumps(provider.request["messages"])
         self.assertIn("visible answer", encoded)
         self.assertNotIn("private-provider-block", encoded)
+
+    def test_provider_neutral_placeholder_falls_back_to_profile_model(self) -> None:
+        provider = _AgentProvider()
+        body = {
+            "profileId": self.profile["id"],
+            "model": "configured-assistant-model",
+            "context": {"messages": [{"role": "user", "content": "continue"}], "tools": []},
+        }
+        with patch.object(self.service.models, "provider", return_value=provider):
+            events = list(self.service.stream_model_proxy(body))
+        self.assertEqual(provider.request["model"], "fake-tool-model")
+        self.assertEqual(events[0]["model"], "fake-tool-model")
+
+    def test_provider_rejection_is_a_terminal_model_protocol_error(self) -> None:
+        body = {
+            "profileId": self.profile["id"],
+            "model": "missing-model",
+            "context": {"messages": [{"role": "user", "content": "continue"}], "tools": []},
+        }
+        with patch.object(self.service.models, "provider", return_value=_RejectedProvider()):
+            events = list(self.service.stream_model_proxy(body))
+        self.assertEqual([item["type"] for item in events], ["start", "error"])
+        self.assertEqual(events[-1]["code"], "model_provider_rejected")
+        self.assertNotIn("payload", json.dumps(events, ensure_ascii=False))
 
     def test_runtime_exposes_only_read_and_proposal_tools_to_pi(self) -> None:
         contracts = self.service.tool_contracts()["items"]

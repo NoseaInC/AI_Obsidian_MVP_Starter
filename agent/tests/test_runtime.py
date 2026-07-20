@@ -61,6 +61,30 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(recovered.get_job(job)["state"], "queued")
         recovered.close()
 
+    def test_crash_recovery_expires_orphaned_pi_runs(self):
+        service = AgentService(self.vault)
+        authorization = {
+            "id": "authorization-recovery",
+            "sessionId": "conversation-recovery",
+            "runId": "pi-run-recovery",
+            "turnId": "turn-recovery",
+            "sourceMessageId": "message-recovery",
+            "objective": "recover",
+            "resourceScope": {"currentNote": False, "explicitVaultPaths": [], "createRoots": [], "workspaceId": "", "projectPaths": []},
+            "operationScope": [],
+            "reversibleOnly": True,
+            "networkPolicy": "deny",
+            "externalSideEffects": False,
+            "expiresAtRunEnd": True,
+        }
+        service.task_authorizations.create(authorization)
+        service.store.close()
+        recovered = StateStore(self.vault / "90-Local-Only/Agent/agent.sqlite3")
+        recovered.recover_interrupted()
+        self.assertEqual(recovered.get_pi_run("pi-run-recovery")["status"], "failed")
+        self.assertEqual(recovered.get_task_authorization("authorization-recovery")["status"], "expired")
+        recovered.close()
+
     def test_service_runs_restricted_jobs(self):
         service = AgentService(self.vault)
         job = service.enqueue("quiz", {"count": 2})

@@ -486,6 +486,7 @@ export class LearningAgentMainView extends ItemView {
   private assistantLiveRun: AssistantLiveRun = initialAssistantLiveRun();
   private assistantVisibleMessageLimit = 160;
   private assistantDraft = "";
+  private assistantSubmitInFlight = false;
   private assistantRegenerateMessageId = "";
   private assistantToday = new Set<string>();
   private pendingAttachments: any[] = [];
@@ -2335,6 +2336,7 @@ export class LearningAgentMainView extends ItemView {
     const sendMessage = async (): Promise<void> => {
       let content = input.value.trim();
       const regenerateMessageId = this.assistantRegenerateMessageId;
+      if (this.assistantSubmitInFlight && this.assistantLiveRun.status !== "running") return;
       if (this.assistantLiveRun.status === "running") {
         const activeRunId = this.assistantLiveRun.runId;
         if (content && activeRunId) {
@@ -2358,6 +2360,9 @@ export class LearningAgentMainView extends ItemView {
         return;
       }
       if (!content && !this.pendingAttachments.length) return;
+      this.assistantSubmitInFlight = true;
+      send.disabled = true;
+      const submittedDraft = content;
       let progressiveMarkdown: ProgressiveAssistantMarkdown | null = null;
       let awaitingInlineConfirmation = false;
       try {
@@ -2386,8 +2391,11 @@ export class LearningAgentMainView extends ItemView {
         messages.scrollTop = messages.scrollHeight;
         this.assistantLiveRun = initialAssistantLiveRun();
         this.paintAssistantLiveTrace(trace, this.assistantLiveRun);
+        input.value = "";
+        this.assistantDraft = "";
         this.abort?.abort(); this.abort = new AbortController();
         paintSendButton(true);
+        send.disabled = false;
         input.setAttribute("placeholder", "运行中：输入可调整当前任务；也可从 + 选择完成后继续");
         const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
         const selection = markdownView?.editor?.getSelection() ?? "";
@@ -2402,6 +2410,7 @@ export class LearningAgentMainView extends ItemView {
           regenerateMessageId: regenerateMessageId || undefined,
           conversationId,
           profileId: selectedProfileId,
+          model: enabledProfiles.find(item => item.id === selectedProfileId)?.defaultModel || undefined,
           attachments: this.pendingAttachments.map(item => ({
             attachment_id: item.id,
             kind: item.kind,
@@ -2478,6 +2487,10 @@ export class LearningAgentMainView extends ItemView {
           return;
         }
         const failure = humanizeAssistantError(String(error.code ?? error.message ?? ""), String(error.message ?? ""), true);
+        if (!input.value.trim() && submittedDraft) {
+          input.value = submittedDraft;
+          this.assistantDraft = submittedDraft;
+        }
         const failed = messages.createDiv({cls: "la-assistant-recovery"});
         setIcon(failed.createSpan({cls: "la-assistant-recovery__icon"}), "circle-alert");
         const copy = failed.createDiv(); copy.createEl("strong", {text: failure.title}); copy.createEl("p", {text: failure.message});
@@ -2488,6 +2501,8 @@ export class LearningAgentMainView extends ItemView {
       } finally {
         progressiveMarkdown?.dispose();
         this.abort = null;
+        this.assistantSubmitInFlight = false;
+        send.disabled = false;
         input.disabled = awaitingInlineConfirmation;
         paintSendButton(false);
         input.setAttribute("placeholder", "今天帮你做些什么？  @ 引用对话文件，/ 调用技能与指令");

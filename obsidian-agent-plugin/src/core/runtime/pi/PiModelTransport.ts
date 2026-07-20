@@ -65,10 +65,36 @@ export class PiModelTransport {
     const toolContentIndexes = new Map<number, number>();
     let finalUsage = {...EMPTY_USAGE};
     let started = false;
+    let terminal = false;
+    let providerActivity = false;
+    let activityTimedOut = false;
+    const requestController = new AbortController();
+    const forwardAbort = (): void => requestController.abort();
+    if (options.signal?.aborted) requestController.abort();
+    else options.signal?.addEventListener("abort", forwardAbort, {once: true});
+    const activityTimer = globalThis.setTimeout(() => {
+      if (terminal || providerActivity) return;
+      activityTimedOut = true;
+      requestController.abort();
+    }, 45_000);
+    const markProviderActivity = (): void => {
+      if (providerActivity) return;
+      providerActivity = true;
+      globalThis.clearTimeout(activityTimer);
+    };
     const pushStart = (): void => {
       if (started) return;
       started = true;
       stream.push({type: "start", partial: {...partial, content: [...partial.content]}});
+    };
+    const pushError = (message: string): void => {
+      if (terminal) return;
+      terminal = true;
+      globalThis.clearTimeout(activityTimer);
+      pushStart();
+      partial.stopReason = options.signal?.aborted ? "aborted" : "error";
+      partial.errorMessage = message;
+      stream.push({type: "error", reason: partial.stopReason, error: {...partial, content: [...partial.content]}});
     };
 
     void this.transport.streamModelProxy({
@@ -87,6 +113,7 @@ export class PiModelTransport {
         pushStart();
         return;
       }
+      markProviderActivity();
       pushStart();
       if (type === "text_start") {
         const contentIndex = partial.content.length;
@@ -141,19 +168,24 @@ export class PiModelTransport {
         finalUsage = usage(event.usage);
         partial.usage = finalUsage;
       } else if (type === "done") {
+        terminal = true;
+        globalThis.clearTimeout(activityTimer);
         partial.usage = finalUsage;
         partial.stopReason = String(event.finishReason ?? "stop") as "stop" | "length" | "toolUse";
         stream.push({type: "done", reason: partial.stopReason, message: {...partial, content: [...partial.content]}});
       } else if (type === "error") {
-        partial.stopReason = options.signal?.aborted ? "aborted" : "error";
-        partial.errorMessage = String(event.message ?? event.code ?? "Model proxy failed");
-        stream.push({type: "error", reason: partial.stopReason, error: {...partial, content: [...partial.content]}});
+        pushError(String(event.message ?? event.code ?? "Model proxy failed"));
       }
-    }, options.signal).catch(error => {
-      pushStart();
-      partial.stopReason = options.signal?.aborted ? "aborted" : "error";
-      partial.errorMessage = error instanceof Error ? error.message : String(error);
-      stream.push({type: "error", reason: partial.stopReason, error: {...partial, content: [...partial.content]}});
+    }, requestController.signal).then(() => {
+      if (!terminal) pushError("模型流意外结束，未收到完成事件；请重试");
+    }).catch(error => {
+      const message = activityTimedOut
+        ? "连接模型超时（45 秒内未收到内容或工具事件）；请重试或切换模型"
+        : error instanceof Error ? error.message : String(error);
+      pushError(message);
+    }).finally(() => {
+      globalThis.clearTimeout(activityTimer);
+      options.signal?.removeEventListener("abort", forwardAbort);
     });
     return stream;
   }

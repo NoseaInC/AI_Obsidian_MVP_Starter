@@ -163,6 +163,33 @@ class PiModelProxy:
         profile = self._profile(profile_id)
         return self.capability_probe.probe(profile)
 
+    @staticmethod
+    def _provider_events(
+        provider: Any,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        options: dict[str, Any],
+    ) -> Iterator[dict[str, Any]]:
+        """Keep provider failures inside the model-stream protocol.
+
+        A model request is already an HTTP 200 NDJSON response by the time the
+        upstream provider is opened.  Letting an exception escape here used to
+        make the generic server writer emit a legacy ``run.failed`` event that
+        the Pi transport could not understand, leaving the UI waiting forever.
+        """
+        try:
+            yield from provider.stream_agent(model, messages, tools=tools, **options)
+        except Exception as exc:
+            status = getattr(exc, "code", None)
+            code = "model_provider_rejected" if isinstance(status, int) else "model_provider_unavailable"
+            message = (
+                f"模型请求被供应商拒绝（HTTP {status}）"
+                if isinstance(status, int)
+                else "模型流连接失败；请检查模型配置或网络后重试"
+            )
+            yield {"type": "proxy_error", "code": code, "message": message}
+
     def stream(self, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
         profile_id = str(body.get("profileId") or body.get("profile_id") or "")
         if not profile_id:
@@ -200,7 +227,13 @@ class PiModelProxy:
         if reasoning and resolved.get("reasoningEffort"):
             options["reasoning_effort"] = reasoning
         provider = self.models.provider(profile_id)
-        model = str(body.get("model") or profile.get("defaultModel") or "")
+        requested_model = str(body.get("model") or "").strip()
+        # ``configured-assistant-model`` is the provider-neutral placeholder
+        # used while Pi is being constructed.  It must never cross the secure
+        # proxy boundary as a real provider model id.
+        if requested_model in {"configured-assistant-model", "unknown"}:
+            requested_model = ""
+        model = requested_model or str(profile.get("defaultModel") or "").strip()
         if not model:
             raise RuntimeError("assistant_model_required")
 
@@ -210,7 +243,7 @@ class PiModelProxy:
         calls: dict[int, dict[str, str]] = {}
         usage: dict[str, Any] = {}
         finish_reason = "stop"
-        for event in provider.stream_agent(model, messages, tools=tools, **options):
+        for event in self._provider_events(provider, model, messages, tools, options):
             kind = str(event.get("type") or "")
             if kind == "text_delta":
                 if not text_started:
@@ -264,6 +297,14 @@ class PiModelProxy:
             elif kind == "finish":
                 finish_reason = str(event.get("finish_reason") or "stop")
                 usage = dict(event.get("usage") or usage)
+            elif kind == "proxy_error":
+                yield {
+                    "schemaVersion": MODEL_STREAM_SCHEMA,
+                    "type": "error",
+                    "code": str(event.get("code") or "model_provider_unavailable"),
+                    "message": str(event.get("message") or "模型流连接失败"),
+                }
+                return
 
         if text_started:
             yield {"schemaVersion": MODEL_STREAM_SCHEMA, "type": "text_end"}

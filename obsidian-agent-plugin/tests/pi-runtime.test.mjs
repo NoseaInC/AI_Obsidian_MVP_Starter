@@ -140,3 +140,50 @@ test("Pi restores durable conversation history without exposing provider thinkin
     await dispose();
   }
 });
+
+test("Pi fails closed when the model proxy ends without a terminal event", async () => {
+  const {module, dispose} = await loadRuntime();
+  const persisted = [];
+  const transport = {
+    async registerTaskAuthorization(body) { return {taskAuthorization: body.taskAuthorization}; },
+    async appendRuntimeEvents(body) { persisted.push(...body.events); return {lastEventSequence: body.events.at(-1)?.sequence ?? 0}; },
+    async toolContracts() { return {schemaVersion: 1, items: []}; },
+    async streamModelProxy(_body, onEvent) { onEvent({type: "start"}); },
+  };
+  try {
+    const runtime = new module.PiAgentRuntime(transport);
+    const chunks = [];
+    for await (const chunk of runtime.query(runtime.prepareTurn({message: "不会永久等待", conversationId: "conversation-eof"}))) chunks.push(chunk);
+    assert.equal(chunks.at(-1).type, "error");
+    assert.match(chunks.at(-1).content, /未收到完成事件/);
+    assert.equal(runtime.getConversationState().status, "failed");
+  } finally {
+    await dispose();
+  }
+});
+
+test("Pi forwards the selected profile model instead of its construction placeholder", async () => {
+  const {module, dispose} = await loadRuntime();
+  let requestedModel = "";
+  const transport = {
+    async registerTaskAuthorization(body) { return {taskAuthorization: body.taskAuthorization}; },
+    async appendRuntimeEvents(body) { return {lastEventSequence: body.events.at(-1)?.sequence ?? 0}; },
+    async toolContracts() { return {schemaVersion: 1, items: []}; },
+    async streamModelProxy(body, onEvent) {
+      requestedModel = body.model;
+      onEvent({type: "start"});
+      onEvent({type: "text_start"});
+      onEvent({type: "text_delta", delta: "ok"});
+      onEvent({type: "text_end"});
+      onEvent({type: "done", finishReason: "stop"});
+    },
+  };
+  try {
+    const runtime = new module.PiAgentRuntime(transport);
+    const turn = runtime.prepareTurn({message: "test", conversationId: "conversation-model", model: "deepseek-v4-pro"});
+    for await (const _chunk of runtime.query(turn)) { /* consume */ }
+    assert.equal(requestedModel, "deepseek-v4-pro");
+  } finally {
+    await dispose();
+  }
+});

@@ -175,3 +175,7 @@ Action, Snapshot, Diff, Transaction and Undo records remain private recovery inf
 ## D-044 — Pi is the sole Agent kernel
 
 Pi Agent Core and Pi AI own the model/tool loop, Session Tree, Steering, Follow-up, Compaction and events in the Obsidian TypeScript process. Python retains the secure model proxy, Keychain, governed tool execution, hybrid index, transactions and persistence. PydanticAI no longer participates in production. Runtime upgrades use a two-phase handshake: Python validates the merged clean commit, while the plugin owns fixed check/build/install/restart/health operations and invokes governed rollback on failure.
+
+## D-045 — Model identity is resolved at the proxy and every stream is terminal
+
+Provider-neutral runtime identifiers such as `configured-assistant-model` never cross the secure model-proxy boundary as provider model names. The proxy resolves them through the selected Profile and emits the protocol's canonical `error` event for provider failures. The TypeScript transport treats timeout and EOF without `done` or `error` as failure, so every started turn reaches exactly one terminal client state. UI setup is single-flight and crash recovery expires orphaned Pi Runs; neither a provider rejection nor a plugin restart may leave a permanently running task.
