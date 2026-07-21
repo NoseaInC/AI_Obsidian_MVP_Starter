@@ -60,6 +60,14 @@ def safe_read_note(vault: Path, relative: str) -> Path:
     return target
 
 
+def _protected(path: Path) -> bool:
+    """Check whether a note has reviewed/core status that prohibits mutation."""
+    if not path.is_file():
+        return False
+    meta = ingest_pdf.parse_frontmatter(path.read_text(encoding="utf-8", errors="replace"))
+    return str(meta.get("status", "")) in ingest_pdf.READ_ONLY_STATUSES
+
+
 def _terms(value: str) -> set[str]:
     return {item.casefold() for item in WORD.findall(value) if len(item) > 1}
 
@@ -375,3 +383,66 @@ def related_notes(vault: Path, payload: dict[str, Any], index: VaultReadIndex | 
             if len(backlinks) >= 30:
                 break
     return {"path": relative, "outlinks": outlinks, "backlinks": backlinks}
+
+
+# ── Vault mutation tools ──────────────────────────────────────────────
+
+
+def move_vault_note(vault: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    """Move a Markdown note from source to destination within the Vault safe roots.
+
+    The source must exist and be inside a model-visible root.  The destination
+    must be a valid ``.md`` path whose parent chain falls within the same safe
+    roots.  Parent directories are created automatically.  Existing destination
+    files are rejected to avoid accidental overwrites.  reviewed/core notes
+    cannot be moved.
+    """
+    source = safe_read_note(vault, str(payload.get("source", "")))
+    destination = safe_note(vault, str(payload.get("destination", "")))
+
+    if not source.is_file():
+        raise FileNotFoundError("source_note_not_found")
+    if destination.exists():
+        raise FileExistsError("destination_already_exists")
+
+    # Validate destination is also in safe roots
+    try:
+        dest_relative = destination.relative_to(vault.resolve())
+        if not _safe_relative(dest_relative):
+            raise ValueError("invalid_note_path")
+    except ValueError:
+        raise ValueError("invalid_note_path")
+
+    if _protected(source):
+        raise PermissionError("reviewed_core_read_only")
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    source.rename(destination)
+
+    return {
+        "source": str(source.relative_to(vault)),
+        "destination": str(destination.relative_to(vault)),
+        "action": "moved",
+    }
+
+
+def delete_vault_note(vault: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    """Delete a Markdown note from the Vault safe roots.
+
+    The target must exist and be inside a model-visible root.  reviewed/core
+    notes cannot be deleted.
+    """
+    target = safe_read_note(vault, str(payload.get("path", "")))
+
+    if not target.is_file():
+        raise FileNotFoundError("note_not_found")
+
+    if _protected(target):
+        raise PermissionError("reviewed_core_read_only")
+
+    target.unlink()
+
+    return {
+        "path": str(target.relative_to(vault)),
+        "action": "deleted",
+    }
