@@ -85,10 +85,20 @@ export class PiEventAdapter {
         status: event.isError ? "failed" : "completed",
       }];
     }
-    if (event.type === "agent_end") {
-      return [{...base(), type: "done", status: "completed"}];
-    }
+    // agent_end also fires after an errored provider stream.  The runtime,
+    // which can inspect agent.state.errorMessage, owns the terminal decision.
+    if (event.type === "agent_end") return [];
     return [];
+  }
+
+  completed(): AgentChunk {
+    return {
+      runId: this.identity.runId,
+      conversationId: this.identity.conversationId,
+      sequence: ++this.sequence,
+      type: "done",
+      status: "completed",
+    };
   }
 
   failed(error: unknown, partial: boolean): AgentChunk {

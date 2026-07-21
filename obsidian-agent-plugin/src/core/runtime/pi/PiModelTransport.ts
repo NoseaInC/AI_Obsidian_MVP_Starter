@@ -173,7 +173,7 @@ export class PiModelTransport {
         partial.usage = finalUsage;
         partial.stopReason = String(event.finishReason ?? "stop") as "stop" | "length" | "toolUse";
         stream.push({type: "done", reason: partial.stopReason, message: {...partial, content: [...partial.content]}});
-      } else if (type === "error") {
+      } else if (type === "error" || type === "run.failed") {
         pushError(String(event.message ?? event.code ?? "Model proxy failed"));
       }
     }, requestController.signal).then(() => {

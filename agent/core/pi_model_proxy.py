@@ -194,11 +194,43 @@ class PiModelProxy:
             yield {"type": "proxy_error", "code": code, "message": message}
 
     def stream(self, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
+        """Keep every startup failure inside the versioned model protocol.
+
+        The HTTP response is already an NDJSON stream when this generator is
+        first advanced.  A validation/profile failure before the first
+        ``start`` event must therefore become a normal terminal ``error``
+        event; emitting the server's legacy ``run.failed`` shape leaves the
+        TypeScript transport without a terminal model event.
+        """
+        try:
+            yield from self._stream(body)
+        except Exception as exc:
+            code = str(exc) or type(exc).__name__
+            messages = {
+                "assistant_model_profile_required": "尚未选择助手模型；请先选择一个已配置的模型",
+                "model_profile_unavailable": "所选模型配置不可用；请重新选择模型",
+                "assistant_model_required": "模型配置缺少模型名称",
+                "model_messages_invalid": "当前会话历史过长；系统需要先压缩上下文",
+                "model_message_too_large": "当前会话中有一条消息过长；请压缩上下文后重试",
+                "tool_result_too_large": "工具结果过长；请缩小读取范围后重试",
+            }
+            yield {
+                "schemaVersion": MODEL_STREAM_SCHEMA,
+                "type": "error",
+                "code": code if code in messages else "model_stream_invalid",
+                "message": messages.get(code, "模型请求未能启动；请检查模型配置或上下文后重试"),
+            }
+
+    def _stream(self, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
         profile_id = str(body.get("profileId") or body.get("profile_id") or "")
         if not profile_id:
             routes = self.models.routing()
             route = routes.get("assistant_chat") or routes.get("assistant") or {}
             profile_id = str(route.get("profileId") or "")
+        if not profile_id:
+            enabled = [item for item in self.models.list() if item.get("enabled", True) and item.get("configured")]
+            if len(enabled) == 1:
+                profile_id = str(enabled[0].get("id") or "")
         if not profile_id:
             raise RuntimeError("assistant_model_profile_required")
         profile = self._profile(profile_id)

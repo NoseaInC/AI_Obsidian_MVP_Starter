@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-07-20
+Last updated: 2026-07-21
 
 ## Current phase
 
@@ -19,6 +19,7 @@ The `pi-agent-runtime` migration is active. Pi Agent Core and Pi AI now own the 
 - Provider-returned thinking blocks now cross the Pi boundary as typed, ordered `reasoning` events and appear in a separate collapsible “模型推理” block. The UI never synthesizes reasoning from tool traces or execution summaries. Reasoning remains local Run-event state: it is excluded from Markdown, ordinary conversation text and future model context.
 - Pi stall budgets now reset at the start of every Run instead of inheriting the age of a long-lived conversation. This closes the real `stall_guard_elapsed_time_limit` failure that previously rejected the first model request after a conversation had remained open for more than 30 minutes.
 - Pi model dispatch now resolves the provider-neutral `configured-assistant-model` placeholder to the selected Profile's real `defaultModel`. Provider rejections, premature NDJSON EOF and 45-second no-activity stalls always terminate the Run with a recoverable error instead of leaving “正在连接已选模型…” spinning forever. Assistant submit setup is single-flight, clears the submitted composer immediately and keeps the in-flight Stop control usable; Runtime restart also fails and releases orphaned Pi Runs.
+- Assistant Auto mode now resolves an enabled configured Profile before constructing the Pi Turn, and the model proxy has a single-configured-Profile fallback when routing is temporarily empty. Startup validation/profile failures stay inside the versioned model stream, legacy `run.failed` is terminal, and `agent_end` no longer emits a false success before an error. The installed Obsidian build was restarted and a real Keychain-backed UI turn completed with the exact answer “知序实时链路正常”; full offline checks passed (40 ingestion/review tests, 155 Agent tests and 76 plugin tests, plus typecheck/build).
 - The first structured write plan freezes concrete paths, roots and operations for the Turn; a later plan cannot silently expand authority.
 - Developer deployment is a two-phase handshake: Python validates a merged clean commit, while the plugin owns fixed check/build/install/restart/health steps and governed rollback.
 - Real Keychain-backed DeepSeek A–H acceptance passed against a temporary Vault and project. It covered read, retrieval, direct verified write, exact-byte Undo, plan-only, developer worktree/test/build/merge/activation, Steering and three queued Follow-ups without exposing the Key or touching real knowledge notes.

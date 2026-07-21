@@ -2185,6 +2185,9 @@ export class LearningAgentMainView extends ItemView {
     networkStatusLabel = mode.createSpan();
     const enabledProfiles = profiles.filter(item => item.enabled);
     let selectedProfileId = String(routes.assistant_chat?.profileId ?? routes.assistant?.profileId ?? "");
+    if (!selectedProfileId || !enabledProfiles.some(item => item.id === selectedProfileId)) {
+      selectedProfileId = String(enabledProfiles[0]?.id ?? "");
+    }
     const modelPicker = composerTools.createDiv({cls: "la-model-picker"});
     const modelTrigger = modelPicker.createEl("button", {
       cls: "la-composer-model",

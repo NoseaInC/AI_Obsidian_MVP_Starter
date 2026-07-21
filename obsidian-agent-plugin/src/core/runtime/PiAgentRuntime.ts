@@ -236,7 +236,7 @@ export class PiAgentRuntime implements AgentRuntime {
         if (cancelled || signal?.aborted) await emit(adapter.cancelled());
         else if (session.agent.state.errorMessage) {
           await emit(adapter.failed(new Error(session.agent.state.errorMessage), session.events.some(item => item.type === "text")));
-        }
+        } else await emit(adapter.completed());
       })
       .catch(async error => {
         failure = error;

@@ -182,6 +182,26 @@ class PiModelProxyTests(unittest.TestCase):
         self.assertEqual(provider.request["model"], "fake-tool-model")
         self.assertEqual(events[0]["model"], "fake-tool-model")
 
+    def test_single_configured_profile_is_used_when_auto_route_is_empty(self) -> None:
+        provider = _AgentProvider()
+        body = {
+            "context": {"messages": [{"role": "user", "content": "continue"}], "tools": []},
+        }
+        with patch.object(self.service.models, "provider", return_value=provider):
+            events = list(self.service.stream_model_proxy(body))
+        self.assertEqual(events[0]["type"], "start")
+        self.assertEqual(events[0]["model"], "fake-tool-model")
+        self.assertEqual(events[-1]["type"], "done")
+
+    def test_startup_validation_failure_is_a_terminal_model_protocol_error(self) -> None:
+        events = list(self.service.stream_model_proxy({
+            "profileId": self.profile["id"],
+            "context": {"messages": "not-a-list", "tools": []},
+        }))
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["type"], "error")
+        self.assertEqual(events[0]["code"], "model_messages_invalid")
+
     def test_provider_rejection_is_a_terminal_model_protocol_error(self) -> None:
         body = {
             "profileId": self.profile["id"],
