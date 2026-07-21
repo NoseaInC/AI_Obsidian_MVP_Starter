@@ -59,6 +59,7 @@ export interface PiRuntimeTransport {
     onEvent: (event: Record<string, unknown>) => void,
     signal?: AbortSignal,
   ): Promise<void>;
+  modelCapabilities?(profileId?: string): Promise<Record<string, unknown>>;
   registerTaskAuthorization(body: unknown): Promise<Record<string, unknown>>;
   appendRuntimeEvents(body: unknown): Promise<Record<string, unknown>>;
   runtimeEvents(runId: string, afterSequence?: number): Promise<Record<string, unknown>>;

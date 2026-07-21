@@ -44,6 +44,7 @@ from agent.core.structured_workflow import StructuredWorkflowRunner
 from agent.skills import build_skill_registry
 from agent.tools import build_tool_registry
 from agent.tools.change_set import ChangeSetTools
+from agent.tools.vault_access import safe_read_note
 
 
 class AgentService:
@@ -1630,10 +1631,14 @@ class AgentService:
             },
             {
                 "name": "read_vault_note",
-                "description": "读取搜索结果中的一篇安全 Markdown 笔记正文；修改或综合前应先读取。",
+                "description": "分页读取搜索结果中的安全 Markdown 笔记正文；长笔记按 next_offset 继续读取，修改或完整复制前必须读到 truncated=false。",
                 "input_schema": {
                     "type": "object",
-                    "properties": {"path": {"type": "string", "minLength": 1, "maxLength": 500}},
+                    "properties": {
+                        "path": {"type": "string", "minLength": 1, "maxLength": 500},
+                        "offset": {"type": "integer", "minimum": 0, "maximum": 10_000_000},
+                        "max_chars": {"type": "integer", "minimum": 100, "maximum": 50_000},
+                    },
                     "required": ["path"],
                     "additionalProperties": False,
                 },
@@ -1644,7 +1649,7 @@ class AgentService:
                 "permission_level": "read_only",
                 "idempotent": True,
                 "cancellable": False,
-                "max_result_bytes": 32000,
+                "max_result_bytes": 200000,
             },
             {
                 "name": "find_related_notes",
@@ -1714,6 +1719,27 @@ class AgentService:
                         "writes": {"type": "array", "minItems": 1, "maxItems": 10, "items": markdown_write},
                     },
                     "required": ["title", "writes"],
+                    "additionalProperties": False,
+                },
+                "idempotent": False,
+            },
+            {
+                **common,
+                "name": "plan_vault_copy",
+                "description": "把已有安全 Markdown 笔记完整复制到 01-Inbox 或 20-Knowledge/Drafts 下的新目录，并生成一个或多个内部 Change Set。正文由 Harness 本地读取，禁止模型先读取再把全文塞进工具参数。返回 change_sets 后逐个调用 apply_vault_change。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "minLength": 1, "maxLength": 200},
+                        "source_paths": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 50,
+                            "items": {"type": "string", "minLength": 1, "maxLength": 500},
+                        },
+                        "destination_root": {"type": "string", "minLength": 1, "maxLength": 500},
+                    },
+                    "required": ["title", "source_paths", "destination_root"],
                     "additionalProperties": False,
                 },
                 "idempotent": False,
@@ -1910,7 +1936,7 @@ class AgentService:
         call_id = str(body.get("toolCallId") or "")
         if not run_id or not turn_id or not call_id:
             raise ValueError("runtime_tool_identity_required")
-        stable_writes = {"plan_vault_change", "apply_vault_change", "undo_agent_action"}
+        stable_writes = {"plan_vault_change", "plan_vault_copy", "apply_vault_change", "undo_agent_action"}
         stable_reads = {
             "get_current_note", "read_vault_note", "find_related_notes",
             "search_public_web", "fetch_public_url",
@@ -1957,6 +1983,68 @@ class AgentService:
                     "authorization": planned["authorization"],
                     "diff": self.brain_change_sets.diff(str(result["id"])),
                 }
+            elif tool_name == "plan_vault_copy":
+                destination_root = str(arguments.get("destination_root") or "").strip().strip("/")
+                if not (
+                    destination_root == "01-Inbox"
+                    or destination_root.startswith("01-Inbox/")
+                    or destination_root == "20-Knowledge/Drafts"
+                    or destination_root.startswith("20-Knowledge/Drafts/")
+                ):
+                    raise PermissionError("vault_copy_destination_requires_draft_root")
+                writes: list[dict[str, Any]] = []
+                seen_targets: set[str] = set()
+                for raw_source in list(arguments.get("source_paths") or []):
+                    source = safe_read_note(self.vault, str(raw_source))
+                    if not source.is_file():
+                        raise FileNotFoundError("copy_source_not_found")
+                    source_text = source.read_text(encoding="utf-8", errors="replace")
+                    if str(ingest_pdf.parse_frontmatter(source_text).get("agent_access", "")).strip().casefold() == "denied":
+                        raise PermissionError("agent_access_denied")
+                    target = f"{destination_root}/{source.name}"
+                    if target in seen_targets:
+                        raise ValueError("copy_target_collision")
+                    seen_targets.add(target)
+                    writes.append({
+                        "path": target,
+                        "content": source_text,
+                        "category": "vault-copy",
+                    })
+                change_sets: list[dict[str, Any]] = []
+                title = str(arguments.get("title") or "复制 Vault 笔记")
+                for batch_index in range(0, len(writes), 10):
+                    batch = writes[batch_index:batch_index + 10]
+                    planned = self.brain_change_sets.create({
+                        "run_id": run_id,
+                        "task_authorization_id": authorization_id,
+                        "title": title if len(writes) <= 10 else f"{title}（{batch_index // 10 + 1}）",
+                        "writes": batch,
+                    })
+                    _, bundle = self.brain_change_sets.prepared(str(planned["id"]))
+                    try:
+                        authorization = self.task_authorizations.plan(
+                            authorization_id,
+                            list(bundle["writes"]),
+                        )
+                    except Exception:
+                        self.brain_change_sets.update_state(str(planned["id"]), "failed")
+                        raise
+                    # Keep the full authenticated Diff in the Change Set store.
+                    # Returning every copied body/Diff to the model would defeat
+                    # this server-side batch tool and can exhaust the transport.
+                    change_sets.append({
+                        "id": planned["id"],
+                        "state": planned["state"],
+                        "title": planned["title"],
+                        "files": [item["path"] for item in planned["writes"]],
+                        "fileCount": len(planned["writes"]),
+                    })
+                result = {
+                    "sourceCount": len(writes),
+                    "destinationRoot": destination_root,
+                    "change_sets": change_sets,
+                    "next": "逐个调用 apply_vault_change，并传入每个 change_set 的 id",
+                }
             elif tool_name == "apply_vault_change":
                 result = self.reversible_transactions.apply_change_set(
                     self.brain_change_sets,
@@ -1974,7 +2062,11 @@ class AgentService:
             elif tool_name in {"get_current_note", "read_vault_note"}:
                 result = self.tools.call(
                     "read_note_excerpt",
-                    {"path": str(arguments.get("path") or "")},
+                    {
+                        "path": str(arguments.get("path") or ""),
+                        "offset": max(0, int(arguments.get("offset") or 0)),
+                        "max_chars": max(100, min(50_000, int(arguments.get("max_chars") or 12_000))),
+                    },
                     run_id=run_id,
                     step_id=f"{turn_id}:{call_id}",
                     allowed_permissions=("read_only",),

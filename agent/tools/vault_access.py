@@ -347,11 +347,25 @@ def read_note_excerpt(vault: Path, payload: dict[str, Any]) -> dict[str, Any]:
     path = safe_read_note(vault, str(payload.get("path", "")))
     if not path.is_file():
         raise FileNotFoundError("note_not_found")
-    max_chars = max(100, min(4000, int(payload.get("max_chars", 1200))))
+    # This is a paged transport boundary, not a model-context limit.  The old
+    # 4,000/8,000 character clamp made complete long-note reads impossible and
+    # encouraged the model to guess from truncated text.  Keep each result
+    # bounded, but let the caller continue deterministically with next_offset.
+    offset = max(0, int(payload.get("offset", 0)))
+    max_chars = max(100, min(50_000, int(payload.get("max_chars", 12_000))))
     text = path.read_text(encoding="utf-8", errors="replace")
     if str(ingest_pdf.parse_frontmatter(text).get("agent_access", "")).strip().casefold() == "denied":
         raise PermissionError("agent_access_denied")
-    return {"title": path.stem, "path": str(path.relative_to(vault)), "excerpt": text[:max_chars], "truncated": len(text) > max_chars}
+    end = min(len(text), offset + max_chars)
+    return {
+        "title": path.stem,
+        "path": str(path.relative_to(vault)),
+        "content": text[offset:end],
+        "offset": offset,
+        "next_offset": end if end < len(text) else None,
+        "total_chars": len(text),
+        "truncated": end < len(text),
+    }
 
 
 def related_notes(vault: Path, payload: dict[str, Any], index: VaultReadIndex | None = None) -> dict[str, Any]:

@@ -26,6 +26,7 @@ interface PiConversation {
   state: AgentConversationState;
   events: AgentChunk[];
   stallGuard: PiStallGuard;
+  modelLimits: {contextWindow: number; maxTokens: number};
 }
 
 const CAPABILITIES: Readonly<AgentRuntimeCapabilities> = Object.freeze({
@@ -54,7 +55,10 @@ const SYSTEM_PROMPT = `你是知序（Zhixu），一个运行在 Obsidian 内的
 
 不要把思维链混入最终回答。供应商若通过独立 reasoning block 返回推理，由传输层原样处理；你只需保持最终回答简洁、准确，工具执行细节由真实事件界面展示。`;
 
-function createModel(identity: PiRunIdentity): Model<any> {
+function createModel(
+  identity: PiRunIdentity,
+  limits: {contextWindow: number; maxTokens: number} = {contextWindow: 128_000, maxTokens: 32_000},
+): Model<any> {
   const id = identity.model || "configured-assistant-model";
   return {
     id,
@@ -65,9 +69,29 @@ function createModel(identity: PiRunIdentity): Model<any> {
     reasoning: true,
     input: ["text"],
     cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
-    contextWindow: 128_000,
-    maxTokens: 32_000,
+    contextWindow: limits.contextWindow,
+    maxTokens: limits.maxTokens,
   };
+}
+
+function numericLimit(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function compactionLimits(limits: {contextWindow: number; maxTokens: number}): {
+  reserve: number;
+  keepRecent: number;
+} {
+  const reserve = Math.min(
+    Math.max(24_000, limits.maxTokens + 8_000),
+    Math.floor(limits.contextWindow * 0.5),
+  );
+  const keepRecent = Math.min(
+    Math.max(28_000, Math.floor(reserve * 0.75)),
+    Math.floor(limits.contextWindow * 0.3),
+  );
+  return {reserve, keepRecent};
 }
 
 function promptWithContext(request: AgentTurnRequest, identity: PiRunIdentity): string {
@@ -154,9 +178,24 @@ export class PiAgentRuntime implements AgentRuntime {
       model: identity.model,
       taskAuthorization: identity.taskAuthorization,
     });
+    const capabilityPayload = this.transport.modelCapabilities
+      ? await this.transport.modelCapabilities(identity.profileId)
+      : {profiles: []};
+    const profiles = Array.isArray(capabilityPayload.profiles) ? capabilityPayload.profiles : [];
+    const selected = profiles.find(raw => {
+      const item = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+      return String(item.id ?? "") === identity.profileId || String(item.model ?? "") === identity.model;
+    }) as Record<string, unknown> | undefined;
+    const resolved = selected?.capabilities && typeof selected.capabilities === "object"
+      ? selected.capabilities as Record<string, unknown>
+      : {};
+    session.modelLimits = {
+      contextWindow: numericLimit(resolved.contextWindow, 128_000),
+      maxTokens: numericLimit(resolved.maxOutputTokens, 32_000),
+    };
     const contracts = await this.transport.toolContracts();
     session.agent.state.systemPrompt = SYSTEM_PROMPT;
-    session.agent.state.model = createModel(identity);
+    session.agent.state.model = createModel(identity, session.modelLimits);
     session.agent.state.thinkingLevel = turn.request.options?.reasoning_mode === "deep" ? "high" : "medium";
     session.agent.state.tools = createPiTools(contracts.items, identity, this.transport, session.stallGuard);
 
@@ -262,7 +301,14 @@ export class PiAgentRuntime implements AgentRuntime {
     const session = this.runIndex.get(runId);
     if (!session) throw new Error("pi_run_not_found");
     if (session.agent.state.isStreaming) throw new Error("pi_compaction_requires_idle_run");
-    const compacted = compactAgentMessages(session.agent.state.messages, 128_000, 24_000, 28_000, true);
+    const compact = compactionLimits(session.modelLimits);
+    const compacted = compactAgentMessages(
+      session.agent.state.messages,
+      session.modelLimits.contextWindow,
+      compact.reserve,
+      compact.keepRecent,
+      true,
+    );
     if (!compacted.compacted) throw new Error("pi_compaction_not_applicable");
     session.agent.state.messages = compacted.messages;
     const checkpointId = `checkpoint-${crypto.randomUUID()}`;
@@ -346,7 +392,13 @@ export class PiAgentRuntime implements AgentRuntime {
       stallGuard: PiStallGuard;
       lastCompactionTokens: number;
       onCompacted?: (checkpointId: string) => Promise<void>;
-    } = {identity, stallGuard: new PiStallGuard(), lastCompactionTokens: 0};
+      modelLimits: {contextWindow: number; maxTokens: number};
+    } = {
+      identity,
+      stallGuard: new PiStallGuard(),
+      lastCompactionTokens: 0,
+      modelLimits: {contextWindow: 128_000, maxTokens: 32_000},
+    };
     const agent = new Agent({
       initialState: {
         systemPrompt: SYSTEM_PROMPT,
@@ -357,7 +409,13 @@ export class PiAgentRuntime implements AgentRuntime {
       streamFn: (model, context, options) => this.modelTransport.stream(holder.identity, model, context, options, holder.stallGuard),
       transformContext: async messages => {
         try {
-          const result = compactAgentMessages(messages, 128_000, 24_000, 28_000);
+          const compact = compactionLimits(holder.modelLimits);
+          const result = compactAgentMessages(
+            messages,
+            holder.modelLimits.contextWindow,
+            compact.reserve,
+            compact.keepRecent,
+          );
           if (result.compacted && result.tokensBefore !== holder.lastCompactionTokens) {
             holder.lastCompactionTokens = result.tokensBefore;
             await holder.onCompacted?.(`checkpoint-${crypto.randomUUID()}`);
@@ -383,6 +441,7 @@ export class PiAgentRuntime implements AgentRuntime {
       identity,
       events: [],
       stallGuard: holder.stallGuard,
+      modelLimits: holder.modelLimits,
       state: {
         conversationId: identity.conversationId,
         runId: identity.runId,
@@ -401,6 +460,12 @@ export class PiAgentRuntime implements AgentRuntime {
       get: () => holder.onCompacted,
       set: value => { holder.onCompacted = value; },
       enumerable: false,
+      configurable: false,
+    });
+    Object.defineProperty(session, "modelLimits", {
+      get: () => holder.modelLimits,
+      set: value => { holder.modelLimits = value; },
+      enumerable: true,
       configurable: false,
     });
     this.conversations.set(identity.conversationId, session);

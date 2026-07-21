@@ -43,6 +43,7 @@ def normalized_model_settings(profile: dict[str, Any]) -> dict[str, Any]:
     defaults: dict[str, Any] = {
         "temperature": 0.3,
         "maxTokens": 3000,
+        "contextWindow": 128_000,
         "timeout": 30,
         "streaming": True,
         "jsonSchema": True,
@@ -344,6 +345,7 @@ class ModelProfileService:
             "apiKeyReference": reference, "defaultModel": str(data.get("defaultModel", "")).strip(),
             "availableModels": [str(item) for item in data.get("availableModels", [])], "enabled": bool(data.get("enabled", True)),
             "settings": {"temperature": float(settings.get("temperature", .3)), "maxTokens": int(settings.get("maxTokens", 2000)),
+                         "contextWindow": int(settings.get("contextWindow", 128_000)),
                          "timeout": float(settings.get("timeout", 30)), "streaming": bool(settings.get("streaming", True)),
                          "jsonSchema": bool(settings.get("jsonSchema", True)), "toolCalling": native_tool_calling,
                          "nativeToolCalling": native_tool_calling,

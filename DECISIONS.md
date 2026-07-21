@@ -183,3 +183,7 @@ Provider-neutral runtime identifiers such as `configured-assistant-model` never 
 ## D-046 — Provider reasoning is visible only as an authentic protocol block
 
 When a configured provider returns a dedicated `reasoning_content` block, the secure proxy and Pi adapter preserve its ordered start/delta/end events and the Assistant renders that content in a separate collapsible “模型推理” section. The UI must not infer, summarize or fabricate reasoning from final text, tool calls, execution stages, system prompts or runtime internals. Provider reasoning is local Run-event state only: it is not Markdown knowledge, ordinary conversation text or future model context. Providers or models that return no reasoning block produce no reasoning section.
+
+## D-047 — Large content is paged or moved locally, never serialized through the model twice
+
+A model context window, model output budget and tool-result page are distinct limits. The selected Model Profile/capability probe owns context and output limits; the runtime must not impose an undocumented 32K clamp. Long Markdown reads use explicit `offset`, `next_offset` and `truncated` fields. Exact multi-file copy/organization operations use a governed Harness-side batch tool so note bodies travel from local source files into authenticated Change Sets without first being echoed through model function arguments. Provider output ending at `finish_reason=length` or containing malformed function arguments is a typed terminal protocol error and must never reach the plugin as a partial JSON tool call.

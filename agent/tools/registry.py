@@ -253,7 +253,8 @@ def build_tool_registry(
         "type": "object",
         "properties": {
             "path": {"type": "string", "minLength": 1, "maxLength": 500},
-            "max_chars": {"type": "integer", "minimum": 100, "maximum": 8000},
+            "offset": {"type": "integer", "minimum": 0, "maximum": 10_000_000},
+            "max_chars": {"type": "integer", "minimum": 100, "maximum": 50_000},
         },
         "required": ["path"],
         "additionalProperties": False,
@@ -435,10 +436,10 @@ def build_tool_registry(
     )
     register(
         "read_note_excerpt",
-        "读取指定 Markdown 笔记的受限正文；在修改或解释前应先读取。",
+        "分页读取指定 Markdown 笔记正文；若 truncated=true，使用 next_offset 继续读取，不能把单页上限误认为笔记或模型上限。",
         note_excerpt,
         lambda p: read_note_excerpt(vault, p),
-        max_result_bytes=32_000,
+        max_result_bytes=200_000,
     )
     register(
         "get_related_notes",

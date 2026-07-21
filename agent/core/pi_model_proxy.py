@@ -150,7 +150,10 @@ class PiModelProxy:
                     "provider": item["providerType"],
                     "model": item["defaultModel"],
                     "configured": item["configured"],
-                    "capabilities": CapabilityResolver.resolve(self.capability_probe.cached(item)),
+                    "capabilities": CapabilityResolver.resolve(
+                        self.capability_probe.cached(item),
+                        normalized_model_settings(item),
+                    ),
                     "probe": self.capability_probe.cached(item),
                 }
                 for item in profiles
@@ -211,15 +214,21 @@ class PiModelProxy:
         tools = _provider_tools(context.get("tools"))
         settings = normalized_model_settings(profile)
         cached_probe = self.capability_probe.cached(profile)
-        resolved = CapabilityResolver.resolve(cached_probe)
+        resolved = CapabilityResolver.resolve(cached_probe, settings)
         requested = body.get("options") if isinstance(body.get("options"), dict) else {}
         options: dict[str, Any] = {
             "temperature": float(requested.get("temperature", settings.get("temperature", 0.3))),
-            "max_tokens": min(
-                int(requested.get("maxTokens", settings.get("maxTokens", 3000))),
-                min(32_000, int(resolved.get("maxOutputTokens") or 3_000)),
-            ),
         }
+        # The previous 32K clamp could cut a streamed function-call JSON in
+        # half, producing "Unexpected end of JSON input" after long write
+        # plans.  The model profile/capability probe is now the single source
+        # of truth. A non-positive configured value means provider default.
+        configured_output = int(settings.get("maxTokens") or 0)
+        resolved_output = int(resolved.get("maxOutputTokens") or configured_output or 0)
+        requested_output = int(requested.get("maxTokens") or configured_output or resolved_output or 0)
+        output_limits = [value for value in (requested_output, configured_output, resolved_output) if value > 0]
+        if output_limits:
+            options["max_tokens"] = min(output_limits)
         if tools:
             options["tool_choice"] = "auto"
             options["parallel_tool_calls"] = bool(resolved.get("parallelToolCalls", False))
@@ -310,10 +319,41 @@ class PiModelProxy:
             yield {"schemaVersion": MODEL_STREAM_SCHEMA, "type": "text_end"}
         if thinking_started:
             yield {"schemaVersion": MODEL_STREAM_SCHEMA, "type": "thinking_end"}
+        # Never pass a half-serialized function call to the plugin. Providers
+        # commonly end with finish_reason=length when the configured output
+        # budget is exhausted. JSON.parse would otherwise surface only the
+        # misleading "Unexpected end of JSON input" and the entire run would
+        # be reported as pi_runtime_failed.
+        if calls and finish_reason == "length":
+            yield {
+                "schemaVersion": MODEL_STREAM_SCHEMA,
+                "type": "error",
+                "code": "model_tool_arguments_truncated",
+                "message": "模型输出达到当前配置上限，工具参数未完整返回；请缩小单次工具调用或使用批量 Vault 工具",
+            }
+            return
         for index in sorted(calls):
             state = calls[index]
             if not state.get("started"):
                 raise RuntimeError("incomplete_streamed_tool_call")
+            try:
+                arguments = json.loads(state["arguments"] or "{}")
+            except json.JSONDecodeError:
+                yield {
+                    "schemaVersion": MODEL_STREAM_SCHEMA,
+                    "type": "error",
+                    "code": "model_tool_arguments_invalid",
+                    "message": "供应商返回了不完整的工具参数；请重试或改用批量 Vault 工具",
+                }
+                return
+            if not isinstance(arguments, dict):
+                yield {
+                    "schemaVersion": MODEL_STREAM_SCHEMA,
+                    "type": "error",
+                    "code": "model_tool_arguments_invalid",
+                    "message": "供应商返回的工具参数不是 JSON 对象",
+                }
+                return
             yield {
                 "schemaVersion": MODEL_STREAM_SCHEMA,
                 "type": "tool_call_end",

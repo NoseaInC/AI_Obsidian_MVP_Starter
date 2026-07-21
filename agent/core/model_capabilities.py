@@ -137,10 +137,19 @@ class DeepSeekCapabilityProbe:
 
 class CapabilityResolver:
     @staticmethod
-    def resolve(probe: dict[str, Any] | None) -> dict[str, Any]:
+    def resolve(
+        probe: dict[str, Any] | None,
+        settings: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         values = (probe or {}).get("capabilities") or {}
+        configured = settings or {}
         supported = lambda name: (values.get(name) or {}).get("status") == "supported"
-        numeric = lambda name, fallback: int((values.get(name) or {}).get("value") or fallback)
+        def numeric(name: str, fallback: int, configured_name: str | None = None) -> int:
+            return int(
+                (values.get(name) or {}).get("value")
+                or configured.get(configured_name or name)
+                or fallback
+            )
         return {
             "basicStreaming": supported("basicStreaming"),
             "nativeToolCalling": supported("nativeToolCalling"),
@@ -152,5 +161,5 @@ class CapabilityResolver:
             "toolChoiceRequired": supported("toolChoiceRequired"),
             "usageReporting": supported("usageReporting"),
             "contextWindow": numeric("contextWindow", 128_000),
-            "maxOutputTokens": numeric("maxOutputTokens", 3_000),
+            "maxOutputTokens": numeric("maxOutputTokens", 3_000, "maxTokens"),
         }

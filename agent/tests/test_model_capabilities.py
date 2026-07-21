@@ -55,6 +55,11 @@ class CapabilityProbeTests(unittest.TestCase):
         self.assertFalse(conservative["strictToolSchema"])
         self.assertFalse(conservative["reasoningEffort"])
 
+    def test_profile_limits_are_used_when_probe_has_no_numeric_result(self) -> None:
+        resolved = CapabilityResolver.resolve(None, {"contextWindow": 1_000_000, "maxTokens": 384_000})
+        self.assertEqual(resolved["contextWindow"], 1_000_000)
+        self.assertEqual(resolved["maxOutputTokens"], 384_000)
+
 
 if __name__ == "__main__":
     unittest.main()
