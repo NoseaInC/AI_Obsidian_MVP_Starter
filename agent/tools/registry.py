@@ -22,7 +22,9 @@ from .source_search import (
 )
 from .vault_access import (
     VaultReadIndex,
+    delete_vault_note,
     list_vault_folder,
+    move_vault_note,
     read_note_excerpt,
     read_note_metadata,
     related_notes,
@@ -375,6 +377,23 @@ def build_tool_registry(
         "required": ["attachment_id", "query"],
         "additionalProperties": False,
     }
+    move_note = {
+        "type": "object",
+        "properties": {
+            "source": {"type": "string", "minLength": 1, "maxLength": 500},
+            "destination": {"type": "string", "minLength": 1, "maxLength": 500},
+        },
+        "required": ["source", "destination"],
+        "additionalProperties": False,
+    }
+    delete_note = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "minLength": 1, "maxLength": 500},
+        },
+        "required": ["path"],
+        "additionalProperties": False,
+    }
 
     def register(
         name: str,
@@ -629,7 +648,7 @@ def build_tool_registry(
         )
         register(
             "get_recent_conversation_messages",
-            "读取当前会话最近消息；用于解析“这个方法”“刚才那个”等指代。",
+            '读取当前会话最近消息；用于解析“这个方法”“刚才那个”等指代。',
             {
                 "type": "object",
                 "properties": {
@@ -704,4 +723,26 @@ def build_tool_registry(
         change_sets.validate,
         permission="approval_required",
     )
+
+    # -- Vault mutation tools --
+
+    register(
+        "move_vault_note",
+        "将一篇 Markdown 笔记从源路径移动到目标路径；自动创建父目录，目标已存在时拒绝覆盖。reviewed/core 笔记不可移动。",
+        move_note,
+        lambda p: move_vault_note(vault, p),
+        mutates=True,
+        permission="approval_required",
+        idempotent=False,
+    )
+    register(
+        "delete_vault_note",
+        "从 Vault 安全根目录中删除一篇 Markdown 笔记。reviewed/core 笔记不可删除。仅供用户明确请求时使用。",
+        delete_note,
+        lambda p: delete_vault_note(vault, p),
+        mutates=True,
+        permission="approval_required",
+        idempotent=False,
+    )
+
     return registry
