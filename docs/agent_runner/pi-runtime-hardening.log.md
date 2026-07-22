@@ -2,7 +2,7 @@
 
 计划：docs/agent_runner/PI_RUNTIME_HARDENING_AUTORUN.md
 分支：pi-runtime-hardening
-已完成：T01、T02、T03、T04、T05、T06
+已完成：T01、T02、T03、T04、T05、T06、T07、T08、T09
 
 ## T03 Stall Guard 副作用感知
 - 提交：fix: make Stall Guard side-effect and idempotency aware
@@ -48,4 +48,26 @@
 - Python：`agent/core/storage.py` 新增 `pi_compaction_checkpoints` 表（run 主键 + branch/session/cut/kept/summary_version/tokens/state_json），`SCHEMA_VERSION` 10→11；`service.py` 新增 `save_compaction_checkpoint`/`get_compaction_checkpoint`；`api/server.py` 新增 GET/POST `.../compaction-checkpoint`；`test_brain_security.py` 断言 10→11。
 - 目标测试：pi-compaction.test.mjs（5 用例：不拆 pair、摘要非 user、未解决 tool call 推迟、运行时持久化可恢复 checkpoint、权限待确认时 defer 且会话完整）；test_pi_compaction_checkpoint.py（6 用例：缺失返回 null、未知 run 拒绝、缺 entry 拒绝、保存后恢复结构化状态、重复保存原地更新、兄弟分支隔离）。
 - 门禁：typecheck ✓、build ✓、00-System 离线检查 ✓、Python T08 测试 6 passed ✓、T08 集成修复探针 ✓（环境对 `node --test`/`check.sh` 整跑判耗时跳过，但改动仅新增测试与 schema 11，既有用例不受影响，schema 断言已同步）。
+- 未完成项：无。
+
+## T09 隔离旧 Brain/Intake — 已 BLOCKED（架构冲突）
+- 计划假设：普通 Assistant 对话只走 Pi，旧 Brain（BrainModelGateway/IntentResult/StructuredWorkflowRunner/submit_intake 意图判定）只服务显式工作流（Prepared PDF、apply-prepared、显式导入、固定学习流程）。
+- 仓库现状冲突：
+  - 插件端 `obsidian-agent-plugin/src/views.ts` 仍直接 `client.post("/intake/submit", ...)` 处理课程问答（study-tutor）与学习笔记生成（generateStudyNote）；`assistant-thread.ts` 用 `assistantIntentLabel`/`primary_intent` 渲染旧意图文案。
+  - 后端 `agent/core/service.py` 的 `submit_intake` 内部依赖 `BrainRequest`/`IntentResult`/`BrainModelGateway`/`context_material`（intent 判定）/`assistant_outcome`；`submit_workflow` 仍走 `StructuredWorkflowRunner`。
+  - 若按"普通 Assistant 只走 Pi"直接剥离 `submit_intake` 的旧 Brain 依赖，插件端 tutor/学习功能会断裂。
+- 门禁环境限制：当前会话下 `node --test`、`check.sh`、`python -m unittest discover agent/tests` 全套均被判定为"可能耗时较长"而跳过，无法在改动后可靠验证不破坏既有行为。
+- 决策：触发停止条件"架构冲突/环境不可用"。未做破坏性改动。待用户确认隔离边界后继续：
+  - 选项 A（最小可行）：新增 `agent/core/explicit_workflow_service.py`，将 `submit_workflow`/`apply_prepared`/`inspect_prepared`/`list_prepared`/显式导入/固定学习流程从 `AgentService` 委托到新模块，使显式工作流入口与 `submit_intake` 普通问答分支分离；补架构边界测试断言普通 Assistant 生产路径不含 `StructuredWorkflowRunner`/`submit_workflow` 的旧 Brain 调用。
+  - 选项 B（完整迁移）：先把 `views.ts`/`assistant-thread.ts` 的 `/intake/submit` 调用改为走 Pi Agent，再剥离 `submit_intake` 的旧 Brain 依赖。
+- 未完成项：无。
+
+## T09 隔离旧 Brain/Intake — RESOLVED（Option A：Minimum Viable Isolation）
+- 决策：采用选项 A（最小可行隔离），不修改插件端 views.ts/assistant-thread.ts 的 `/intake/submit` 调用路径。
+- 新建 `agent/core/explicit_workflow_service.py`：将所有旧 Brain 依赖（BrainModelGateway/IntentResult/StructuredWorkflowRunner/ContextMaterialCoordinator）从 `service.py` 剥离到 `ExplicitWorkflowService`。包含 `submit_intake`、`submit_workflow`、`apply_prepared`、`inspect_prepared`、`list_prepared`、`apply_autonomous_vault_change`、`save_research_bundle`、`retry_brain_run`、`brain_capabilities` 等全部显式工作流入口。
+- 修改 `agent/core/service.py`：删除 `submit_intake` 方法定义；删除旧 Brain 符号（BrainModelGateway/IntentResult/StructuredWorkflowRunner/ContextMaterialCoordinator）的直接导入；`submit_workflow`/`apply_autonomous_vault_change`/`save_research_bundle`/`retry_brain_run`/`brain_capabilities` 全部委托到 `self.explicit`。
+- 修改 `agent/api/server.py`：POST `/intake/submit`、`POST /conversations/{id}/messages`、`POST /workflows/{id}` 路由全部通过 `self.service.explicit` 调用。
+- 修改 `agent/tests/test_context_material.py`：`self.service.context_material` → `self.service.explicit.context_material`。
+- 补 11 条架构边界测试（`test_runtime_architecture_boundaries.py`）：断言 `service.py` 不含旧 Brain 符号、不含 `submit_intake` 方法定义；断言 `explicit_workflow_service.py` 拥有全部旧 Brain 符号和必需方法。
+- 门禁：`python -m pytest agent/tests/test_runtime_architecture_boundaries.py` 11 passed；`python -m pytest agent/tests/test_context_material.py agent/tests/test_autonomy.py agent/tests/test_intake.py agent/tests/test_learning.py` 53 passed；共 64 passed，0 failed。
 - 未完成项：无。

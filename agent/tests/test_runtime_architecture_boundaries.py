@@ -66,6 +66,36 @@ class RuntimeArchitectureBoundaryTests(unittest.TestCase):
                     imports.append(node.module or "")
             self.assertFalse(any("obsidian-agent-plugin" in item or ".views" in item for item in imports))
 
+    def test_service_layer_isolated_from_legacy_brain(self) -> None:
+        service = (ROOT / "agent" / "core" / "service.py").read_text(encoding="utf-8")
+        banned = (
+            "BrainModelGateway", "IntentResult", "StructuredWorkflowRunner",
+            "AssistantOutcome", "resolve_assistant_outcome", "BrainRequest",
+            "ContextMaterialCoordinator", "submit_intake", "precise_intent",
+            "assistantIntent", "assistant_intent", "primary_intent",
+        )
+        for token in banned:
+            self.assertNotIn(token, service, f"agent/core/service.py still references legacy Brain symbol {token}")
+
+    def test_legacy_brain_logic_relocated_to_explicit_workflow_service(self) -> None:
+        explicit = (ROOT / "agent" / "core" / "explicit_workflow_service.py").read_text(encoding="utf-8")
+        for token in ("BrainModelGateway", "IntentResult", "BrainRequest", "submit_intake", "ContextMaterialCoordinator"):
+            self.assertIn(token, explicit, f"explicit_workflow_service.py must own legacy Brain symbol {token}")
+
+    def test_service_has_no_submit_intake_method(self) -> None:
+        tree = ast.parse((ROOT / "agent" / "core" / "service.py").read_text(encoding="utf-8"), filename="service.py")
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "submit_intake":
+                self.fail("agent/core/service.py must not define submit_intake")
+
+    def test_explicit_workflow_service_owns_legacy_paths(self) -> None:
+        from agent.core.explicit_workflow_service import ExplicitWorkflowService
+        for name in (
+            "submit_intake", "submit_workflow", "apply_autonomous_vault_change",
+            "save_research_bundle", "_complete_local_intake_answer",
+        ):
+            self.assertTrue(hasattr(ExplicitWorkflowService, name), f"ExplicitWorkflowService must own {name}")
+
 
 if __name__ == "__main__":
     unittest.main()

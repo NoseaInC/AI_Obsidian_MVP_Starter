@@ -75,7 +75,7 @@ class VaultAutonomyTests(unittest.TestCase):
             self.service.autonomy.classify("Private/secret.md", allow_missing=True)
 
     def test_diagnostics_reports_conversation_predictions_web_and_undo_boundaries(self) -> None:
-        self.service.submit_intake({"message": "解释倾向得分的直觉"}, "diagnostics-conversation")
+        self.service.explicit.submit_intake({"message": "解释倾向得分的直觉"}, "diagnostics-conversation")
         note = self.vault / "20-Knowledge/Concepts/诊断.md"; note.write_text("# 诊断\n", encoding="utf-8")
         action = self.service.apply_autonomous_vault_change({
             "path": "20-Knowledge/Concepts/诊断.md", "operation": "update_managed_block", "content": "受控内容",

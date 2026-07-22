@@ -276,7 +276,8 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 self._send(200, self.service.undo_agent_action(action_id)); return
             if path == "/intake/submit":
-                payload = self.service.submit_intake(body, self.headers.get("Idempotency-Key", ""))
+                # DEPRECATED: legacy Brain intake. Ordinary Assistant chat uses PiAgentRuntime, not this.
+                payload = self.service.explicit.submit_intake(body, self.headers.get("Idempotency-Key", ""))
             elif path == "/conversations":
                 payload = {"conversation": self.service.create_conversation(body)}
             elif path.startswith("/conversations/") and path.endswith("/export"):
@@ -287,7 +288,7 @@ class Handler(BaseHTTPRequestHandler):
                 payload = self.service.retain_conversation_summary(conversation_id, body.get("confirmed") is True)
             elif path.startswith("/conversations/") and path.endswith("/messages"):
                 conversation_id = self._identifier(path.removeprefix("/conversations/").removesuffix("/messages"))
-                payload = self.service.submit_intake({**body, "conversation_id": conversation_id}, self.headers.get("Idempotency-Key", ""))
+                payload = self.service.explicit.submit_intake({**body, "conversation_id": conversation_id}, self.headers.get("Idempotency-Key", ""))
             elif path == "/jobs":
                 job_id = self.service.enqueue(str(body.get("kind", "")), dict(body.get("payload", {})))
                 payload = {"job": self.service.get_job(job_id)}
@@ -332,7 +333,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/integrations/today/undo": payload = self.service.undo_artifact_today(str(body["artifact_id"]))
             elif path.startswith("/workflows/"):
                 workflow = self._identifier(path.removeprefix("/workflows/"))
-                payload = {"run": self.service.submit_workflow(body, self.headers.get("Idempotency-Key", ""), mode=workflow)}
+                payload = {"run": self.service.explicit.submit_workflow(body, self.headers.get("Idempotency-Key", ""), mode=workflow)}
             elif path == "/web/search": payload = self.service.search_public_web(str(body.get("query") or ""), int(body.get("limit", 8)))
             elif path == "/web/academic": payload = self.service.search_academic_web(str(body.get("query") or ""), int(body.get("limit", 8)))
             elif path == "/web/fetch": payload = {"source": self.service.fetch_public_web(str(body.get("url") or ""))}

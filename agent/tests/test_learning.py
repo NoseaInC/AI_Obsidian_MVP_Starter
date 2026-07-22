@@ -243,7 +243,7 @@ artifact_id: "manual:{name}"
 
     def test_conversation_signals_generate_three_explainable_learning_directions(self):
         service = AgentService(self.vault)
-        result = service.submit_intake({"message": "我还是不理解倾向得分为什么可以用于匹配，想继续深入学习"}, "direction-signal")
+        result = service.explicit.submit_intake({"message": "我还是不理解倾向得分为什么可以用于匹配，想继续深入学习"}, "direction-signal")
         directions = result["intelligence"]["directions"]
         self.assertGreaterEqual(len(directions), 3)
         self.assertEqual({item["horizon"] for item in directions}, {"near", "route", "exploration"})
@@ -284,7 +284,7 @@ artifact_id: "manual:{name}"
         self.note("矩阵公式推导", next_review=date.today().isoformat())
         self.note("回归直觉", next_review=date.today().isoformat())
         service = AgentService(self.vault)
-        result = service.submit_intake({"message": "今天只有 15 分钟，不想看公式。"}, "today-no-formula")
+        result = service.explicit.submit_intake({"message": "今天只有 15 分钟，不想看公式。"}, "today-no-formula")
         self.assertIsNotNone(result["dailyAdjustment"])
         plan = result["dailyAdjustment"]["plan"]
         self.assertLessEqual(plan["totalMinutes"], 15)

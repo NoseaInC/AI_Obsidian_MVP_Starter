@@ -23,14 +23,14 @@ class StructuredContextMaterialTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_plain_prose_never_routes_a_write(self) -> None:
-        result = self.service.submit_intake({"message": "把这个整理并保存到 Obsidian。", "mode": "auto"}, "plain-prose")
+        result = self.service.explicit.submit_intake({"message": "把这个整理并保存到 Obsidian。", "mode": "auto"}, "plain-prose")
         self.assertEqual(result["assistantIntent"]["name"], "answer_question")
         self.assertFalse(result["assistantIntent"]["writeRequested"])
         self.assertFalse(result["organization"])
         self.assertEqual(list((self.vault / "20-Knowledge").rglob("*.md")), [])
 
     def test_explicit_organize_mode_previews_without_writing(self) -> None:
-        result = self.service.submit_intake({
+        result = self.service.explicit.submit_intake({
             "message": "课堂材料：一致性与渐近分布。" * 12,
             "mode": "organize",
         }, "structured-preview")
@@ -41,7 +41,7 @@ class StructuredContextMaterialTests(unittest.TestCase):
         self.assertEqual(list((self.vault / "20-Knowledge").rglob("*.md")), [])
 
     def test_explicit_save_mode_is_reversible(self) -> None:
-        result = self.service.submit_intake({
+        result = self.service.explicit.submit_intake({
             "message": "Delta Method 的定义、条件和来源。",
             "mode": "save",
         }, "structured-save")
@@ -59,7 +59,7 @@ class StructuredContextMaterialTests(unittest.TestCase):
         note = self.vault / "20-Knowledge/Concepts/最大似然估计.md"
         original = "---\nstatus: reviewed\n---\n\n# 最大似然估计\n\n人工确认内容。\n"
         note.write_text(original, encoding="utf-8")
-        result = self.service.submit_intake({
+        result = self.service.explicit.submit_intake({
             "message": "补充来源与适用边界。",
             "mode": "save",
             "requested_destination": "20-Knowledge/Concepts/最大似然估计.md",
@@ -75,7 +75,7 @@ class StructuredContextMaterialTests(unittest.TestCase):
         for index in range(12):
             self.service.intake.append_message(conversation["id"], "user", f"turn-{index}")
         last = self.service.intake.append_message(conversation["id"], "user", "current")
-        bundle = self.service.context_material.input.build(conversation["id"], last, [], {})
+        bundle = self.service.explicit.context_material.input.build(conversation["id"], last, [], {})
         self.assertEqual(len(bundle["recentMessages"]), 8)
 
 

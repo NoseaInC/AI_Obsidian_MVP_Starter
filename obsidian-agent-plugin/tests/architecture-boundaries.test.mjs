@@ -105,3 +105,33 @@ test("primary navigation has no standalone approval or review inbox", () => {
   assert.match(views, /type MainTab = "today" \| "sources" \| "plan" \| "assistant"/);
   assert.doesNotMatch(views, /this\.navStat\(stats, "需要你确认"/);
 });
+
+test("ordinary assistant sendMessage does not call /intake/submit", () => {
+  const views = fs.readFileSync(path.join(root, "views.ts"), "utf8");
+  const start = views.indexOf("const sendMessage = async");
+  assert.ok(start >= 0, "views.ts must define sendMessage");
+  const end = views.indexOf("const resultActiveArtifact", start + 10);
+  const body = views.slice(start, end > start ? end : views.length);
+  assert.doesNotMatch(body, /\/intake\/submit/);
+});
+
+test("PiAgentRuntime does not import legacy Brain", () => {
+  const runtime = fs.readFileSync(path.join(root, "core", "runtime", "PiAgentRuntime.ts"), "utf8");
+  assert.doesNotMatch(runtime, /BrainModelGateway|IntentResult|AssistantOutcome|submit_intake|ContextMaterialCoordinator/);
+});
+
+test("Pi tool call does not route through legacy IntentResult", () => {
+  const adapter = fs.readFileSync(path.join(root, "core", "runtime", "pi", "PiToolAdapter.ts"), "utf8");
+  assert.doesNotMatch(adapter, /IntentResult/);
+});
+
+test("ordinary Pi assistant does not produce awaiting_confirmation artifacts", () => {
+  const runtime = fs.readFileSync(path.join(root, "core", "runtime", "PiAgentRuntime.ts"), "utf8");
+  assert.doesNotMatch(runtime, /awaiting_confirmation|AssistantOutcome|capture_proposal/);
+});
+
+test("explicit workflow service owns the legacy Brain intake path", () => {
+  const explicit = fs.readFileSync(path.resolve("..", "agent", "core", "explicit_workflow_service.py"), "utf8");
+  assert.match(explicit, /class ExplicitWorkflowService/);
+  assert.match(explicit, /def submit_intake\(/);
+});

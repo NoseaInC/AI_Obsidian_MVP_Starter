@@ -76,7 +76,7 @@ class IntakeTests(unittest.TestCase):
 
     def test_raw_conversation_text_lives_in_private_file_not_sqlite(self) -> None:
         marker = "PRIVATE-ORIGINAL-DO-NOT-PERSIST-IN-SQLITE"
-        result = self.service.submit_intake({"message": f"请保存这个灵感：{marker}"}, "intake-private")
+        result = self.service.explicit.submit_intake({"message": f"请保存这个灵感：{marker}"}, "intake-private")
         dump = "\n".join(self.store.connection.iterdump())
         self.assertNotIn(marker, dump)
         conversation = result["conversation"]
@@ -91,7 +91,7 @@ class IntakeTests(unittest.TestCase):
             {"conversation_id": conversation["id"], "display_name": "课堂笔记.md", "kind": "text"},
             f"# 课堂笔记\n\n{marker}\n".encode(), "text/markdown",
         )
-        result = self.service.submit_intake({
+        result = self.service.explicit.submit_intake({
             "conversation_id": conversation["id"], "message": "整理这份课堂笔记",
             "attachments": [{"attachment_id": attachment["id"]}],
         }, "text-material-flow")
@@ -112,7 +112,7 @@ class IntakeTests(unittest.TestCase):
         attachment = self.service.create_attachment({
             "conversation_id": conversation["id"], "url": "https://1.1.1.1/article", "allow_network": True,
         })
-        result = self.service.submit_intake({
+        result = self.service.explicit.submit_intake({
             "conversation_id": conversation["id"], "message": "研究这个公开链接并整理关键内容",
             "attachments": [{"attachment_id": attachment["id"]}],
         }, "url-material-flow")
@@ -125,7 +125,7 @@ class IntakeTests(unittest.TestCase):
         save_attachment = self.service.create_attachment({
             "conversation_id": save_conversation["id"], "url": "https://1.1.1.1/article", "allow_network": True,
         })
-        saved = self.service.submit_intake({
+        saved = self.service.explicit.submit_intake({
             "conversation_id": save_conversation["id"], "message": "研究这个网页并保存到 Obsidian",
             "attachments": [{"attachment_id": save_attachment["id"]}],
             "mode": "save",
@@ -135,7 +135,7 @@ class IntakeTests(unittest.TestCase):
         self.assertEqual(calls, ["https://1.1.1.1/article"])
 
     def test_structured_save_produces_a_reversible_write_result(self) -> None:
-        result = self.service.submit_intake({"message": "用知识缺口驱动学习任务", "mode": "save"}, "intake-artifacts")
+        result = self.service.explicit.submit_intake({"message": "用知识缺口驱动学习任务", "mode": "save"}, "intake-artifacts")
         types = {item["type"] for item in result["artifacts"]}
         self.assertIn("write_result", types)
         self.assertEqual(result["organization"]["status"], "applied")
@@ -144,17 +144,17 @@ class IntakeTests(unittest.TestCase):
         self.assertTrue((self.vault / changed["path"]).exists())
 
     def test_followup_revises_active_artifact_in_same_conversation(self) -> None:
-        first = self.service.submit_intake({"message": "Agent 应该先生成提案", "mode": "save"}, "intake-first")
+        first = self.service.explicit.submit_intake({"message": "Agent 应该先生成提案", "mode": "save"}, "intake-first")
         active = first["conversation"]["activeArtifactId"]
-        second = self.service.submit_intake({"conversation_id": first["conversation"]["id"], "message": "不要拆成三篇，只保留一篇主笔记。", "artifact_revision": True}, "intake-second")
+        second = self.service.explicit.submit_intake({"conversation_id": first["conversation"]["id"], "message": "不要拆成三篇，只保留一篇主笔记。", "artifact_revision": True}, "intake-second")
         self.assertEqual(second["artifacts"][0]["id"], active)
         self.assertEqual(second["artifacts"][0]["version"], 2)
         self.assertEqual(second["run"]["primary_intent"], "continue_artifact_revision")
 
     def test_intake_idempotency_does_not_duplicate_artifacts(self) -> None:
         body = {"message": "同一个请求只执行一次", "mode": "save"}
-        first = self.service.submit_intake(body, "same-intake-key")
-        second = self.service.submit_intake(body, "same-intake-key")
+        first = self.service.explicit.submit_intake(body, "same-intake-key")
+        second = self.service.explicit.submit_intake(body, "same-intake-key")
         self.assertTrue(second["idempotent"])
         self.assertEqual(first["run"]["id"], second["run"]["id"])
         self.assertEqual({item["id"] for item in first["artifacts"]}, {item["id"] for item in second["artifacts"]})
@@ -163,7 +163,7 @@ class IntakeTests(unittest.TestCase):
         self.assertIn("focus", second)
 
     def test_assistant_task_thread_groups_one_learning_pack_and_one_quiz(self) -> None:
-        result = self.service.submit_intake(
+        result = self.service.explicit.submit_intake(
             {"message": "把 PSM 整理成学习包，先讲直觉，暂时不要公式。", "mode": "tutor", "requested_output": "learning_pack"},
             "assistant-learning-pack",
         )
@@ -183,7 +183,7 @@ class IntakeTests(unittest.TestCase):
         self.assertEqual(conversation["latestArtifactGroup"]["primaryArtifactId"], learning_packs[0]["id"])
 
     def test_ordinary_question_answers_and_tracks_without_artifact_or_task_thread(self) -> None:
-        result = self.service.submit_intake(
+        result = self.service.explicit.submit_intake(
             {"message": "PSM 和普通回归调整有什么区别？", "mode": "tutor"},
             "assistant-answer-only-result",
         )
@@ -202,7 +202,7 @@ class IntakeTests(unittest.TestCase):
         self.service.update_conversation_preferences(
             conversation["id"], {"personalization_enabled": False, "retention_policy": "session"},
         )
-        result = self.service.submit_intake(
+        result = self.service.explicit.submit_intake(
             {"conversation_id": conversation["id"], "message": "解释一下倾向得分"},
             "assistant-no-personalization",
         )
@@ -213,7 +213,7 @@ class IntakeTests(unittest.TestCase):
 
     def test_conversation_export_summary_only_and_delete_are_explicit_local_controls(self) -> None:
         marker = "PRIVATE-CONVERSATION-EXPORT-MARKER"
-        result = self.service.submit_intake({"message": f"请解释倾向得分：{marker}"}, "conversation-controls")
+        result = self.service.explicit.submit_intake({"message": f"请解释倾向得分：{marker}"}, "conversation-controls")
         conversation_id = result["conversation"]["id"]
         exported = self.service.export_conversation(conversation_id)
         export_path = self.vault / "90-Local-Only/Agent" / exported["reference"]
@@ -246,11 +246,11 @@ class IntakeTests(unittest.TestCase):
 
     def test_repeated_signal_is_deduplicated_and_recurrence_increases(self) -> None:
         conversation = self.service.create_conversation({"title": "信号去重"})
-        self.service.submit_intake(
+        self.service.explicit.submit_intake(
             {"conversation_id": conversation["id"], "message": "我不理解倾向得分为什么能用于匹配"},
             "assistant-signal-first",
         )
-        self.service.submit_intake(
+        self.service.explicit.submit_intake(
             {"conversation_id": conversation["id"], "message": "倾向得分为什么这么定义？我还是不理解"},
             "assistant-signal-second",
         )
@@ -259,7 +259,7 @@ class IntakeTests(unittest.TestCase):
         self.assertEqual(topic["recurrence"], 2)
 
     def test_explicit_today_time_command_adjusts_plan_without_artifact(self) -> None:
-        result = self.service.submit_intake({"message": "今天只有 15 分钟，请调整今日安排。"}, "assistant-adjust-today")
+        result = self.service.explicit.submit_intake({"message": "今天只有 15 分钟，请调整今日安排。"}, "assistant-adjust-today")
         self.assertEqual(result["artifacts"], [])
         self.assertIsNotNone(result["dailyAdjustment"])
         self.assertLessEqual(result["dailyAdjustment"]["afterMinutes"], 15)
@@ -269,7 +269,7 @@ class IntakeTests(unittest.TestCase):
 
     def test_new_conversation_is_named_from_first_user_request(self) -> None:
         conversation = self.service.create_conversation({"title": "新会话"})
-        result = self.service.submit_intake(
+        result = self.service.explicit.submit_intake(
             {"conversation_id": conversation["id"], "message": "帮我制定 PSM 的三天学习安排"},
             "assistant-conversation-title",
         )
@@ -298,7 +298,7 @@ class IntakeTests(unittest.TestCase):
     def test_pdf_intake_creates_material_artifact_and_visible_material_row(self) -> None:
         conversation = self.service.create_conversation({"title": "Dragonnet"})
         attachment = self.service.create_attachment({"conversation_id": conversation["id"], "display_name": "Dragonnet.pdf", "kind": "pdf"}, b"%PDF-1.4\nfixture", "application/pdf")
-        result = self.service.submit_intake({"conversation_id": conversation["id"], "message": "帮我整理这个 PDF，并安排后续学习", "attachments": [{"attachment_id": attachment["id"]}]}, "pdf-flow")
+        result = self.service.explicit.submit_intake({"conversation_id": conversation["id"], "message": "帮我整理这个 PDF，并安排后续学习", "attachments": [{"attachment_id": attachment["id"]}]}, "pdf-flow")
         self.assertIn("material", {item["type"] for item in result["artifacts"]})
         materials = self.service.list_materials()["items"]
         self.assertEqual(materials[0]["title"], "Dragonnet.pdf")
