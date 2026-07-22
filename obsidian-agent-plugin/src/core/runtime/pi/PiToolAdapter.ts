@@ -13,11 +13,77 @@ function contractSchema(contract: PiToolContract): TSchema {
   return Type.Unsafe<Record<string, unknown>>(contract.input_schema as TSchema);
 }
 
-function resultText(value: unknown): string {
-  const encoded = JSON.stringify(value, null, 2);
-  return encoded.length <= 64_000
-    ? encoded
-    : `${encoded.slice(0, 64_000)}\n…[tool result truncated by plugin]`;
+const observationEncoder = new TextEncoder();
+
+/** Fields a tool result may expose that let the model continue reading. */
+const CONTINUATION_KEYS: ReadonlyArray<readonly [string, string]> = [
+  ["next_offset", "next_offset"],
+  ["nextOffset", "nextOffset"],
+  ["cursor", "cursor"],
+  ["next_cursor", "next_cursor"],
+  ["nextCursor", "nextCursor"],
+  ["truncated", "truncated"],
+  ["has_more", "has_more"],
+];
+
+/** Copy only pagination fields that the result really exposes. Never invent positions. */
+function extractContinuation(content: Record<string, unknown>): Record<string, unknown> {
+  const continuation: Record<string, unknown> = {};
+  for (const [source, dest] of CONTINUATION_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(content, source)) continue;
+    const value = content[source];
+    if (value === null || typeof value === "number" || typeof value === "boolean" || typeof value === "string") {
+      continuation[dest] = value;
+    }
+  }
+  if (!("truncated" in continuation)) continuation.truncated = true;
+  return continuation;
+}
+
+/**
+ * Always returns a valid JSON string for the model. Never truncates a JSON
+ * value at the character level. When the encoded result exceeds the tool's
+ * transport budget (consumer-facing byte length, not JS string length), it
+ * returns a recoverable partial observation instead of a half string.
+ *
+ * The backend already validates `max_result_bytes` on the compact-encoded
+ * byte length, so the boundary measured here matches that contract exactly.
+ */
+export function serializeToolObservation(
+  contract: PiToolContract,
+  response: {content?: unknown},
+): string {
+  const value = response.content;
+  const content: Record<string, unknown> =
+    value !== undefined && value !== null && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : {value};
+  const maxBytes = Number.isFinite(contract.max_result_bytes)
+    ? Number(contract.max_result_bytes)
+    : Infinity;
+  if (maxBytes === Infinity) {
+    return JSON.stringify(content, null, 2);
+  }
+  const bytes = observationEncoder.encode(JSON.stringify(content)).byteLength;
+  if (bytes <= maxBytes) {
+    return JSON.stringify(content, null, 2);
+  }
+  console.warn("[pi-tool] 结果过大，需要继续分页读取", {
+    tool: contract.name,
+    resultBytes: bytes,
+    maxResultBytes: maxBytes,
+  });
+  const observation = {
+    ok: false,
+    status: "partial",
+    code: "tool_result_exceeds_transport_budget",
+    message: "结果超过当前工具传输预算，请使用分页参数继续读取。",
+    tool: contract.name,
+    resultBytes: bytes,
+    maxResultBytes: maxBytes,
+    continuation: extractContinuation(content),
+  };
+  return JSON.stringify(observation, null, 2);
 }
 
 async function withTimeout<T>(promise: Promise<T>, milliseconds: number, signal?: AbortSignal): Promise<T> {
@@ -202,7 +268,7 @@ export function createPiTools(
                 tool: contract.name,
               };
               return {
-                content: [{type: "text", text: resultText(observation)}],
+                content: [{type: "text", text: serializeToolObservation(contract, {content: observation})}],
                 details: {
                   tool: contract.name,
                   result: observation,
@@ -230,7 +296,7 @@ export function createPiTools(
           : {value: response.content};
         if (!check.cached) stallGuard.remember(check.key, content);
         return {
-          content: [{type: "text", text: resultText(content)}],
+          content: [{type: "text", text: serializeToolObservation(contract, {content})}],
           details: {
             tool: contract.name,
             result: content,
