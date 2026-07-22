@@ -28,6 +28,11 @@ export function createTurnIdentity(request: AgentTurnRequest): PiRunIdentity {
       workspaceId: "",
       projectPaths: [],
       allowAllRunCapabilities,
+      // Every Plan starts unbound; the first safe Markdown write plan freezes
+      // the scope without a confirmation card. No keyword/regex/Intent Router.
+      writeScopeState: "unbound",
+      initialWriteToolCallId: null,
+      initialWriteBoundAt: null,
     },
     operationScope: [],
     reversibleOnly: true,

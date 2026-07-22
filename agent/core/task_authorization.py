@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from time import time
 from typing import Any
 
 from agent.core.frontmatter_policy import policy_metadata_from_bytes
@@ -154,6 +155,11 @@ class TaskAuthorizationService:
         resource["workspaceOperationScopes"] = {}
         resource["allowAllSafeMarkdown"] = allow_all_safe_markdown
         resource["allowAllSafeVaultOrganization"] = allow_all_organization
+        # Every Plan starts unbound; the first safe write plan freezes the scope
+        # deterministically without a confirmation card. No keyword/Intent Router.
+        resource["writeScopeState"] = "unbound"
+        resource["initialWriteToolCallId"] = None
+        resource["initialWriteBoundAt"] = None
         authorization["resourceScope"] = resource
         operation_scope = [
             operation for operation in list(authorization.get("operationScope") or [])
@@ -495,6 +501,74 @@ class TaskAuthorizationService:
                     )
             planned.append({"path": normalized, "operation": operation})
         return {"authorization": authorization, "planned": planned}
+
+    def bind_initial_markdown_plan(
+        self,
+        authorization_id: str,
+        run_id: str,
+        tool_call_id: str,
+        writes: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Freeze the first reversible Markdown write plan without a card.
+
+        The model never grants scope by prose; the first *safe* plan call does.
+        Rules enforced atomically under the StateStore lock:
+          * the authorization is active and matches this run;
+          * it is reversible-only with no external side effects;
+          * ``writeScopeState`` is ``"unbound"`` (or already bound by this exact
+            ``tool_call_id`` for the same logical plan, e.g. batched copy);
+          * a *different* bound ``tool_call_id`` is rejected — that is a real
+            scope expansion and must surface a permission card;
+          * 1–10 writes, each a safe governed Vault path;
+          * update requires the path to be an explicit scoped path;
+          * create is allowed only inside ``DEFAULT_CREATE_ROOTS``;
+          * reviewed/core/protected targets are never auto-bound;
+          * idempotent on the same ``tool_call_id``.
+        """
+        writes = list(writes or [])
+        if not (1 <= len(writes) <= 10):
+            raise ValueError("initial_write_plan_requires_1_to_10_writes")
+        with self.store.lock:
+            authorization = self._active_for_run(authorization_id, run_id)
+            resource = dict(authorization["resourceScope"])
+            already_bound = resource.get("writeScopeState") == "bound"
+            if already_bound and resource.get("initialWriteToolCallId") != tool_call_id:
+                # A later plan in the same Run wants more scope: that is an
+                # expansion, not the first freeze, so refuse auto-binding.
+                raise PermissionError("task_initial_write_scope_already_bound")
+            explicit = set(str(value) for value in resource.get("explicitVaultPaths") or [])
+            operations = set(str(value) for value in authorization["operationScope"])
+            granted: list[dict[str, str]] = []
+            for item in writes:
+                relative = str(item.get("path") or "")
+                target = _safe_write_target(self.vault, relative)
+                normalized = target.relative_to(self.vault).as_posix()
+                classification = self.classify_path(normalized, allow_missing=True)
+                if target.exists() and classification.get("protected"):
+                    raise PermissionError("reviewed_core_read_only")
+                operation = "update_markdown" if target.exists() else "create_markdown"
+                if operation == "update_markdown":
+                    if normalized not in explicit:
+                        raise PermissionError("task_update_scope_required")
+                else:
+                    if not any(_within(normalized, root) for root in DEFAULT_CREATE_ROOTS):
+                        raise PermissionError("task_create_scope_required")
+                explicit.add(normalized)
+                operations.add(operation)
+                granted.append({"path": normalized, "operation": operation})
+            resource = dict(resource)
+            resource["explicitVaultPaths"] = sorted(explicit)
+            resource["writeScopeState"] = "bound"
+            resource["initialWriteToolCallId"] = tool_call_id
+            resource["initialWriteBoundAt"] = time()
+            updated = self.store.update_task_authorization_scope(
+                authorization_id, resource, sorted(operations),
+            )
+        return {
+            "authorization": updated,
+            "bound": not already_bound,
+            "granted": granted,
+        }
 
     def validate(
         self,

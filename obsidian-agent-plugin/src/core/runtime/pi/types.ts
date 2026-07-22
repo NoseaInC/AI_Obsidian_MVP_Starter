@@ -30,6 +30,16 @@ export interface PiTaskAuthorization {
     projectPaths: string[];
     /** Safe capabilities may be granted automatically for this Run only. */
     allowAllRunCapabilities?: boolean;
+    /**
+     * First reversible Markdown write plan freezes the scope deterministically.
+     * "unbound": any plan still requires a permission card. "bound": the first
+     * safe plan already established the explicit write scope.
+     */
+    writeScopeState: "unbound" | "bound";
+    /** toolCallId of the plan that froze the scope; null until bound. */
+    initialWriteToolCallId?: string | null;
+    /** epoch seconds when the scope was frozen; null until bound. */
+    initialWriteBoundAt?: number | null;
   };
   operationScope: string[];
   reversibleOnly: true;

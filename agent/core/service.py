@@ -2014,6 +2014,49 @@ class AgentService:
             }
         return None
 
+    def _auto_bind_and_plan(
+        self,
+        authorization_id: str,
+        run_id: str,
+        tool_call_id: str,
+        writes: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Plan writes, freezing the first safe plan when scope is unbound.
+
+        Returns the planned dict. Re-raises PermissionError when the scope still
+        cannot be satisfied, so a later expansion surfaces a permission card
+        instead of being silently granted.
+        """
+        try:
+            planned = self.task_authorizations.plan(authorization_id, writes)
+        except PermissionError as scope_error:
+            if str(scope_error) in {
+                "task_create_scope_required",
+                "task_update_scope_required",
+            }:
+                try:
+                    self.task_authorizations.bind_initial_markdown_plan(
+                        authorization_id, run_id, tool_call_id, writes,
+                    )
+                except PermissionError:
+                    # Auto-bind refused (unsafe, already bound by another call,
+                    # or protected). Keep the original scope error.
+                    pass
+                else:
+                    return self.task_authorizations.plan(authorization_id, writes)
+            raise
+        # The plan is already permitted, but this is still the first safe write
+        # plan: freeze the scope so later additions require a real permission card.
+        authorization = self.store.get_task_authorization(authorization_id)
+        if authorization["resourceScope"].get("writeScopeState") != "bound":
+            try:
+                self.task_authorizations.bind_initial_markdown_plan(
+                    authorization_id, run_id, tool_call_id, writes,
+                )
+            except PermissionError:
+                pass
+        return planned
+
     def append_pi_events(self, body: dict[str, Any]) -> dict[str, Any]:
         run_id = str(body.get("runId") or "")
         events = body.get("events")
@@ -2164,8 +2207,10 @@ class AgentService:
                 })
                 _, bundle = self.brain_change_sets.prepared(str(result["id"]))
                 try:
-                    planned = self.task_authorizations.plan(
+                    planned = self._auto_bind_and_plan(
                         authorization_id,
+                        run_id,
+                        call_id,
                         list(bundle["writes"]),
                     )
                 except Exception:
@@ -2213,8 +2258,10 @@ class AgentService:
                     })
                     _, bundle = self.brain_change_sets.prepared(str(planned["id"]))
                     try:
-                        authorization = self.task_authorizations.plan(
+                        authorization = self._auto_bind_and_plan(
                             authorization_id,
+                            run_id,
+                            call_id,
                             list(bundle["writes"]),
                         )
                     except Exception:

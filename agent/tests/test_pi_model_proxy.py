@@ -579,25 +579,7 @@ class PiModelProxyTests(unittest.TestCase):
             "externalSideEffects": False,
             "expiresAtRunEnd": True,
         })
-        planned = self.service.call_runtime_tool({
-            "runId": "run-copy", "turnId": "turn-copy", "toolCallId": "call-copy-plan",
-            "toolName": "plan_vault_copy", "taskAuthorizationId": authorization_id,
-            "arguments": {
-                "title": "概念笔记副本",
-                "source_paths": paths,
-                "destination_root": "20-Knowledge/Drafts/Concept-Copies",
-            },
-            "networkAuthorized": False,
-        })
-        self.assertFalse(planned["ok"], planned)
-        request = planned["error"]["permissionRequest"]
-        self.assertEqual(request["type"], "vault_writes")
-        self.assertEqual(len(request["writes"]), 12)
-        self.service.expand_task_authorization(authorization_id, {
-            "runId": "run-copy",
-            "mode": "once",
-            "writes": request["writes"],
-        })
+        # The first safe copy plan freezes the scope automatically: no card.
         planned = self.service.call_runtime_tool({
             "runId": "run-copy", "turnId": "turn-copy", "toolCallId": "call-copy-plan",
             "toolName": "plan_vault_copy", "taskAuthorizationId": authorization_id,
@@ -609,6 +591,10 @@ class PiModelProxyTests(unittest.TestCase):
             "networkAuthorized": False,
         })
         self.assertTrue(planned["ok"], planned)
+        self.assertNotIn("permissionRequest", planned.get("error", {}))
+        scope = self.service.store.get_task_authorization(authorization_id)["resourceScope"]
+        self.assertEqual(scope["writeScopeState"], "bound")
+        self.assertEqual(scope["initialWriteToolCallId"], "call-copy-plan")
         change_sets = planned["content"]["change_sets"]
         self.assertEqual([item["fileCount"] for item in change_sets], [10, 2])
         self.assertNotIn("完整正文", json.dumps(planned, ensure_ascii=False))
@@ -624,6 +610,37 @@ class PiModelProxyTests(unittest.TestCase):
         for name, text in expected.items():
             copied = self.vault / "20-Knowledge/Drafts/Concept-Copies" / name
             self.assertEqual(copied.read_text(encoding="utf-8"), text)
+        # A later copy to a *different* destination in the same Run is an
+        # expansion and still requires a permission card.
+        later = self.service.call_runtime_tool({
+            "runId": "run-copy", "turnId": "turn-copy", "toolCallId": "call-copy-plan-2",
+            "toolName": "plan_vault_copy", "taskAuthorizationId": authorization_id,
+            "arguments": {
+                "title": "另一批副本",
+                "source_paths": paths,
+                "destination_root": "20-Knowledge/Drafts/Other-Copies",
+            },
+            "networkAuthorized": False,
+        })
+        self.assertFalse(later["ok"], later)
+        request = later["error"]["permissionRequest"]
+        self.assertEqual(request["type"], "vault_writes")
+        self.service.expand_task_authorization(authorization_id, {
+            "runId": "run-copy",
+            "mode": "once",
+            "writes": request["writes"],
+        })
+        retried = self.service.call_runtime_tool({
+            "runId": "run-copy", "turnId": "turn-copy", "toolCallId": "call-copy-plan-2",
+            "toolName": "plan_vault_copy", "taskAuthorizationId": authorization_id,
+            "arguments": {
+                "title": "另一批副本",
+                "source_paths": paths,
+                "destination_root": "20-Knowledge/Drafts/Other-Copies",
+            },
+            "networkAuthorized": False,
+        })
+        self.assertTrue(retried["ok"], retried)
 
     def test_web_tools_exist_but_require_turn_scoped_network_authorization(self) -> None:
         denied = self.service.call_runtime_tool(
