@@ -402,6 +402,8 @@ export class PiAgentRuntime implements AgentRuntime {
           content,
           isError: decision === "deny",
         } as unknown as AgentMessage);
+        // Reset stale agent error state from a previously aborted run
+        (session.agent.state as Record<string, unknown>).errorMessage = undefined;
         return session.agent.continue();
       })()
         .then(async () => {
@@ -425,6 +427,9 @@ export class PiAgentRuntime implements AgentRuntime {
           wake = null;
         });
     } else {
+      // Reset stale agent error state from a previously aborted run so
+      // pi-agent-core does not refuse the new prompt() with a stale error.
+      (session.agent.state as Record<string, unknown>).errorMessage = undefined;
       running = session.agent
         .prompt(promptWithContext(turn.request, identity))
         .then(async () => {
