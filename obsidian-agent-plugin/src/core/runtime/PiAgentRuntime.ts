@@ -22,7 +22,7 @@ import type {
   PiRuntimeTransport,
   PiToolContract,
 } from "./pi/types";
-import {compactAgentMessages} from "./pi/PiCompaction";
+import {compactAgentMessages, type PiCompactionResult, type PiCompactionSources} from "./pi/PiCompaction";
 import {PiStallGuard} from "./pi/PiStallGuard";
 
 interface PiPreparedPayload extends Record<string, unknown> {
@@ -645,26 +645,93 @@ export class PiAgentRuntime implements AgentRuntime {
     await this.transport.cancelRuntimeRun(runId);
   }
 
-  async compact(runId: string): Promise<AgentChunk> {
+  private compactionSources(session: PiConversation): PiCompactionSources {
+    const auth = session.identity.taskAuthorization;
+    const scope = auth.resourceScope;
+    const forkedFrom = (session.identity as {forkedFromSequence?: number | null}).forkedFromSequence;
+    return {
+      messages: session.agent.state.messages,
+      goal: (auth as {objective?: string | null}).objective ?? null,
+      taskAuthorization: auth,
+      activeWorkspace: {workspaceId: scope.workspaceId, projectPaths: [...scope.projectPaths]},
+      branchId: session.identity.runId,
+      currentLeafId: session.identity.sessionId,
+      taskBranch: forkedFrom != null ? {branchId: session.identity.runId, forkedFromSequence: forkedFrom} : null,
+    };
+  }
+
+  async compact(runId: string, options?: {contextWindow?: number; keepRecent?: number}): Promise<AgentChunk> {
     const session = this.runIndex.get(runId);
     if (!session) throw new Error("pi_run_not_found");
     if (session.agent.state.isStreaming) throw new Error("pi_compaction_requires_idle_run");
+    // Never compact while a permission/question is awaiting a decision; the
+    // session must stay intact so the user can resolve it.
+    if (session.pendingPermission) {
+      return this.noticeChunk(session, "context_compaction_deferred", "权限待确认，暂缓压缩");
+    }
+    const original = session.agent.state.messages;
     const compact = compactionLimits(session.modelLimits);
-    const compacted = compactAgentMessages(
-      session.agent.state.messages,
-      session.modelLimits.contextWindow,
-      compact.reserve,
-      compact.keepRecent,
-      true,
-    );
-    if (!compacted.compacted) throw new Error("pi_compaction_not_applicable");
-    session.agent.state.messages = compacted.messages;
+    const override = {
+      contextWindow: options?.contextWindow ?? session.modelLimits.contextWindow,
+      keepRecent: options?.keepRecent ?? compact.keepRecent,
+    };
+    let result: PiCompactionResult;
+    try {
+      result = compactAgentMessages(
+        original,
+        {
+          contextWindow: override.contextWindow,
+          reserve: compact.reserve,
+          keepRecent: override.keepRecent,
+          force: true,
+        },
+        this.compactionSources(session),
+      );
+    } catch (error) {
+      // Build failure must keep the original session; it must not abort the run.
+      return this.noticeChunk(
+        session,
+        "context_compaction_skipped",
+        `压缩构建失败：${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (!result.compacted) {
+      return this.noticeChunk(session, "context_compaction_skipped", `暂无可压缩内容：${result.reason ?? "n/a"}`);
+    }
+    session.agent.state.messages = result.messages;
     const checkpointId = `checkpoint-${crypto.randomUUID()}`;
-    const chunk: AgentChunk = {runId, conversationId: session.identity.conversationId, sequence: session.state.lastEventSequence + 1, type: "context_compacted", checkpointId};
-    await this.transport.appendRuntimeEvents({runId, events: [chunk]});
+    const chunk: AgentChunk = {
+      runId,
+      conversationId: session.identity.conversationId,
+      sequence: session.state.lastEventSequence + 1,
+      type: "context_compacted",
+      checkpointId,
+    };
+    try {
+      await this.transport.appendRuntimeEvents({runId, events: [chunk]});
+      await this.transport.saveCompactionCheckpoint?.({
+        runId,
+        sessionId: session.identity.conversationId,
+        branchId: session.identity.runId,
+        entry: result.entry,
+      });
+    } catch {
+      // Persistence failure must not roll back the in-memory compaction.
+    }
     session.events.push(chunk);
     session.state = {...session.state, checkpointId, lastEventSequence: chunk.sequence};
     return chunk;
+  }
+
+  private noticeChunk(session: PiConversation, code: string, content: string): AgentChunk {
+    return {
+      runId: session.identity.runId,
+      conversationId: session.identity.conversationId,
+      sequence: session.state.lastEventSequence + 1,
+      type: "notice",
+      code,
+      content,
+    };
   }
 
   async fork(runId: string, sequence?: number, mode: "fork" | "regenerate" = "fork"): Promise<AgentConversationState> {
@@ -776,11 +843,25 @@ export class PiAgentRuntime implements AgentRuntime {
       transformContext: async messages => {
         try {
           const compact = compactionLimits(holder.modelLimits);
+          const auth = holder.identity.taskAuthorization;
+          const scope = auth.resourceScope;
+          const forkedFrom = (holder.identity as {forkedFromSequence?: number | null}).forkedFromSequence;
           const result = compactAgentMessages(
             messages,
-            holder.modelLimits.contextWindow,
-            compact.reserve,
-            compact.keepRecent,
+            {
+              contextWindow: holder.modelLimits.contextWindow,
+              reserve: compact.reserve,
+              keepRecent: compact.keepRecent,
+            },
+            {
+              messages,
+              goal: (auth as {objective?: string | null}).objective ?? null,
+              taskAuthorization: auth,
+              activeWorkspace: {workspaceId: scope.workspaceId, projectPaths: [...scope.projectPaths]},
+              branchId: holder.identity.runId,
+              currentLeafId: holder.identity.sessionId,
+              taskBranch: forkedFrom != null ? {branchId: holder.identity.runId, forkedFromSequence: forkedFrom} : null,
+            },
           );
           if (result.compacted && result.tokensBefore !== holder.lastCompactionTokens) {
             holder.lastCompactionTokens = result.tokensBefore;

@@ -480,11 +480,27 @@ CREATE INDEX IF NOT EXISTS idx_pi_pending_tool_calls_run
   ON pi_pending_tool_calls(run_id, state);
 CREATE INDEX IF NOT EXISTS idx_pi_pending_tool_calls_session
   ON pi_pending_tool_calls(session_id, state);
+CREATE TABLE IF NOT EXISTS pi_compaction_checkpoints (
+  run_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  branch_id TEXT NOT NULL,
+  cut_entry_id TEXT NOT NULL,
+  kept_from_entry_id TEXT NOT NULL,
+  summary_version INTEGER NOT NULL,
+  tokens_before INTEGER NOT NULL,
+  tokens_after INTEGER NOT NULL,
+  state_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(run_id),
+  FOREIGN KEY(run_id) REFERENCES pi_agent_runs(run_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_pi_compaction_checkpoints_branch
+  ON pi_compaction_checkpoints(branch_id, created_at);
 """
 
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 def _now() -> str:
@@ -1014,6 +1030,67 @@ class StateStore:
                 (state, now, now, run_id, tool_call_id),
             )
             self.connection.commit()
+
+    def save_compaction_checkpoint(
+        self,
+        run_id: str,
+        session_id: str,
+        branch_id: str,
+        entry: dict[str, Any],
+    ) -> None:
+        now = _now()
+        structured_state = entry.get("structuredState") or {}
+        with self.lock:
+            self.connection.execute(
+                """INSERT INTO pi_compaction_checkpoints(
+                     run_id, session_id, branch_id, cut_entry_id, kept_from_entry_id,
+                     summary_version, tokens_before, tokens_after, state_json, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(run_id) DO UPDATE SET
+                     session_id=excluded.session_id,
+                     branch_id=excluded.branch_id,
+                     cut_entry_id=excluded.cut_entry_id,
+                     kept_from_entry_id=excluded.kept_from_entry_id,
+                     summary_version=excluded.summary_version,
+                     tokens_before=excluded.tokens_before,
+                     tokens_after=excluded.tokens_after,
+                     state_json=excluded.state_json,
+                     created_at=excluded.created_at""",
+                (
+                    run_id,
+                    session_id,
+                    branch_id,
+                    str(entry.get("cutEntryId") or ""),
+                    str(entry.get("keptFromEntryId") or ""),
+                    int(entry.get("summaryVersion") or 1),
+                    int(entry.get("tokensBefore") or 0),
+                    int(entry.get("tokensAfter") or 0),
+                    json.dumps(structured_state, ensure_ascii=False),
+                    now,
+                ),
+            )
+            self.connection.commit()
+
+    def get_compaction_checkpoint(self, run_id: str) -> dict[str, Any] | None:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT * FROM pi_compaction_checkpoints WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "runId": row["run_id"],
+            "sessionId": row["session_id"],
+            "branchId": row["branch_id"],
+            "cutEntryId": row["cut_entry_id"],
+            "keptFromEntryId": row["kept_from_entry_id"],
+            "summaryVersion": row["summary_version"],
+            "tokensBefore": row["tokens_before"],
+            "tokensAfter": row["tokens_after"],
+            "structuredState": json.loads(row["state_json"]),
+            "createdAt": row["created_at"],
+        }
 
 
     def append_agent_run_event(

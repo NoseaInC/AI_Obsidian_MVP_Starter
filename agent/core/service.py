@@ -2192,6 +2192,32 @@ class AgentService:
         self.store.resolve_pending_tool_call(run_id, tool_call_id, state)
         return {"ok": True, "runId": run_id, "toolCallId": tool_call_id, "state": state}
 
+    def save_compaction_checkpoint(self, run_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        run = self.store.get_pi_run(run_id)
+        if not run:
+            raise ValueError("pi_run_not_found")
+        entry = body.get("entry")
+        if not isinstance(entry, dict):
+            raise ValueError("pi_compaction_entry_invalid")
+        session_id = str(body.get("sessionId") or run.get("session_id") or "").strip()
+        branch_id = str(body.get("branchId") or run.get("run_id") or "").strip()
+        if not session_id:
+            raise ValueError("pi_compaction_session_invalid")
+        self.store.save_compaction_checkpoint(
+            run_id=run_id,
+            session_id=session_id,
+            branch_id=branch_id,
+            entry=entry,
+        )
+        return {"ok": True, "runId": run_id}
+
+    def get_compaction_checkpoint(self, run_id: str) -> dict[str, Any]:
+        run = self.store.get_pi_run(run_id)
+        if not run:
+            raise ValueError("pi_run_not_found")
+        record = self.store.get_compaction_checkpoint(run_id)
+        return {"entry": record}
+
     def control_pi_run(self, run_id: str, body: dict[str, Any]) -> dict[str, Any]:
         control_type = str(body.get("type") or "")
         text = str(body.get("text") or "").strip()

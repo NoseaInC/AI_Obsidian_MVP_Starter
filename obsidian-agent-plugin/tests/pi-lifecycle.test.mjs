@@ -91,10 +91,14 @@ test("token compaction cuts only at a complete user turn", async () => {
       messages.push({role: "assistant", content: [{type: "toolCall", id: `call-${index}`, name: "search_vault", arguments: {query: String(index)}}], api: "x", provider: "x", model: "x", usage: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0}}, stopReason: "toolUse", timestamp: index});
       messages.push({role: "toolResult", toolCallId: `call-${index}`, toolName: "search_vault", content: [{type: "text", text: "result"}], isError: false, timestamp: index});
     }
-    const result = module.compactAgentMessages(messages, 6000, 1000, 1800, true);
+    const result = module.compactAgentMessages(messages, {contextWindow: 6000, reserve: 1000, keepRecent: 1800, force: true});
     assert.equal(result.compacted, true);
-    assert.equal(result.messages[0].role, "user");
-    assert.match(String(result.messages[0].content), /zhixu_compaction_summary/);
+    assert.equal(result.messages[0].role, "assistant", "summary is a runtime checkpoint, never a fake user turn");
+    assert.notEqual(result.messages[0].role, "user");
+    const summaryText = Array.isArray(result.messages[0].content)
+      ? result.messages[0].content.map(b => b.text ?? "").join("")
+      : String(result.messages[0].content);
+    assert.match(summaryText, /zhixu_runtime_checkpoint/);
     assert.equal(result.messages[1].role, "user");
   } finally { await dispose(); }
 });

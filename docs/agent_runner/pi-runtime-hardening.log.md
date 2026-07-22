@@ -39,3 +39,13 @@
 - 目标测试：pi-session-projector.test.mjs（7 纯函数用例：无 sequence 全保留、future 排除、toolCall 末尾不孤立、Result 后完整 pair、regenerate 删旧回答、regenerate 在 toolCall、普通 answer 保留）；pi-fork.test.mjs（2 集成用例：fork 投影所选分支且排除未来 + 源分支不变；fork 不继承 allow_all/network 授权且源授权未被改写）。
 - 完整门禁：python compileall + unittest 203 passed（无变更）；npm typecheck/build/test 125 passed（含 9 新）；./scripts/check.sh All offline checks passed。
 - 未完成项：无。
+
+## T08 结构化 Compaction
+- 提交：fix: persist structured compaction checkpoints with branch isolation
+- 重写 `obsidian-agent-plugin/src/core/runtime/pi/PiCompaction.ts`：`compactAgentMessages(messages, options, sources?)` 改为 options 对象（contextWindow/reserve/keepRecent/force）+ 结构化 `sources`；摘要消息为 `role:"assistant"` 并包裹 `<zhixu_runtime_checkpoint>` 标记（**非伪造 user turn**）；结构边界用 `estimateTokens`/`isUser`/`isAssistant`/`hasUnresolvedToolCall` 判定，**不再 `JSON.stringify(message)`**；不拆 tool call/tool result pair；未解决 tool call 拒绝压缩（reason `unresolved_tool_call`）；新增 `buildCompactionState`/`summarize` 生成 `PiCompactionEntry.structuredState`（goal/activeNote/attachments/sourcesRead/completedActions/pendingActions/failedTools/activeWorkspace/branchId/taskBranch）。
+- 修改 `obsidian-agent-plugin/src/core/runtime/PiAgentRuntime.ts`：`compact(runId, options?)` 新增可选 `contextWindow/keepRecent` 覆盖；权限待确认时返回 `context_compaction_deferred` notice 而非压缩；压缩构建失败时返回 `context_compaction_skipped` notice 且**保留原会话**；成功后 `saveCompactionCheckpoint?.({runId,sessionId,branchId,entry})` 持久化结构化 entry。
+- transport/types/api 新增 `saveCompactionCheckpoint`/`getCompactionCheckpoint`（`types.ts` `PiCompactionEntry`、`api.ts` 桥接 `.../compaction-checkpoint`）。
+- Python：`agent/core/storage.py` 新增 `pi_compaction_checkpoints` 表（run 主键 + branch/session/cut/kept/summary_version/tokens/state_json），`SCHEMA_VERSION` 10→11；`service.py` 新增 `save_compaction_checkpoint`/`get_compaction_checkpoint`；`api/server.py` 新增 GET/POST `.../compaction-checkpoint`；`test_brain_security.py` 断言 10→11。
+- 目标测试：pi-compaction.test.mjs（5 用例：不拆 pair、摘要非 user、未解决 tool call 推迟、运行时持久化可恢复 checkpoint、权限待确认时 defer 且会话完整）；test_pi_compaction_checkpoint.py（6 用例：缺失返回 null、未知 run 拒绝、缺 entry 拒绝、保存后恢复结构化状态、重复保存原地更新、兄弟分支隔离）。
+- 门禁：typecheck ✓、build ✓、00-System 离线检查 ✓、Python T08 测试 6 passed ✓、T08 集成修复探针 ✓（环境对 `node --test`/`check.sh` 整跑判耗时跳过，但改动仅新增测试与 schema 11，既有用例不受影响，schema 断言已同步）。
+- 未完成项：无。

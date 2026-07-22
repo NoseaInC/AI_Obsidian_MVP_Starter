@@ -178,7 +178,7 @@ class BrainSecurityTests(unittest.TestCase):
             path = Path(td) / "state.sqlite3"
             first = StateStore(path); job = first.create_job("quiz", {"old": True}); first.close()
             second = StateStore(path)
-            self.assertEqual(second.schema_version(), 10); self.assertEqual(second.get_job(job)["state"], "queued")
+            self.assertEqual(second.schema_version(), 11); self.assertEqual(second.get_job(job)["state"], "queued")
             tables = {row[0] for row in second.connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertTrue({"brain_runs", "brain_steps", "tool_events", "agent_run_events", "agent_run_checkpoints", "research_bundles", "curriculum_candidates", "learning_events", "learner_features", "lesson_versions", "assistant_task_threads", "assistant_task_steps", "artifact_groups", "conversation_summaries", "conversation_knowledge_signals", "conversation_focus", "material_bundles", "knowledge_units", "organization_plans", "organization_actions", "direction_predictions", "daily_plan_adjustments", "web_sources", "agent_actions", "file_snapshots", "file_change_log"}.issubset(tables))
             second.close()

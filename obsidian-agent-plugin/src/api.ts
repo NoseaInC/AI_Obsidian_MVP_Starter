@@ -181,6 +181,14 @@ export class AgentClient {
       state,
     });
   }
+  async saveCompactionCheckpoint(body: Record<string, unknown> & {runId?: string}): Promise<any> {
+    const {runId, ...rest} = body;
+    const id = String(runId ?? "");
+    return this.post(`/agent/runs/${encodeURIComponent(id)}/compaction-checkpoint`, rest);
+  }
+  async getCompactionCheckpoint(runId: string): Promise<any> {
+    return this.get(`/agent/runs/${encodeURIComponent(runId)}/compaction-checkpoint`);
+  }
   async callRuntimeTool(body: unknown): Promise<any> {
     const requestBody = body && typeof body === "object" ? body as Record<string, any> : {};
     const response = await this.post<any>("/tools/call", requestBody);

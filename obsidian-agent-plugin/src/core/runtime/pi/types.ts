@@ -1,4 +1,5 @@
 import type {AgentEvent, AgentTool} from "@earendil-works/pi-agent-core";
+import type {PiCompactionEntry} from "./PiCompaction";
 
 export interface PiToolContract {
   name: string;
@@ -99,6 +100,10 @@ export interface PiRuntimeTransport {
     toolCallId: string,
     state: PiPendingToolCallState,
   ): Promise<Record<string, unknown>>;
+  /** Persist a structured compaction checkpoint so a restart can reuse it. */
+  saveCompactionCheckpoint?(body: Record<string, unknown>): Promise<Record<string, unknown>>;
+  /** Read the latest compaction checkpoint for a run (used after restart). */
+  getCompactionCheckpoint?(runId: string): Promise<{entry: PiCompactionEntry | null}>;
 }
 
 export type PiPendingToolCallState =

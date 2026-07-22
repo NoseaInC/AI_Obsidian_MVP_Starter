@@ -151,6 +151,12 @@ class Handler(BaseHTTPRequestHandler):
                     ),
                     active_only=query.get("all", ["0"])[0] not in ("1", "true"),
                 )
+            elif path.startswith("/agent/runs/") and path.endswith("/compaction-checkpoint"):
+                payload = self.service.get_compaction_checkpoint(
+                    self._identifier(
+                        path.removeprefix("/agent/runs/").removesuffix("/compaction-checkpoint")
+                    )
+                )
             elif path.startswith("/agent/sessions/"):
                 payload = self.service.pi_session(
                     self._identifier(path.removeprefix("/agent/sessions/"))
@@ -259,6 +265,11 @@ class Handler(BaseHTTPRequestHandler):
                     path.removeprefix("/agent/runs/").removesuffix("/pending-tool-calls")
                 )
                 self._send(200, self.service.save_pending_tool_call(run_id, body)); return
+            if path.startswith("/agent/runs/") and path.endswith("/compaction-checkpoint"):
+                run_id = self._identifier(
+                    path.removeprefix("/agent/runs/").removesuffix("/compaction-checkpoint")
+                )
+                self._send(200, self.service.save_compaction_checkpoint(run_id, body)); return
             if path.startswith("/actions/") and path.endswith("/undo"):
                 action_id = self._identifier(
                     path.removeprefix("/actions/").removesuffix("/undo")
