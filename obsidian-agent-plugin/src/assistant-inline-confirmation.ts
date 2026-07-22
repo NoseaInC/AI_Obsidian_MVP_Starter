@@ -1,6 +1,6 @@
 export interface InlineAgentConfirmation {
   run_id: string;
-  kind: "write" | "question";
+  kind: "write" | "question" | "permission";
   proposal_id: string;
   title: string;
   summary: string;
@@ -129,18 +129,23 @@ export function renderInlineAgentConfirmation(
   const meta = body.createDiv({
     cls: "la-inline-agent-confirmation__meta",
   });
-  meta.setText(
-    `${confirmation.writes.length} 个文件变更 · ${
-      confirmation.risk_level === "high" ? "高风险操作" : "仅本次授权"
-    }`,
-  );
+  meta.setText(confirmation.kind === "permission"
+    ? `权限请求 · ${confirmation.tool_name ?? "受控工具"} · ${confirmation.writes.length} 项 · 仅当前任务`
+    : `${confirmation.writes.length} 个文件变更 · ${
+        confirmation.risk_level === "high" ? "高风险操作" : "仅本次授权"
+      }`);
   if (confirmation.writes.length) {
     const files = body.createEl("ul", {
       cls: "la-inline-agent-confirmation__files",
     });
     for (const write of confirmation.writes) {
+      const source = String(write.source_path ?? write.from ?? "").trim();
+      const destination = String(write.target_path ?? write.destination_path ?? write.to ?? "").trim();
+      const path = String(write.path ?? "").trim();
       files.createEl("li", {
-        text: `${String(write.action ?? "update")} · ${String(write.path ?? "")}`,
+        text: source && destination
+          ? `${String(write.action ?? "move")} · ${source} → ${destination}`
+          : `${String(write.action ?? "update")} · ${path}`,
       });
     }
   }
@@ -176,7 +181,7 @@ export function renderInlineAgentConfirmation(
 
   const rejectButton = actions.createEl("button", {
     cls: "la-button la-button--ghost",
-    text: "取消",
+    text: confirmation.kind === "permission" ? "不允许，继续" : "取消",
   });
   rejectButton.addEventListener("click", async () => {
     if (busy || disposed) return;
@@ -218,7 +223,9 @@ export function renderInlineAgentConfirmation(
   if (scope) {
     scopeButton = actions.createEl("button", {
       cls: "la-button la-button--secondary",
-      text: `本会话允许在 ${scope} 新建`,
+      text: confirmation.kind === "permission" && scope === "__all__"
+        ? "当前任务全部允许"
+        : `本会话允许在 ${scope} 新建`,
     });
     scopeButton.addEventListener("click", async () => {
       if (busy || disposed) return;

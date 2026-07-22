@@ -213,6 +213,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, self.service.probe_model_capabilities(str(body.get("profileId") or body.get("profile_id") or ""))); return
             if path == "/task-authorizations":
                 self._send(200, self.service.register_task_authorization(body)); return
+            if path.startswith("/task-authorizations/") and path.endswith("/expand"):
+                authorization_id = self._identifier(
+                    path.removeprefix("/task-authorizations/").removesuffix("/expand")
+                )
+                self._send(200, self.service.expand_task_authorization(authorization_id, body)); return
             if path == "/agent/events":
                 self._send(200, self.service.append_pi_events(body)); return
             if path.startswith("/agent/runs/") and path.endswith("/control"):

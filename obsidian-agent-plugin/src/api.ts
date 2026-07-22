@@ -143,6 +143,9 @@ export class AgentClient {
   async registerTaskAuthorization(body: unknown): Promise<any> {
     return this.post("/task-authorizations", body);
   }
+  async expandTaskAuthorization(authorizationId: string, body: unknown): Promise<any> {
+    return this.post(`/task-authorizations/${encodeURIComponent(authorizationId)}/expand`, body);
+  }
   async appendRuntimeEvents(body: unknown): Promise<any> {
     return this.post("/agent/events", body);
   }

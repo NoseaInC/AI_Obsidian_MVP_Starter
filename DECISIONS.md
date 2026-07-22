@@ -1,5 +1,31 @@
 # Technical Decisions
 
+## D-048 — Permission is a paused tool call, not a completed conversational turn
+
+- A sensitive operation emits one typed inline permission request and suspends the exact tool Promise inside the active Pi Run.
+- Confirmation expands only that Run's persisted Task Authorization and retries the same `toolCallId`; rejection returns a blocked Observation so the model can continue without pretending the operation occurred.
+- Permission UI must be mounted while consuming the live stream. Rendering it only after the stream ends creates a deadlock because the stream is waiting for the decision.
+- “Allow all” means all otherwise-safe reversible capabilities for the current Run. It never means unrestricted filesystem, secret access, external side effects, or permission to mutate reviewed/core knowledge.
+
+## D-049 — Folder organization is a first-class reversible Vault transaction
+
+- Directory creation and Markdown moves use a dedicated `organize_vault_notes` contract instead of shell commands or asking the user to perform manual file operations.
+- Authorization contains exact directories and source→target pairs. The Harness normalizes paths, rejects traversal/symlinks/collisions/protected content, snapshots sources, atomically writes and verifies targets, removes sources only after verification, and can restore the whole batch.
+- Non-formal source-index drafts under `10-Sources` may be reorganized with explicit permission. reviewed/core and other protected sources remain immutable regardless of permission mode.
+- Developer self-modification remains isolated to a persisted run-owned Git worktree. A permission grant verifies that persisted workspace record and never trusts a client-provided project path.
+
+## D-050 — Developer authority is operation-scoped and server-derived
+
+- Creating an isolated Git worktree establishes only an execution location; it grants no read, write, command, Git, validation, activation or rollback authority by itself.
+- A permission expansion names the persisted workspace and the exact operation. The server reloads the workspace record, ignores client-supplied project paths and grants either that one operation or the fixed reversible developer operation set for the current Run.
+- Developer mode never extends to the real Vault knowledge tree, arbitrary shell access, secrets, external side effects or reviewed/core mutation.
+
+## D-051 — Rollback must preserve later human edits
+
+- A transaction may replace or restore a path only when its current hash still matches the state that transaction created or staged.
+- Apply and organization move old inodes into private transaction staging before publishing new files with exclusive creation. Rollback and Undo use the same exclusive/hash-checked protocol and fail closed rather than deleting or overwriting concurrent human content.
+- Frontmatter protection parsing accepts BOMs, quoted values and inline comments and fails closed on invalid UTF-8 or ambiguous protection metadata.
+
 ## D-001 — Markdown is the knowledge source of truth
 
 SQLite may store jobs, prepared bundle indexes, audit records, mastery history, quizzes and recommendations. Knowledge prose and user edits remain Markdown in the Vault.

@@ -15,6 +15,7 @@ SCRIPTS = ROOT / "00-System/Scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 import ingest_pdf
+from agent.core.frontmatter_policy import policy_metadata_from_bytes
 from agent.core.hybrid_retrieval import HybridVaultIndex
 
 
@@ -58,6 +59,20 @@ def safe_read_note(vault: Path, relative: str) -> Path:
     if not _safe_relative(target.relative_to(vault.resolve())):
         raise ValueError("invalid_note_path")
     return target
+
+
+def read_model_visible_note(path: Path) -> str:
+    """Read a note only when its protection metadata is unambiguously public.
+
+    Protection fields are a security boundary, so replacement decoding or the
+    permissive general frontmatter parser must not turn malformed/quoted
+    ``agent_access: denied`` metadata into model-visible content.
+    """
+    body = path.read_bytes()
+    policy, valid = policy_metadata_from_bytes(body)
+    if not valid or policy.get("agent_access") == "denied":
+        raise PermissionError("agent_access_denied")
+    return body.decode("utf-8")
 
 
 def _terms(value: str) -> set[str]:
@@ -116,13 +131,11 @@ class VaultReadIndex:
                     if cached and cached[0] == stat.st_mtime_ns and cached[1] == stat.st_size:
                         continue
                     try:
-                        text = path.read_text(encoding="utf-8", errors="replace")
-                    except OSError:
-                        continue
-                    meta = ingest_pdf.parse_frontmatter(text)
-                    if str(meta.get("agent_access", "")).strip().casefold() == "denied":
+                        text = read_model_visible_note(path)
+                    except (OSError, PermissionError):
                         self._cache.pop(key, None)
                         continue
+                    meta = ingest_pdf.parse_frontmatter(text)
                     entry = {
                         "title": path.stem,
                         "path": key,
@@ -332,10 +345,8 @@ def read_note_metadata(vault: Path, payload: dict[str, Any]) -> dict[str, Any]:
     path = safe_read_note(vault, str(payload.get("path", "")))
     if not path.is_file():
         raise FileNotFoundError("note_not_found")
-    text = path.read_text(encoding="utf-8", errors="replace")
+    text = read_model_visible_note(path)
     meta = ingest_pdf.parse_frontmatter(text)
-    if str(meta.get("agent_access", "")).strip().casefold() == "denied":
-        raise PermissionError("agent_access_denied")
     allowed = {key: meta.get(key) for key in (
         "type", "status", "domain", "aliases", "tags", "mastery", "importance",
         "next_review", "weak_points", "artifact_id", "generated_from",
@@ -353,9 +364,7 @@ def read_note_excerpt(vault: Path, payload: dict[str, Any]) -> dict[str, Any]:
     # bounded, but let the caller continue deterministically with next_offset.
     offset = max(0, int(payload.get("offset", 0)))
     max_chars = max(100, min(50_000, int(payload.get("max_chars", 12_000))))
-    text = path.read_text(encoding="utf-8", errors="replace")
-    if str(ingest_pdf.parse_frontmatter(text).get("agent_access", "")).strip().casefold() == "denied":
-        raise PermissionError("agent_access_denied")
+    text = read_model_visible_note(path)
     end = min(len(text), offset + max_chars)
     return {
         "title": path.stem,
@@ -373,9 +382,7 @@ def related_notes(vault: Path, payload: dict[str, Any], index: VaultReadIndex | 
     target = safe_read_note(vault, relative)
     if not target.is_file():
         raise FileNotFoundError("note_not_found")
-    text = target.read_text(encoding="utf-8", errors="replace")
-    if str(ingest_pdf.parse_frontmatter(text).get("agent_access", "")).strip().casefold() == "denied":
-        raise PermissionError("agent_access_denied")
+    text = read_model_visible_note(target)
     outlinks = sorted(dict.fromkeys(item.strip() for item in WIKI_LINK.findall(text) if item.strip()))[:30]
     backlinks: list[dict[str, str]] = []
     title = target.stem

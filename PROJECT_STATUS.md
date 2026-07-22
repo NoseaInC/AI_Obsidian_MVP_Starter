@@ -171,13 +171,27 @@ reasoning visibility follows the narrower D-046 contract.
 ## Phase 11 release gate
 
 - Python ingestion/review/conversation: 40 tests passed.
-- Current backend suite: 153 tests passed.
-- Current plugin suite: 76 tests passed; strict TypeScript check and production build passed.
+- Current backend suite: 178 tests passed.
+- Current plugin suite: 80 tests passed; strict TypeScript check and production build passed.
 - Unified `./scripts/check.sh` passed.
 - Real DeepSeek A–H acceptance passed with the configured `deepseek-v4-pro`; details are in `docs/architecture/PI_AGENT_RUNTIME_ACCEPTANCE.md`.
 - Right-sidebar retirement gate: 40 ingestion/review/conversation tests, 113 Runtime tests and 36 plugin tests passed; TypeScript and production build passed on 2026-07-15.
 - Today randomized gates passed for 1,000 plans, 10,000 state actions, 1,000 lesson blueprints, 110 responsive widths and 20 reproducible regression seeds.
 - Daily ranking performance with 1,000 candidates: median 0.436 ms, P95 0.559 ms; localhost health response measured 0.018 s.
+
+## Same-Run permission and governed Vault organization (2026-07-21)
+
+- Inline permission no longer terminates the conversation or starts a replacement Run. The original Pi tool call pauses, renders immediately below the latest turn, expands the exact active authorization, and retries with the same `runId` and `toolCallId`.
+- “请求权限” grants only the displayed write paths, directory/move pairs, network capability or persisted isolated developer worktree. “当前任务全部允许” remains Run-scoped and still cannot bypass protected-note, path, symlink, collision, external-side-effect or sandbox rules.
+- `organize_vault_notes` creates nested safe directories and moves up to 50 Markdown notes as one verified reversible transaction. It records snapshots, hashes, Diff and audit state; any mid-operation failure rolls back the full batch, and Undo refuses to overwrite later human changes.
+- `reviewed`, `core`, `agent_access: denied`, protected notes and arbitrary `10-Sources` content remain immovable. A non-formal `type: source-index` draft may be reorganized only after explicit authorization.
+- A realistic temporary-Vault workflow tests evidence discovery → permission pause → same-call retry → nested topic write → multi-file organization → conflict-safe Undo, plus denial, Run expiry, source-index organization and reviewed/core immutability. No real PDF, API key or real Vault note is used.
+- Final unified verification: `./scripts/check.sh` passed with 40/40 ingestion tests, 178/178 Agent tests and 80/80 plugin tests; Python compilation, TypeScript typecheck and production build all passed.
+- A later recheck from the restricted Codex outer sandbox reached 173/178 Agent tests; the five remaining cases require launching nested macOS `sandbox-exec` and were blocked before their commands ran. The previously permitted nested-sandbox run passed all 178. A fresh independent rerun of the 32 write/organization workflow tests and all 80 plugin tests, typecheck and build passed after the final documentation update.
+- The reversible-write subset passes 27/27, including ordinary apply rollback, organization rollback, concurrent human edits, invalid UTF-8 fail-closed behavior and reviewed/core protection. The realistic temporary-Vault workflow passes 5/5 without reading a real PDF, API key or real Vault note.
+- Developer workspaces use exact per-workspace operation grants. Creating an isolated worktree grants no implicit read/write/run permission; request-mode grants one displayed operation and Run-scoped allow-all grants only the fixed safe developer operation set for that persisted worktree.
+- The latest plugin is installed under `.obsidian/plugins/obsidian-learning-agent/`. Installed/build SHA-256 values match: `main.js` `eaacbd3a4360d3d8cccba433af871872275d90c4ffe845a91a7b016402a95ef9`; `styles.css` `390f503ebd41ca6154e42fce4b551cc4f0f1d7fe589f9b24095eff507784197b`; `manifest.json` is byte-identical.
+- The current live Agent process still reports PID `64517` and Runtime ID `5d0a8ede10d49d58a332bf0d83f1aa8b`. It predates the installed build. Computer Use could not reload Obsidian because macOS is locked, so the disk installation is verified but the new in-memory UI/runtime activation remains the only pending local action.
 
 ## Hard blockers
 
@@ -193,6 +207,8 @@ reasoning visibility follows the narrower D-046 contract.
 - Heading-aware field-level Diff editing and cancellable model streaming remain P2; V1 existing-draft updates use a bounded managed block.
 - Study Workspace V1 has no outstanding visual-state gap; its 21-image matrix is stored under `artifacts/today-study-workspace-v1-screenshots/`.
 - Several legacy Python tests leave SQLite connections for interpreter cleanup and emit non-failing `ResourceWarning` messages; this is P2 resource hygiene, not a transaction or data-integrity failure.
+- A permission card waiting inside a live JavaScript Promise cannot yet be reconstructed after an Obsidian/plugin reload; the interrupted Run is recoverable, but the exact inline card must be requested again. This is P2 crash-recovery polish, not a permission bypass.
+- Developer workspace IDs currently include a truncated Run identifier. Persisted records and server-side project validation prevent cross-workspace authority, but a hash suffix would further reduce diagnostic ambiguity (P2).
 
 ## P0 / P1
 
@@ -200,4 +216,4 @@ reasoning visibility follows the narrower D-046 contract.
 
 ## Resume point
 
-Reload the installed plugin in Obsidian, then review GitHub PR #2 (`pi-agent-runtime` → `main`). The deliberate first real Dragonnet Apply gate remains separate and untouched.
+Unlock macOS and disable/re-enable the installed Zhixu plugin (or restart Obsidian), then verify that `/health` reports a new PID and Runtime ID. After that, review GitHub PR #2 (`pi-agent-runtime` → `main`). The deliberate first real Dragonnet Apply gate remains separate and untouched.

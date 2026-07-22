@@ -26,7 +26,10 @@ export interface PiTaskAuthorization {
     explicitVaultPaths: string[];
     createRoots: string[];
     workspaceId: string;
+    workspaceIds?: string[];
     projectPaths: string[];
+    /** Safe capabilities may be granted automatically for this Run only. */
+    allowAllRunCapabilities?: boolean;
   };
   operationScope: string[];
   reversibleOnly: true;
@@ -61,6 +64,7 @@ export interface PiRuntimeTransport {
   ): Promise<void>;
   modelCapabilities?(profileId?: string): Promise<Record<string, unknown>>;
   registerTaskAuthorization(body: unknown): Promise<Record<string, unknown>>;
+  expandTaskAuthorization(authorizationId: string, body: unknown): Promise<Record<string, unknown>>;
   appendRuntimeEvents(body: unknown): Promise<Record<string, unknown>>;
   runtimeEvents(runId: string, afterSequence?: number): Promise<Record<string, unknown>>;
   runtimeSession(sessionId: string): Promise<Record<string, unknown>>;
@@ -69,3 +73,24 @@ export interface PiRuntimeTransport {
   toolContracts(): Promise<{schemaVersion: number; items: PiToolContract[]}>;
   callRuntimeTool(body: unknown): Promise<Record<string, unknown>>;
 }
+
+export interface PiPermissionRequest {
+  code: string;
+  message: string;
+  toolName: string;
+  toolCallId: string;
+  writes: Array<Record<string, unknown>>;
+  organization?: {
+    directories: string[];
+    moves: Array<{source_path: string; target_path: string}>;
+    remove_empty_source_dirs: boolean;
+  };
+  capability: {
+    type: "vault_writes" | "vault_organization" | "developer_workspace" | "network";
+    workspaceId?: string;
+    projectPath?: string;
+    toolName?: string;
+  };
+}
+
+export type PiPermissionDecision = "allow_once" | "allow_all" | "deny";

@@ -5,6 +5,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -45,7 +46,7 @@ class DeveloperWorkspaceTests(unittest.TestCase):
         })
         self.workspace = DeveloperWorkspace(self.project, self.store)
         self.item = self.workspace.create("run-dev")
-        self.auth.authorize_workspace(self.authorization_id, "run-dev", self.item["id"], self.item["project"])
+        self.auth.register_workspace(self.authorization_id, "run-dev", self.item["id"], self.item["project"])
 
     def tearDown(self) -> None:
         try:
@@ -76,6 +77,21 @@ class DeveloperWorkspaceTests(unittest.TestCase):
         self.assertEqual(result["exitCode"], 0, result["stderr"])
         self.assertEqual(result["stdout"].strip(), "None")
         self.assertNotIn("must-not-leak", json.dumps(result))
+
+    def test_structured_command_cannot_read_shared_private_tmp(self) -> None:
+        secret = Path("/private/tmp") / f"zhixu-outside-secret-{uuid.uuid4().hex}.txt"
+        secret.write_text("must-not-cross-worktree-boundary", encoding="utf-8")
+        try:
+            result = self.workspace.run_command(self.item["id"], "run-dev", {
+                "executable": "python3",
+                "args": ["-c", f"print(open({str(secret)!r}).read())"],
+                "networkPolicy": "deny",
+                "timeoutMs": 10_000,
+            })
+        finally:
+            secret.unlink(missing_ok=True)
+        self.assertNotEqual(result["exitCode"], 0)
+        self.assertNotIn("must-not-cross-worktree-boundary", json.dumps(result))
 
     def test_command_timeout_and_network_scope_expansion_are_bounded(self) -> None:
         result = self.workspace.run_command(self.item["id"], "run-dev", {

@@ -367,7 +367,7 @@ class DeveloperWorkspace:
             f'(literal "{str(path).replace(chr(34), chr(92) + chr(34))}")'
             for path in sorted(ancestors, key=lambda item: len(str(item)))
         )
-        return f'''(version 1)\n(deny default)\n(allow process*)\n(allow sysctl-read)\n(allow mach-lookup)\n(allow file-read* {literal_rules} (literal "/var") (subpath "/var/select") (subpath "{escaped}") (subpath "{runtime}/home") (subpath "{runtime}/tmp"){git_read_rules} (subpath "/System") (subpath "/usr") (subpath "/bin") (subpath "/opt") (subpath "/Library") (subpath "/private/tmp") (literal "/dev/null") (literal "/dev/urandom"))\n(allow file-write* (subpath "{escaped}") (subpath "{runtime}/home") (subpath "{runtime}/tmp"){git_write_rules} (literal "/dev/null"))\n(deny network*)'''
+        return f'''(version 1)\n(deny default)\n(allow process*)\n(allow sysctl-read)\n(allow mach-lookup)\n(allow file-read* {literal_rules} (literal "/var") (subpath "/var/select") (subpath "{escaped}") (subpath "{runtime}/home") (subpath "{runtime}/tmp"){git_read_rules} (subpath "/System") (subpath "/usr") (subpath "/bin") (subpath "/opt") (subpath "/Library") (literal "/dev/null") (literal "/dev/urandom"))\n(allow file-write* (subpath "{escaped}") (subpath "{runtime}/home") (subpath "{runtime}/tmp"){git_write_rules} (literal "/dev/null"))\n(deny network*)'''
 
     @staticmethod
     def _env(root: Path) -> dict[str, str]:

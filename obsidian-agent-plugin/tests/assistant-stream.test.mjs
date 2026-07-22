@@ -147,6 +147,31 @@ test("inline confirmation is not mistaken for an applied write", async () => {
   assert.equal(state.status, "waiting_confirmation");
 });
 
+test("permission confirmation pauses immediately and resolves back into the same running stream", async () => {
+  const mod = await moduleUnderTest();
+  let state = mod.initialAssistantLiveRun();
+  state = mod.reduceAssistantStream(state, event(1, "run.started"));
+  state = mod.reduceAssistantStream(state, event(2, "inline.confirmation.required", {
+    confirmation: {
+      run_id: "run-permission",
+      kind: "permission",
+      proposal_id: "permission-call-1",
+      title: "允许整理目录？",
+      summary: "需要移动一篇笔记",
+      risk_level: "low",
+      tool_name: "organize_vault_notes",
+      writes: [{action: "move", source_path: "01-Inbox/a.md", target_path: "20-Knowledge/Drafts/a.md"}],
+      actions: ["confirm", "confirm_all", "reject"],
+    },
+  }));
+  assert.equal(state.status, "waiting_confirmation");
+  assert.equal(state.confirmation.tool_name, "organize_vault_notes");
+  state = mod.reduceAssistantStream(state, event(3, "inline.confirmation.resolved", {reason: "once"}));
+  assert.equal(state.status, "running");
+  assert.equal(state.confirmation, undefined);
+  assert.equal(state.proposalRequired, false);
+});
+
 test("completed message metadata survives the stream without a full view refresh", async () => {
   const mod = await moduleUnderTest();
   let state = mod.initialAssistantLiveRun();
@@ -193,6 +218,14 @@ test("assistant production surface uses Pi model proxy, stop and three inspector
   assert.match(views, /PiAgentRuntime/);
   assert.doesNotMatch(views, /PydanticAgentRuntime/);
   assert.match(views, /resumeInlineConfirmation/);
+  const queryLoop = views.indexOf("for await (const chunk of this.agentRuntime.query");
+  const livePermissionMount = views.indexOf('event.type === "inline.confirmation.required"', queryLoop);
+  const confirmationResume = views.indexOf("const resumeInlineConfirmation", livePermissionMount);
+  assert.ok(queryLoop >= 0 && livePermissionMount > queryLoop, "permission card must mount inside the live query loop");
+  assert.ok(confirmationResume > livePermissionMount, "same-Run confirmation handler must remain available to the live card");
+  assert.doesNotMatch(views.slice(confirmationResume, views.indexOf("const resultActiveArtifact", confirmationResume)), /\.abort\(\)/);
+  assert.match(views, /permission_mode: this\.assistantPermissionMode/);
+  assert.match(views, /当前任务全部允许/);
   assert.doesNotMatch(api, /cancelAssistantRun/);
   assert.doesNotMatch(views, /markdown\.empty\(\); await this\.markdown\.render/);
   assert.match(css, /\.la-message-markdown strong \{[\s\S]*display:\s*inline/);

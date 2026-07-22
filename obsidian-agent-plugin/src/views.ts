@@ -483,6 +483,7 @@ export class LearningAgentMainView extends ItemView {
   private assistantNetworkEnabled = false;
   private assistantModelAuto = true;
   private assistantReasoningMode: "auto" | "deep" = "auto";
+  private assistantPermissionMode: "ask" | "allow_all" = "ask";
   private assistantLiveRun: AssistantLiveRun = initialAssistantLiveRun();
   private assistantVisibleMessageLimit = 160;
   private assistantDraft = "";
@@ -541,6 +542,7 @@ export class LearningAgentMainView extends ItemView {
     return {tab: this.tab, assistantDrawerOpen: this.assistantDrawerOpen, conversationId: this.conversationId,
       assistantInspectorTab: this.assistantInspectorTab, assistantInspectorOpen: this.assistantInspectorOpen,
       assistantNetworkEnabled: this.assistantNetworkEnabled, assistantModelAuto: this.assistantModelAuto,
+      assistantPermissionMode: this.assistantPermissionMode,
       studyState: this.studyState};
   }
 
@@ -552,6 +554,7 @@ export class LearningAgentMainView extends ItemView {
     this.assistantInspectorOpen = state?.assistantInspectorOpen !== false;
     this.assistantNetworkEnabled = state?.assistantNetworkEnabled === true;
     this.assistantModelAuto = state?.assistantModelAuto !== false;
+    this.assistantPermissionMode = state?.assistantPermissionMode === "allow_all" ? "allow_all" : "ask";
     if (state?.studyState?.recommendationId) this.studyState = state.studyState as StudyWorkspaceState;
     this.history = [this.tab];
     this.historyIndex = 0;
@@ -2169,6 +2172,79 @@ export class LearningAgentMainView extends ItemView {
       menu.addItem(item => item.setTitle("刷新会话").setIcon("refresh-cw").onClick(() => void this.refresh()));
       menu.showAtMouseEvent(event);
     };
+    const permissionPicker = composerTools.createDiv({cls: "la-composer-permission-picker"});
+    const permissionButton = permissionPicker.createEl("button", {
+      cls: "la-composer-permission",
+      attr: {
+        type: "button",
+        "aria-haspopup": "menu",
+        "aria-expanded": "false",
+      },
+    });
+    const permissionPopover = permissionPicker.createDiv({
+      cls: "la-permission-popover",
+      attr: {role: "menu", tabindex: "-1", "aria-label": "当前任务权限模式"},
+    });
+    permissionPopover.hidden = true;
+    const paintPermissionButton = (): void => {
+      permissionButton.empty();
+      setIcon(permissionButton.createSpan(), this.assistantPermissionMode === "allow_all" ? "shield-check" : "shield-question");
+      permissionButton.createSpan({text: this.assistantPermissionMode === "allow_all" ? "全部允许" : "请求权限"});
+      setIcon(permissionButton.createSpan({cls: "la-composer-permission__chevron"}), "chevron-up");
+      permissionButton.toggleClass("is-all", this.assistantPermissionMode === "allow_all");
+      permissionButton.setAttribute("aria-label", this.assistantPermissionMode === "allow_all"
+        ? "当前任务全部允许；点击修改"
+        : "需要敏感能力时请求权限；点击修改");
+    };
+    const rebuildPermissionPopover = (): void => {
+      permissionPopover.empty();
+      const intro = permissionPopover.createDiv({cls: "la-permission-popover__intro"});
+      intro.createEl("strong", {text: "当前任务权限"});
+      intro.createEl("p", {text: this.assistantPermissionMode === "allow_all"
+        ? "安全且可逆的能力可在当前 Run 内自动扩展；受保护知识、任意外部副作用和越界路径仍然禁止。"
+        : "默认在受控沙箱中运行。需要写入、整理目录或使用开发工作区时，知序会暂停并在最新对话下方请求；批准后原地继续。"});
+      const addChoice = (modeValue: "ask" | "allow_all", label: string, detail: string, icon: string): void => {
+        const row = permissionPopover.createEl("button", {
+          cls: `la-permission-option ${this.assistantPermissionMode === modeValue ? "is-selected" : ""}`,
+          attr: {type: "button", role: "menuitemradio", "aria-checked": String(this.assistantPermissionMode === modeValue)},
+        });
+        setIcon(row.createSpan({cls: "la-permission-option__icon"}), icon);
+        const copy = row.createSpan({cls: "la-permission-option__copy"});
+        copy.createSpan({text: label});
+        copy.createEl("small", {text: detail});
+        if (this.assistantPermissionMode === modeValue) setIcon(row.createSpan({cls: "la-permission-option__check"}), "check");
+        row.onclick = () => {
+          this.assistantPermissionMode = modeValue;
+          paintPermissionButton();
+          permissionPopover.hidden = true;
+          permissionButton.setAttribute("aria-expanded", "false");
+        };
+      };
+      addChoice("ask", "请求权限", "遇到敏感操作时暂停，确认后同一任务继续", "shield-question");
+      addChoice("allow_all", "当前任务全部允许", "仅开放当前 Run 的安全可逆能力", "shield-check");
+    };
+    paintPermissionButton();
+    rebuildPermissionPopover();
+    permissionButton.onclick = () => {
+      const open = permissionPopover.hidden;
+      if (open) rebuildPermissionPopover();
+      permissionPopover.hidden = !open;
+      permissionButton.setAttribute("aria-expanded", String(open));
+      if (open) permissionPopover.focus();
+    };
+    permissionPicker.addEventListener("focusout", () => window.setTimeout(() => {
+      if (!permissionPicker.contains(document.activeElement)) {
+        permissionPopover.hidden = true;
+        permissionButton.setAttribute("aria-expanded", "false");
+      }
+    }, 0));
+    permissionPicker.onkeydown = event => {
+      if (event.key === "Escape") {
+        permissionPopover.hidden = true;
+        permissionButton.setAttribute("aria-expanded", "false");
+        permissionButton.focus();
+      }
+    };
     const safetyText = composerTools.createSpan({cls: "la-composer-local", text: this.assistantNetworkEnabled ? "联网来源不可信 · 写入可撤销" : "本地优先 · 低风险写入可撤销"});
     networkSafetyText = safetyText;
     const mode = composerTools.createEl("button", {
@@ -2390,6 +2466,9 @@ export class LearningAgentMainView extends ItemView {
         const assistantCopy = assistant.createDiv({cls: "la-message-copy"});
         const markdown = assistantCopy.createDiv({cls: "la-message-markdown"});
         markdown.createSpan({cls: "la-stream-caret", text: "正在连接已选模型…"});
+        const confirmationHost = messages.createDiv({cls: "la-inline-confirmation-host"});
+        confirmationHost.hidden = true;
+        let disposeConfirmation: (() => void) | undefined;
         progressiveMarkdown = new ProgressiveAssistantMarkdown(this.markdown, markdown);
         messages.scrollTop = messages.scrollHeight;
         this.assistantLiveRun = initialAssistantLiveRun();
@@ -2425,6 +2504,7 @@ export class LearningAgentMainView extends ItemView {
             allow_network: this.assistantNetworkEnabled,
             mode: this.assistantMode,
             reasoning_mode: this.assistantReasoningMode,
+            permission_mode: this.assistantPermissionMode,
           },
         });
         for await (const chunk of this.agentRuntime.query(turn, this.abort.signal)) {
@@ -2443,35 +2523,42 @@ export class LearningAgentMainView extends ItemView {
             this.renderAssistantContext(context, loadedConversation, primaryArtifact, input);
           }
           if (event.type === "message.delta" && !frame) frame = window.requestAnimationFrame(paintDelta);
+          if (event.type === "inline.confirmation.required" && this.assistantLiveRun.confirmation) {
+            awaitingInlineConfirmation = true;
+            dock.addClass("is-waiting-confirmation");
+            input.disabled = true;
+            disposeConfirmation?.();
+            confirmationHost.hidden = false;
+            confirmationHost.empty();
+            const confirmation = this.assistantLiveRun.confirmation;
+            const handlers: Parameters<typeof renderInlineAgentConfirmation>[2] = {
+              confirm: async (runId, scope) => resumeInlineConfirmation(runId, true, scope),
+              reject: async runId => resumeInlineConfirmation(runId, false),
+              answer: async (runId, answer) => resumeInlineConfirmation(runId, true, "", answer),
+            };
+            if (confirmation.kind !== "permission" && confirmation.proposal_id) {
+              handlers.openDiff = async proposalId => {
+                const detail = await this.client.get<any>(`/change-sets/${encodeURIComponent(proposalId)}/diff`);
+                const files = Array.isArray(detail.diff?.files) ? detail.diff.files : [];
+                const preview = files.map((item: any) => `${String(item.path ?? "")}  +${Number(item.added ?? 0)} -${Number(item.deleted ?? 0)}\n\n${String(item.diff ?? "")}`).join("\n\n");
+                new TextPreviewModal(this.app, "修改预览", preview || "暂无候选写入").open();
+              };
+            }
+            disposeConfirmation = renderInlineAgentConfirmation(confirmationHost, confirmation, handlers);
+            messages.scrollTop = messages.scrollHeight;
+          } else if (event.type === "inline.confirmation.resolved") {
+            awaitingInlineConfirmation = false;
+            disposeConfirmation?.();
+            disposeConfirmation = undefined;
+            confirmationHost.empty();
+            confirmationHost.hidden = true;
+            dock.removeClass("is-waiting-confirmation");
+            input.disabled = false;
+          }
         }
         if (this.assistantLiveRun.status === "failed") throw new Error(this.assistantLiveRun.error?.code ?? "assistant_stream_failed");
         if (this.assistantLiveRun.content) await progressiveMarkdown.flush(this.assistantLiveRun.content);
         assistant.removeClass("la-message--streaming");
-        if (
-          this.assistantLiveRun.status === "waiting_confirmation" &&
-          this.assistantLiveRun.confirmation
-        ) {
-          awaitingInlineConfirmation = true;
-          dock.addClass("is-waiting-confirmation");
-          const confirmationHost = assistantCopy.createDiv({cls: "la-inline-confirmation-host"});
-          const confirmation = this.assistantLiveRun.confirmation;
-          renderInlineAgentConfirmation(confirmationHost, confirmation, {
-            openDiff: async proposalId => {
-              const detail = await this.client.get<any>(`/change-sets/${encodeURIComponent(proposalId)}/diff`);
-              const files = Array.isArray(detail.diff?.files) ? detail.diff.files : [];
-              const preview = files.map((item: any) => `${String(item.path ?? "")}  +${Number(item.added ?? 0)} -${Number(item.deleted ?? 0)}\n\n${String(item.diff ?? "")}`).join("\n\n");
-              new TextPreviewModal(this.app, "修改预览", preview || "暂无候选写入").open();
-            },
-            confirm: async (runId, scope) => resumeInlineConfirmation(runId, true, markdown, trace, "", scope),
-            reject: async runId => resumeInlineConfirmation(runId, false, markdown, trace),
-            answer: async (runId, answer) => resumeInlineConfirmation(runId, true, markdown, trace, answer),
-          });
-          this.pendingAttachments = [];
-          input.value = "";
-          this.assistantDraft = "";
-          this.assistantRegenerateMessageId = "";
-          return;
-        }
         const completedMessageBase = this.assistantLiveRun.completedMessage ?? {
           id: this.assistantLiveRun.messageId, role: "assistant", content: this.assistantLiveRun.content,
           createdAt: new Date().toISOString(),
@@ -2521,38 +2608,12 @@ export class LearningAgentMainView extends ItemView {
     const resumeInlineConfirmation = async (
       runId: string,
       confirmed: boolean,
-      markdown: HTMLElement,
-      trace: HTMLElement,
-      answer = "",
       scope = "",
+      answer = "",
     ): Promise<void> => {
-      this.abort?.abort();
-      this.abort = new AbortController();
-      const progressive = new ProgressiveAssistantMarkdown(this.markdown, markdown);
-      let frame = 0;
-      try {
-        for await (const chunk of this.agentRuntime.confirm(runId, confirmed, this.abort.signal, answer, scope)) {
+      for await (const chunk of this.agentRuntime.confirm(runId, confirmed, undefined, answer, scope)) {
           const event = agentChunkToAssistantEvent(chunk);
           this.assistantLiveRun = reduceAssistantStream(this.assistantLiveRun, event);
-          this.paintAssistantLiveTrace(trace, this.assistantLiveRun);
-          if (event.type === "message.delta" && !frame) {
-            frame = window.requestAnimationFrame(() => {
-              frame = 0;
-              progressive.push(this.assistantLiveRun.content);
-            });
-          }
-        }
-        if (frame) window.cancelAnimationFrame(frame);
-        if (this.assistantLiveRun.content) await progressive.flush(this.assistantLiveRun.content);
-        if (this.assistantLiveRun.status === "failed") {
-          throw new Error(this.assistantLiveRun.error?.code ?? "assistant_confirmation_failed");
-        }
-        dock.removeClass("is-waiting-confirmation");
-        input.disabled = false;
-        await this.refresh();
-      } finally {
-        progressive.dispose();
-        this.abort = null;
       }
     };
     const resultActiveArtifact = (artifacts: any[]): string => String([...artifacts].reverse().find(item => !["change_set", "quiz"].includes(item.type))?.id ?? "");

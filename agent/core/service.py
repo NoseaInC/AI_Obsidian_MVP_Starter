@@ -44,7 +44,7 @@ from agent.core.structured_workflow import StructuredWorkflowRunner
 from agent.skills import build_skill_registry
 from agent.tools import build_tool_registry
 from agent.tools.change_set import ChangeSetTools
-from agent.tools.vault_access import safe_read_note
+from agent.tools.vault_access import read_model_visible_note, safe_read_note
 
 
 class AgentService:
@@ -1746,6 +1746,53 @@ class AgentService:
             },
             {
                 **common,
+                "name": "organize_vault_notes",
+                "description": (
+                    "在当前 Task Authorization 内批量创建安全 Vault 子目录并移动普通 Markdown 笔记；"
+                    "自动创建目标父目录，整批事务化、失败完整回滚且可撤销。"
+                    "reviewed/core、受保护文件和 Vault 外路径永远禁止移动；"
+                    "10-Sources 仅允许在明确授权后整理非正式 source-index 草稿。"
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "minLength": 1, "maxLength": 200},
+                        "directories": {
+                            "type": "array",
+                            "maxItems": 50,
+                            "items": {"type": "string", "minLength": 1, "maxLength": 500},
+                        },
+                        "moves": {
+                            "type": "array",
+                            "maxItems": 50,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "source_path": {"type": "string", "minLength": 1, "maxLength": 500},
+                                    "target_path": {"type": "string", "minLength": 1, "maxLength": 500},
+                                    "destination_path": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 500,
+                                        "description": "已弃用别名；新调用使用 target_path",
+                                    },
+                                },
+                                "required": ["source_path"],
+                                "anyOf": [
+                                    {"required": ["target_path"]},
+                                    {"required": ["destination_path"]},
+                                ],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "remove_empty_source_dirs": {"type": "boolean", "default": False},
+                    },
+                    "additionalProperties": False,
+                },
+                "idempotent": False,
+            },
+            {
+                **common,
                 "name": "apply_vault_change",
                 "description": "在当前 Task Authorization 内快照、原子应用并校验内部 Change Set；返回可撤销 Action。",
                 "input_schema": {
@@ -1830,6 +1877,142 @@ class AgentService:
                 message_id=source_message_id,
             )
         return {"taskAuthorization": created}
+
+    def expand_task_authorization(
+        self,
+        authorization_id: str,
+        body: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Apply one typed, explicit grant to the same active Run."""
+        run_id = str(body.get("runId") or "")
+        mode = str(body.get("mode") or "once")
+        writes = body.get("writes")
+        organization = body.get("organization")
+        capability = body.get("capability")
+        if isinstance(capability, dict):
+            if not isinstance(organization, dict) and isinstance(capability.get("organization"), dict):
+                organization = capability.get("organization")
+            if not isinstance(writes, list) and isinstance(capability.get("writes"), list):
+                writes = capability.get("writes")
+        if not run_id:
+            raise ValueError("task_permission_request_invalid")
+        capability_type = (
+            str(capability.get("type") or "") if isinstance(capability, dict) else ""
+        )
+        # Typed capabilities must be dispatched before the generic writes list:
+        # Pi intentionally sends writes=[] for non-Vault permission cards.
+        if capability_type == "developer_workspace":
+            workspace_id = str(capability.get("workspaceId") or "").strip()
+            tool_name = str(capability.get("toolName") or "").strip()
+            if not workspace_id or not tool_name:
+                raise ValueError("developer_workspace_permission_invalid")
+            # Never trust a client-supplied project path. The persisted record
+            # proves Run ownership and that this is an isolated worktree.
+            workspace = self.developer_workspace.get(workspace_id, run_id)
+            self.task_authorizations.register_workspace(
+                authorization_id,
+                run_id,
+                workspace_id,
+                str(workspace["project"]),
+            )
+            result = self.task_authorizations.grant_workspace_operation(
+                authorization_id,
+                run_id,
+                workspace_id,
+                tool_name,
+                mode,
+            )
+            result["capability"] = {
+                "type": "developer_workspace",
+                "workspaceId": workspace_id,
+                "toolName": tool_name,
+            }
+        elif capability_type == "network":
+            # Network scope is represented by networkPolicy on the Turn and is
+            # established before model execution. Never misroute it to an empty
+            # Vault write grant.
+            raise ValueError("network_permission_requires_explicit_turn_policy")
+        elif isinstance(organization, dict):
+            result = self.task_authorizations.grant_organization(
+                authorization_id, run_id, organization, mode,
+            )
+        elif isinstance(writes, list) and len(writes) <= 100:
+            result = self.task_authorizations.grant_scope(
+                authorization_id,
+                run_id,
+                [dict(item) for item in writes if isinstance(item, dict)],
+                mode,
+            )
+        else:
+            raise ValueError("task_permission_request_invalid")
+        return {"taskAuthorization": result["authorization"], **result}
+
+    @staticmethod
+    def _runtime_permission_request(
+        code: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if code in {
+            "task_scope_expansion_requires_new_user_turn",
+            "task_create_root_requires_scope_expansion",
+            "task_create_scope_required",
+            "task_update_scope_required",
+        }:
+            if tool_name == "plan_vault_copy":
+                destination_root = str(arguments.get("destination_root") or "").strip().strip("/")
+                requested_writes = [
+                    {"path": f"{destination_root}/{Path(str(source)).name}"}
+                    for source in list(arguments.get("source_paths") or [])
+                    if str(source).strip()
+                ]
+            else:
+                requested_writes = [
+                    {"path": str(item.get("path") or "")}
+                    for item in list(arguments.get("writes") or [])
+                    if isinstance(item, dict) and item.get("path")
+                ]
+            return {
+                "type": "vault_writes",
+                "toolName": tool_name,
+                "summary": f"授权本轮写入 {len(requested_writes)} 个明确 Markdown 目标",
+                "writes": requested_writes,
+            }
+        if code == "task_organization_scope_required" and tool_name == "organize_vault_notes":
+            moves = [
+                {
+                    "source_path": str(item.get("source_path") or ""),
+                    "target_path": str(
+                        item.get("target_path") or item.get("destination_path") or ""
+                    ),
+                }
+                for item in list(arguments.get("moves") or [])
+                if isinstance(item, dict)
+            ]
+            summary = "; ".join(
+                f"{item['source_path']} → {item['target_path']}" for item in moves
+            )
+            return {
+                "type": "vault_organization",
+                "toolName": "organize_vault_notes",
+                "summary": summary or "创建受控 Vault 子目录",
+                "organization": {
+                    "directories": [str(item) for item in list(arguments.get("directories") or [])],
+                    "moves": moves,
+                    "remove_empty_source_dirs": arguments.get("remove_empty_source_dirs") is True,
+                },
+            }
+        if code in {
+            "developer_workspace_not_authorized",
+            "developer_operation_not_authorized",
+        }:
+            return {
+                "type": "developer_workspace",
+                "toolName": tool_name,
+                "workspaceId": str(arguments.get("workspace_id") or ""),
+                "summary": f"授权当前 Run 在隔离 worktree 执行 {tool_name}",
+            }
+        return None
 
     def append_pi_events(self, body: dict[str, Any]) -> dict[str, Any]:
         run_id = str(body.get("runId") or "")
@@ -1924,7 +2107,14 @@ class AgentService:
         return self.reversible_transactions.diff(action_id)
 
     def undo_agent_action(self, action_id: str) -> dict[str, Any]:
-        return {"action": self.reversible_transactions.undo(action_id)}
+        # This method is reached only from the authenticated, explicit UI undo
+        # endpoint. Model tool calls use the strict Run-bound branch below.
+        return {
+            "action": self.reversible_transactions.undo(
+                action_id,
+                user_confirmed=True,
+            )
+        }
 
     def call_runtime_tool(self, body: dict[str, Any]) -> dict[str, Any]:
         tool_name = str(body.get("toolName") or "")
@@ -1936,7 +2126,10 @@ class AgentService:
         call_id = str(body.get("toolCallId") or "")
         if not run_id or not turn_id or not call_id:
             raise ValueError("runtime_tool_identity_required")
-        stable_writes = {"plan_vault_change", "plan_vault_copy", "apply_vault_change", "undo_agent_action"}
+        stable_writes = {
+            "plan_vault_change", "plan_vault_copy", "organize_vault_notes",
+            "apply_vault_change", "undo_agent_action",
+        }
         stable_reads = {
             "get_current_note", "read_vault_note", "find_related_notes",
             "search_public_web", "fetch_public_url",
@@ -1998,9 +2191,7 @@ class AgentService:
                     source = safe_read_note(self.vault, str(raw_source))
                     if not source.is_file():
                         raise FileNotFoundError("copy_source_not_found")
-                    source_text = source.read_text(encoding="utf-8", errors="replace")
-                    if str(ingest_pdf.parse_frontmatter(source_text).get("agent_access", "")).strip().casefold() == "denied":
-                        raise PermissionError("agent_access_denied")
+                    source_text = read_model_visible_note(source)
                     target = f"{destination_root}/{source.name}"
                     if target in seen_targets:
                         raise ValueError("copy_target_collision")
@@ -2055,9 +2246,22 @@ class AgentService:
                         "source_message_id": str(body.get("sourceMessageId") or ""),
                     },
                 )
+            elif tool_name == "organize_vault_notes":
+                result = self.reversible_transactions.organize({
+                    "task_authorization_id": authorization_id,
+                    "run_id": run_id,
+                    "turn_id": turn_id,
+                    "source_message_id": str(body.get("sourceMessageId") or ""),
+                    "title": str(arguments.get("title") or "整理 Vault 笔记"),
+                    "directories": list(arguments.get("directories") or []),
+                    "moves": list(arguments.get("moves") or []),
+                    "remove_empty_source_dirs": arguments.get("remove_empty_source_dirs") is True,
+                })
             elif tool_name == "undo_agent_action":
                 result = self.reversible_transactions.undo(
                     str(arguments.get("action_id") or ""),
+                    authorization_id=authorization_id,
+                    run_id=run_id,
                 )
             elif tool_name in {"get_current_note", "read_vault_note"}:
                 result = self.tools.call(
@@ -2090,13 +2294,13 @@ class AgentService:
                 result = self.web.fetch_for_model(str(arguments.get("url") or ""))
             elif tool_name == "create_git_worktree":
                 result = self.developer_workspace.create(run_id)
-                self.task_authorizations.authorize_workspace(
+                self.task_authorizations.register_workspace(
                     authorization_id, run_id, str(result["id"]), str(result["project"]),
                 )
             elif tool_name in developer_tools:
                 workspace_id_value = str(arguments.get("workspace_id") or "")
                 self.task_authorizations.validate_workspace(
-                    authorization_id, run_id, workspace_id_value,
+                    authorization_id, run_id, workspace_id_value, tool_name,
                 )
                 if tool_name == "read_workspace_file":
                     result = self.developer_workspace.read(workspace_id_value, run_id, str(arguments.get("path") or ""))
@@ -2141,16 +2345,21 @@ class AgentService:
                 "content": result,
                 "isError": False,
                 "recoverable": False,
-                "action": result if tool_name in {"apply_vault_change", "undo_agent_action"} else None,
+                "action": result if tool_name in {
+                    "organize_vault_notes", "apply_vault_change", "undo_agent_action",
+                } else None,
             }
-        except (ValueError, FileNotFoundError, PermissionError, RuntimeError) as exc:
+        except (ValueError, FileNotFoundError, FileExistsError, PermissionError, RuntimeError) as exc:
+            code = str(exc)[:160] or type(exc).__name__
+            permission_request = self._runtime_permission_request(code, tool_name, arguments)
             return {
                 "ok": False,
                 "error": {
-                    "code": str(exc)[:160] or type(exc).__name__,
+                    "code": code,
                     "message": "工具未能完成；请根据该 Observation 调整步骤",
-                    "recoverable": not isinstance(exc, PermissionError),
+                    "recoverable": permission_request is not None or not isinstance(exc, PermissionError),
                     "retryable": isinstance(exc, (FileNotFoundError, RuntimeError)),
+                    **({"permissionRequest": permission_request} if permission_request else {}),
                 },
                 "isError": True,
             }

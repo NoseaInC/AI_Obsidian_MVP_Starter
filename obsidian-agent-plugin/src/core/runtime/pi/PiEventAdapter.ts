@@ -1,5 +1,5 @@
 import type {AgentEvent} from "@earendil-works/pi-agent-core";
-import type {AgentChunk} from "../types";
+import type {AgentChunk, AgentInlineConfirmation} from "../types";
 import type {PiRunIdentity} from "./types";
 
 /**
@@ -72,17 +72,22 @@ export class PiEventAdapter {
     }
     if (event.type === "tool_execution_end") {
       const details = event.result?.details;
-      const result = details && typeof details === "object"
+      const result: Record<string, unknown> = details && typeof details === "object"
         ? details as Record<string, unknown>
         : {content: event.result?.content ?? []};
+      const blocked = result.blocked === true || result.status === "blocked";
       return [{
         ...base(),
         type: "tool_result",
         id: event.toolCallId,
         name: event.toolName,
         result,
-        summary: event.isError ? "工具未能完成，Agent 将依据 Observation 调整步骤" : "工具已完成",
-        status: event.isError ? "failed" : "completed",
+        summary: blocked
+          ? "用户未授权该操作，Agent 将依据 Observation 调整步骤"
+          : event.isError
+            ? "工具未能完成，Agent 将依据 Observation 调整步骤"
+            : "工具已完成",
+        status: blocked ? "blocked" : event.isError ? "failed" : "completed",
       }];
     }
     // agent_end also fires after an errored provider stream.  The runtime,
@@ -121,6 +126,36 @@ export class PiEventAdapter {
       sequence: ++this.sequence,
       type: "done",
       status: "cancelled",
+    };
+  }
+
+  confirmationRequired(confirmation: AgentInlineConfirmation): AgentChunk {
+    return {
+      runId: this.identity.runId,
+      conversationId: this.identity.conversationId,
+      sequence: ++this.sequence,
+      type: "confirmation_required",
+      confirmation,
+    };
+  }
+
+  confirmationResolved(mode: "once" | "all" | "cancelled"): AgentChunk {
+    const sequence = ++this.sequence;
+    return {
+      runId: this.identity.runId,
+      conversationId: this.identity.conversationId,
+      sequence,
+      type: "notice",
+      code: "inline.confirmation.resolved",
+      content: "",
+      data: {
+        schemaVersion: 3,
+        seq: sequence,
+        type: "inline.confirmation.resolved",
+        runId: this.identity.runId,
+        conversationId: this.identity.conversationId,
+        reason: mode,
+      },
     };
   }
 

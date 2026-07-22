@@ -47,7 +47,7 @@ export interface AgentConversationState {
 
 export interface AgentInlineConfirmation {
   run_id: string;
-  kind: "write" | "question";
+  kind: "write" | "question" | "permission";
   proposal_id: string;
   title: string;
   summary: string;

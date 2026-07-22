@@ -327,6 +327,7 @@ export function reduceAssistantStream(
   } else if (event.type === "inline.confirmation.required") {
     next.proposalRequired = true;
     next.confirmation = event.confirmation;
+    next.status = "waiting_confirmation";
   } else if (event.type === "message.completed") {
     next.messageId = String(
       (event.message as {id?: unknown} | undefined)?.id ?? next.messageId,
@@ -349,6 +350,7 @@ export function reduceAssistantStream(
   } else if (event.type === "inline.confirmation.resolved") {
     next.confirmation = undefined;
     next.proposalRequired = false;
+    next.status = "running";
   } else if (event.type === "run.waiting_confirmation") {
     next.status = "waiting_confirmation";
     next.proposalRequired = true;

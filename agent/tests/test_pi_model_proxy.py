@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -333,6 +334,225 @@ class PiModelProxyTests(unittest.TestCase):
         self.assertEqual(first["content"]["content"] + second["content"]["content"], body)
         self.assertFalse(second["content"]["truncated"])
 
+    def test_same_run_can_grant_one_persisted_developer_workspace_and_retry(self) -> None:
+        run_id = "run-developer-grant"
+        authorization_id = "authorization-developer-grant"
+        workspace_id = "workspace-developer-grant"
+        worktree = self.service.developer_workspace.root / workspace_id / "worktree"
+        worktree.mkdir(parents=True)
+        (worktree / "README.md").write_text("# isolated fixture\n", encoding="utf-8")
+        self.service.store.set_setting(f"developer_workspace:{workspace_id}", {
+            "id": workspace_id,
+            "runId": run_id,
+            "path": str(worktree),
+            "branch": "zhixu/developer-grant",
+            "project": str(self.vault),
+            "status": "active",
+        })
+        self.service.task_authorizations.create({
+            "id": authorization_id,
+            "sessionId": "session-developer-grant",
+            "runId": run_id,
+            "turnId": "turn-developer-grant",
+            "sourceMessageId": "message-developer-grant",
+            "objective": "在受控开发 worktree 中读取项目文件",
+            "resourceScope": {
+                "currentNote": False,
+                "explicitVaultPaths": [],
+                "createRoots": [],
+                "workspaceIds": [],
+                "projectPaths": [],
+            },
+            "operationScope": [],
+            "reversibleOnly": True,
+            "networkPolicy": "deny",
+            "externalSideEffects": False,
+            "expiresAtRunEnd": True,
+        })
+        request = {
+            "runId": run_id,
+            "turnId": "turn-developer-grant",
+            "toolCallId": "call-read-workspace",
+            "toolName": "read_workspace_file",
+            "taskAuthorizationId": authorization_id,
+            "arguments": {"workspace_id": workspace_id, "path": "README.md"},
+            "networkAuthorized": False,
+        }
+        blocked = self.service.call_runtime_tool(request)
+        self.assertFalse(blocked["ok"], blocked)
+        self.assertEqual(blocked["error"]["code"], "developer_workspace_not_authorized")
+
+        expanded = self.service.expand_task_authorization(authorization_id, {
+            "runId": run_id,
+            "mode": "once",
+            "capability": {
+                "type": "developer_workspace",
+                "workspaceId": workspace_id,
+                "toolName": "read_workspace_file",
+                # Must be ignored in favour of the persisted workspace record.
+                "projectPath": "/tmp/untrusted-project",
+            },
+        })
+        self.assertIn(workspace_id, expanded["taskAuthorization"]["resourceScope"]["workspaceIds"])
+        self.assertNotIn("/tmp/untrusted-project", expanded["taskAuthorization"]["resourceScope"]["projectPaths"])
+        self.assertEqual(
+            expanded["taskAuthorization"]["resourceScope"]["workspaceOperationScopes"][workspace_id],
+            ["read_workspace_file"],
+        )
+
+        retried = self.service.call_runtime_tool(request)
+        self.assertTrue(retried["ok"], retried)
+        self.assertEqual(retried["content"]["content"], "# isolated fixture\n")
+
+        write_blocked = self.service.call_runtime_tool({
+            **request,
+            "toolCallId": "call-write-workspace-not-granted",
+            "toolName": "write_workspace_file",
+            "arguments": {
+                "workspace_id": workspace_id,
+                "path": "README.md",
+                "content": "must not be written",
+            },
+        })
+        self.assertFalse(write_blocked["ok"], write_blocked)
+        self.assertEqual(write_blocked["error"]["code"], "developer_operation_not_authorized")
+
+    def test_created_workspace_requires_exact_read_write_and_merge_grants_in_same_run(self) -> None:
+        subprocess.run(["git", "init", "-q"], cwd=self.vault, check=True)
+        (self.vault / ".gitignore").write_text("90-Local-Only/\n", encoding="utf-8")
+        (self.vault / "README.md").write_text("# governed project\n", encoding="utf-8")
+        subprocess.run(["git", "add", ".gitignore", "README.md"], cwd=self.vault, check=True)
+        subprocess.run(
+            [
+                "git", "-c", "user.name=Test", "-c", "user.email=test@localhost",
+                "commit", "-qm", "base",
+            ],
+            cwd=self.vault,
+            check=True,
+        )
+        run_id = "run-exact-developer-operations"
+        authorization_id = "authorization-exact-developer-operations"
+        self.service.task_authorizations.create({
+            "id": authorization_id,
+            "sessionId": "session-exact-developer-operations",
+            "runId": run_id,
+            "turnId": "turn-exact-developer-operations",
+            "sourceMessageId": "message-exact-developer-operations",
+            "objective": "在隔离 worktree 中读取、修改并合并一个文件",
+            "resourceScope": {
+                "currentNote": False,
+                "explicitVaultPaths": [],
+                "createRoots": [],
+                "workspaceIds": ["client-forged-workspace"],
+                "projectPaths": ["/tmp/client-forged-project"],
+            },
+            "operationScope": [],
+            "reversibleOnly": True,
+            "networkPolicy": "deny",
+            "externalSideEffects": False,
+            "expiresAtRunEnd": True,
+        })
+        created = self.service.call_runtime_tool({
+            "runId": run_id,
+            "turnId": "turn-exact-developer-operations",
+            "toolCallId": "call-create-worktree",
+            "toolName": "create_git_worktree",
+            "taskAuthorizationId": authorization_id,
+            "arguments": {},
+            "networkAuthorized": False,
+        })
+        self.assertTrue(created["ok"], created)
+        workspace_id = str(created["content"]["id"])
+        registered = self.service.store.get_task_authorization(authorization_id)
+        self.assertEqual(registered["resourceScope"]["workspaceIds"], [workspace_id])
+        self.assertEqual(
+            registered["resourceScope"]["workspaceOperationScopes"],
+            {workspace_id: []},
+        )
+        self.assertFalse(set(registered["operationScope"]) & {
+            "read_workspace_file", "write_workspace_file", "merge_task_branch",
+        })
+
+        def request(tool_name: str, call_id: str, arguments: dict[str, object]) -> dict[str, object]:
+            return {
+                "runId": run_id,
+                "turnId": "turn-exact-developer-operations",
+                "toolCallId": call_id,
+                "toolName": tool_name,
+                "taskAuthorizationId": authorization_id,
+                "arguments": arguments,
+                "networkAuthorized": False,
+            }
+
+        def grant_and_retry(payload: dict[str, object]) -> dict[str, object]:
+            blocked = self.service.call_runtime_tool(payload)
+            self.assertFalse(blocked["ok"], blocked)
+            self.assertEqual(blocked["error"]["code"], "developer_operation_not_authorized")
+            permission = blocked["error"]["permissionRequest"]
+            self.assertEqual(permission["workspaceId"], workspace_id)
+            self.assertEqual(permission["toolName"], payload["toolName"])
+            self.service.expand_task_authorization(authorization_id, {
+                "runId": run_id,
+                "mode": "once",
+                # Pi always includes this empty list. The typed developer
+                # capability must take precedence over it.
+                "writes": [],
+                "capability": permission,
+            })
+            return self.service.call_runtime_tool(payload)
+
+        read_call = request(
+            "read_workspace_file",
+            "call-read-exact",
+            {"workspace_id": workspace_id, "path": "README.md"},
+        )
+        read = grant_and_retry(read_call)
+        self.assertTrue(read["ok"], read)
+        self.assertEqual(read["content"]["content"], "# governed project\n")
+
+        write_call = request(
+            "write_workspace_file",
+            "call-write-exact",
+            {
+                "workspace_id": workspace_id,
+                "path": "feature.txt",
+                "content": "governed change\n",
+            },
+        )
+        write = grant_and_retry(write_call)
+        self.assertTrue(write["ok"], write)
+        self.assertTrue(write["content"]["created"])
+
+        commit_call = request(
+            "git_commit",
+            "call-commit-exact",
+            {"workspace_id": workspace_id, "message": "feat: governed change"},
+        )
+        committed = grant_and_retry(commit_call)
+        self.assertTrue(committed["ok"], committed)
+        self.assertEqual(committed["content"]["exitCode"], 0)
+
+        merge_call = request(
+            "merge_task_branch",
+            "call-merge-exact",
+            {"workspace_id": workspace_id},
+        )
+        merged = grant_and_retry(merge_call)
+        self.assertTrue(merged["ok"], merged)
+        self.assertEqual(merged["content"]["status"], "merged")
+        self.assertEqual((self.vault / "feature.txt").read_text(encoding="utf-8"), "governed change\n")
+
+        final_scope = self.service.store.get_task_authorization(authorization_id)
+        self.assertEqual(
+            set(final_scope["resourceScope"]["workspaceOperationScopes"][workspace_id]),
+            {
+                "read_workspace_file",
+                "write_workspace_file",
+                "git_commit",
+                "merge_task_branch",
+            },
+        )
+
     def test_harness_batch_copy_preserves_long_notes_and_applies_all_batches(self) -> None:
         source_root = self.vault / "20-Knowledge/Concepts"
         source_root.mkdir(parents=True, exist_ok=True)
@@ -358,6 +578,25 @@ class PiModelProxyTests(unittest.TestCase):
             "networkPolicy": "deny",
             "externalSideEffects": False,
             "expiresAtRunEnd": True,
+        })
+        planned = self.service.call_runtime_tool({
+            "runId": "run-copy", "turnId": "turn-copy", "toolCallId": "call-copy-plan",
+            "toolName": "plan_vault_copy", "taskAuthorizationId": authorization_id,
+            "arguments": {
+                "title": "概念笔记副本",
+                "source_paths": paths,
+                "destination_root": "20-Knowledge/Drafts/Concept-Copies",
+            },
+            "networkAuthorized": False,
+        })
+        self.assertFalse(planned["ok"], planned)
+        request = planned["error"]["permissionRequest"]
+        self.assertEqual(request["type"], "vault_writes")
+        self.assertEqual(len(request["writes"]), 12)
+        self.service.expand_task_authorization(authorization_id, {
+            "runId": "run-copy",
+            "mode": "once",
+            "writes": request["writes"],
         })
         planned = self.service.call_runtime_tool({
             "runId": "run-copy", "turnId": "turn-copy", "toolCallId": "call-copy-plan",

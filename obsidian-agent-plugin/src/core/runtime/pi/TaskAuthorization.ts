@@ -13,6 +13,7 @@ export function createTurnIdentity(request: AgentTurnRequest): PiRunIdentity {
   const runId = newId("pi-run");
   const turnId = newId("turn");
   const sourceMessageId = newId("message");
+  const allowAllRunCapabilities = request.options?.permission_mode === "allow_all";
   const taskAuthorization: PiTaskAuthorization = {
     id: newId("authorization"),
     sessionId: conversationId,
@@ -26,6 +27,7 @@ export function createTurnIdentity(request: AgentTurnRequest): PiRunIdentity {
       createRoots: [],
       workspaceId: "",
       projectPaths: [],
+      allowAllRunCapabilities,
     },
     operationScope: [],
     reversibleOnly: true,

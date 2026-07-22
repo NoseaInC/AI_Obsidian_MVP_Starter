@@ -7,7 +7,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "00-System/Scripts"))
-from agent.tools.vault_access import VaultReadIndex
+from agent.tools.vault_access import VaultReadIndex, read_note_excerpt
 
 
 class HybridRetrievalTests(unittest.TestCase):
@@ -51,8 +51,35 @@ tags: causal, observational
         index = VaultReadIndex(self.vault)
         self.assertEqual(index.search({"query": "可搜索内容"})["total"], 1)
         self.assertEqual(index.search({"query": "秘密"})["total"], 0)
+        path.write_text(
+            '---\nagent_access: "denied" # changed by user\n---\n可搜索内容',
+            encoding="utf-8",
+        )
+        self.assertEqual(index.search({"query": "可搜索内容"})["total"], 0)
         path.unlink()
         self.assertEqual(index.search({"query": "可搜索内容"})["total"], 0)
+
+    def test_denied_variants_and_invalid_utf8_are_fail_closed(self) -> None:
+        quoted = self.vault / "20-Knowledge/Concepts/quoted-denied.md"
+        quoted.write_text(
+            '\ufeff---\nagent_access: "denied" # private\n---\n绝密 quoted marker',
+            encoding="utf-8",
+        )
+        invalid = self.vault / "20-Knowledge/Concepts/invalid.md"
+        invalid.write_bytes(b"\xff\xfeprivate invalid bytes")
+        index = VaultReadIndex(self.vault)
+        self.assertEqual(index.search({"query": "绝密 quoted marker"})["total"], 0)
+        self.assertEqual(index.overview()["totalNotes"], 0)
+        with self.assertRaisesRegex(PermissionError, "agent_access_denied"):
+            read_note_excerpt(
+                self.vault.resolve(),
+                {"path": "20-Knowledge/Concepts/quoted-denied.md"},
+            )
+        with self.assertRaisesRegex(PermissionError, "agent_access_denied"):
+            read_note_excerpt(
+                self.vault.resolve(),
+                {"path": "20-Knowledge/Concepts/invalid.md"},
+            )
 
 
 if __name__ == "__main__":
