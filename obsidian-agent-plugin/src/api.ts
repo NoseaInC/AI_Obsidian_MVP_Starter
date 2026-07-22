@@ -149,6 +149,9 @@ export class AgentClient {
   async appendRuntimeEvents(body: unknown): Promise<any> {
     return this.post("/agent/events", body);
   }
+  async updateMessageMetadata(conversationId: string, messageId: string, metadata: Record<string, unknown>): Promise<any> {
+    return this.post(`/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/metadata`, {metadata});
+  }
   async runtimeEvents(runId: string, afterSequence = 0): Promise<any> {
     return this.get(`/agent/runs/${encodeURIComponent(runId)}/events?after=${Math.max(0, afterSequence)}`);
   }

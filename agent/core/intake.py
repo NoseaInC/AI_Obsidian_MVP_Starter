@@ -121,7 +121,7 @@ class IntakeService:
     def append_message(
         self, conversation_id: str, role: str, content: str, message_type: str = "text",
         task_thread_id: str | None = None, artifact_group_id: str | None = None,
-        message_id: str | None = None,
+        message_id: str | None = None, metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if role not in {"user", "assistant", "system"}:
             raise ValueError("invalid_message_role")
@@ -145,12 +145,15 @@ class IntakeService:
         now = _now()
         relative = Path("Conversations/messages") / f"{message_id}.json"
         path = self.root / relative
-        _atomic_bytes(path, (_json({
+        payload: dict[str, Any] = {
             "id": message_id,
             "role": role,
             "content": content,
             "created_at": now,
-        }) + "\n").encode())
+        }
+        if metadata:
+            payload["metadata"] = metadata
+        _atomic_bytes(path, (_json(payload) + "\n").encode())
         with self.store.lock:
             self.store.connection.execute(
                 """INSERT INTO conversation_messages(
@@ -167,20 +170,46 @@ class IntakeService:
             "messageType": message_type,
             "content": content,
             "createdAt": now,
+            "metadata": metadata,
         }
+
+    def update_message_metadata(
+        self, conversation_id: str, message_id: str, metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        self.ensure_conversation(conversation_id)
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,160}", message_id):
+            raise ValueError("invalid_message_id")
+        with self.store.lock:
+            row = self.store.connection.execute(
+                "SELECT * FROM conversation_messages WHERE id=? AND conversation_id=?",
+                (message_id, conversation_id),
+            ).fetchone()
+        if not row:
+            raise ValueError("conversation_message_not_found")
+        relative = Path(str(row["content_reference"]))
+        path = (self.root / relative).resolve()
+        if not path.is_relative_to(self.messages_root.resolve()) or not path.is_file() or path.is_symlink():
+            raise RuntimeError("conversation_message_content_unavailable")
+        payload = _decode(path.read_text(encoding="utf-8", errors="replace"), {})
+        payload["metadata"] = metadata
+        _atomic_bytes(path, (_json(payload) + "\n").encode())
+        return self._read_message(row)
 
     def _read_message(self, row: Any) -> dict[str, Any]:
         relative = Path(str(row["content_reference"]))
         path = (self.root / relative).resolve()
         if not path.is_relative_to(self.messages_root.resolve()) or not path.is_file() or path.is_symlink():
             content = "[本地消息内容不可用]"
+            metadata: dict[str, Any] | None = None
         else:
             payload = _decode(path.read_text(encoding="utf-8", errors="replace"), {})
             content = str(payload.get("content", ""))
+            metadata = payload.get("metadata")
         return {
             "id": row["id"], "role": row["role"], "messageType": row["message_type"],
             "content": content, "taskThreadId": row["task_thread_id"],
             "artifactGroupId": row["artifact_group_id"], "createdAt": row["created_at"],
+            "metadata": metadata,
         }
 
     def list_conversations(self, limit: int = 50, offset: int = 0) -> dict[str, Any]:

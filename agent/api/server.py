@@ -289,6 +289,12 @@ class Handler(BaseHTTPRequestHandler):
             elif path.startswith("/conversations/") and path.endswith("/messages"):
                 conversation_id = self._identifier(path.removeprefix("/conversations/").removesuffix("/messages"))
                 payload = self.service.explicit.submit_intake({**body, "conversation_id": conversation_id}, self.headers.get("Idempotency-Key", ""))
+            elif path.startswith("/conversations/") and "/messages/" in path and path.endswith("/metadata"):
+                suffix = path.removeprefix("/conversations/").removesuffix("/metadata")
+                conversation_id, rest = suffix.split("/messages/", 1)
+                conversation_id = self._identifier(conversation_id)
+                message_id = self._identifier(rest)
+                payload = {"message": self.service.update_message_metadata(conversation_id, message_id, dict(body.get("metadata") or {}))}
             elif path == "/jobs":
                 job_id = self.service.enqueue(str(body.get("kind", "")), dict(body.get("payload", {})))
                 payload = {"job": self.service.get_job(job_id)}

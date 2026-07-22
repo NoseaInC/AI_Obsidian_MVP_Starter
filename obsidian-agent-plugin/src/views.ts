@@ -472,6 +472,11 @@ export class LearningAgentMainView extends ItemView {
   private assistantRun: any = null;
   private conversationId = "";
   private assistantMessages: any[] = [];
+  private conversationMessageCache = new Map<string, Record<string, any>[]>();
+  // conversationId → [[traceSteps, ...], ...] — 按完成顺序存储 trace
+  private pendingTraces = new Map<string, any[][]>();
+  // conversationId → offset — 渲染时当前匹配到的 trace 位置（不消费队列）
+  private pendingTraceOffsets = new Map<string, number>();
   private assistantArtifacts: any[] = [];
   private assistantTaskThread: AssistantTaskThread | null = null;
   private assistantArtifactGroup: ArtifactGroup | null = null;
@@ -487,6 +492,8 @@ export class LearningAgentMainView extends ItemView {
   private assistantLiveRun: AssistantLiveRun = initialAssistantLiveRun();
   private assistantLiveRuns = new Map<string, AssistantLiveRun>();
   private assistantLiveTraceEls = new Map<string, HTMLElement>();
+  private assistantLiveAssistantEls = new Map<string, HTMLElement>();
+  private assistantLiveConfirmationEls = new Map<string, HTMLElement>();
   private assistantVisibleMessageLimit = 160;
   private assistantDraft = "";
   private assistantSubmitInFlight = false;
@@ -1943,7 +1950,33 @@ export class LearningAgentMainView extends ItemView {
           this.client.get<any>(`/artifacts?conversation_id=${encodeURIComponent(this.conversationId)}&limit=30`),
         ]);
         loadedConversation = conversation;
-        this.assistantMessages = conversation.messages ?? [];
+        // 优先使用缓存消息（包含 reasoningBlocks、traceSteps 等前端富数据），
+        // 仅当缓存为空或长度不够时才从后端补充新增消息
+        const backendMessages = conversation.messages ?? [];
+        const cached = this.conversationMessageCache.get(this.conversationId);
+        if (cached && cached.length > 0) {
+          // 缓存存在：保留缓存的富数据，只在末尾追加后端新增的消息
+          // （后端消息不含 trace，但通过位置匹配，新增消息通常位于末尾）
+          if (backendMessages.length > cached.length) {
+            this.assistantMessages = [
+              ...cached,
+              ...backendMessages.slice(cached.length),
+            ];
+          } else {
+            this.assistantMessages = cached;
+          }
+        } else {
+          this.assistantMessages = backendMessages;
+        }
+        console.log("[renderAssistant] conversationId=%s messages=%d cacheLen=%d traces=%d/%d",
+          this.conversationId, this.assistantMessages.length,
+          cached?.length ?? 0,
+          this.assistantMessages.filter((m: any) => Array.isArray(m._traceSteps) && m._traceSteps.length > 0).length,
+          this.assistantMessages.filter((m: any) => Array.isArray(m.reasoningBlocks) && m.reasoningBlocks.length > 0).length);
+        // 不覆盖缓存！只在不存在时设置初始值
+        if (!this.conversationMessageCache.has(this.conversationId)) {
+          this.conversationMessageCache.set(this.conversationId, [...this.assistantMessages]);
+        }
         this.assistantArtifacts = await Promise.all((artifacts.items ?? []).slice().reverse().map(async (item: any) => {
           try { return (await this.client.get<any>(`/artifacts/${encodeURIComponent(item.id)}`)).artifact; }
           catch { return item; }
@@ -2012,7 +2045,7 @@ export class LearningAgentMainView extends ItemView {
       for (const conversation of conversations.items ?? []) menu.addItem(item => item
         .setTitle(`${conversation.title} · ${conversation.messageCount} 条`)
         .setIcon(conversation.id === this.conversationId ? "check" : "message-square")
-        .onClick(() => { this.conversationId = String(conversation.id); this.assistantRun = null; void this.refresh(); }));
+        .onClick(() => { if (this.conversationId) this.assistantLiveRuns.set(this.conversationId, this.assistantLiveRun); this.conversationId = String(conversation.id); this.assistantLiveRun = this.assistantLiveRuns.get(this.conversationId) ?? initialAssistantLiveRun(); this.assistantRun = null; this.assistantVisibleMessageLimit = 160; void this.refresh(); }));
       if (this.conversationId) {
         menu.addSeparator();
         menu.addItem(item => item.setTitle("导出当前会话（本地）").setIcon("download").onClick(async () => {
@@ -2085,11 +2118,20 @@ export class LearningAgentMainView extends ItemView {
         if (message.role === "user") previousUserMessage = message;
       }
     }
-    // Re-attach live trace if a background run is still active for this conversation
+    // Re-attach live elements if a background run is still active for this conversation
     const bgTrace = this.assistantLiveTraceEls.get(this.conversationId);
-    if (bgTrace && !bgTrace.isConnected && this.assistantLiveRun.status === "running") {
-      messages.appendChild(bgTrace);
-      this.paintAssistantLiveTrace(bgTrace, this.assistantLiveRun);
+    const bgAssistant = this.assistantLiveAssistantEls.get(this.conversationId);
+    const bgConfirmation = this.assistantLiveConfirmationEls.get(this.conversationId);
+    const bgLiveRunActive = this.assistantLiveRun.status === "running" || this.assistantLiveRun.status === "waiting_confirmation";
+    if (bgLiveRunActive) {
+      // Always move live elements into the current messages list — isConnected
+      // can be misleading after refresh() because the old DOM subtree may
+      // have been detached but the elements were re-parented by the streaming
+      // loop into a detached ancestor.
+      if (bgTrace) messages.appendChild(bgTrace);
+      if (bgAssistant) messages.appendChild(bgAssistant);
+      if (bgConfirmation) messages.appendChild(bgConfirmation);
+      if (bgTrace) this.paintAssistantLiveTrace(bgTrace, this.assistantLiveRun);
     }
     const primaryArtifact = this.assistantArtifactGroup?.artifacts.find(item => item.id === this.assistantArtifactGroup?.primaryArtifactId)
       ?? this.assistantArtifactGroup?.artifacts[0];
@@ -2381,7 +2423,11 @@ export class LearningAgentMainView extends ItemView {
         });
       }
     };
-    paintSendButton(false);
+    const isLiveRunActive = this.assistantLiveRun.status === "running" || this.assistantLiveRun.status === "waiting_confirmation";
+    paintSendButton(isLiveRunActive);
+    if (isLiveRunActive) {
+      input.setAttribute("placeholder", "运行中：输入可调整当前任务；也可从 + 选择完成后继续");
+    }
     paintNetworkToggle();
 
     const ensureConversation = async (): Promise<string> => {
@@ -2455,6 +2501,8 @@ export class LearningAgentMainView extends ItemView {
       const submittedDraft = content;
       let progressiveMarkdown: ProgressiveAssistantMarkdown | null = null;
       let awaitingInlineConfirmation = false;
+      const runConversationId = this.conversationId;
+      let liveRun = initialAssistantLiveRun();
       try {
         const conversationId = await ensureConversation();
         if (!this.pendingAttachments.length && /^\/(?:Users|Volumes)\/[^\n]+$/.test(content)) {
@@ -2474,17 +2522,18 @@ export class LearningAgentMainView extends ItemView {
         const trace = messages.createEl("section", {cls: "la-live-trace is-running", attr: {"aria-label": "任务执行进度"}});
         this.assistantLiveTraceEls.set(this.conversationId, trace);
         const assistant = messages.createDiv({cls: "la-message la-message--assistant la-message--streaming"});
+        this.assistantLiveAssistantEls.set(this.conversationId, assistant);
         renderAssistantAvatar(assistant, this.app);
         const assistantCopy = assistant.createDiv({cls: "la-message-copy"});
         const markdown = assistantCopy.createDiv({cls: "la-message-markdown"});
         markdown.createSpan({cls: "la-stream-caret", text: "正在连接已选模型…"});
         const confirmationHost = messages.createDiv({cls: "la-inline-confirmation-host"});
+        this.assistantLiveConfirmationEls.set(this.conversationId, confirmationHost);
         confirmationHost.hidden = true;
         let disposeConfirmation: (() => void) | undefined;
         progressiveMarkdown = new ProgressiveAssistantMarkdown(this.markdown, markdown);
         messages.scrollTop = messages.scrollHeight;
-        const runConversationId = this.conversationId;
-        let liveRun = initialAssistantLiveRun();
+        liveRun = { ...liveRun, status: "running" as const };
         this.assistantLiveRun = liveRun;
         this.paintAssistantLiveTrace(trace, this.assistantLiveRun);
         input.value = "";
@@ -2536,8 +2585,9 @@ export class LearningAgentMainView extends ItemView {
 
           // Re-attach live elements when switching back to this conversation
           // after they were detached by a refresh() during background processing.
+          // chat is a stale reference — use the view's live DOM instead.
           if (!trace.isConnected) {
-            const currentMessages = chat.querySelector('.la-message-list.la-chat-stream') as HTMLElement;
+            const currentMessages = this.contentEl.querySelector('.la-message-list.la-chat-stream') as HTMLElement;
             if (currentMessages) {
               currentMessages.appendChild(trace);
               currentMessages.appendChild(assistant);
@@ -2599,6 +2649,8 @@ export class LearningAgentMainView extends ItemView {
         // If user switched away, don't add messages to another conversation
         if (this.conversationId !== runConversationId) {
           this.assistantLiveTraceEls.delete(runConversationId);
+          this.assistantLiveAssistantEls.delete(runConversationId);
+          this.assistantLiveConfirmationEls.delete(runConversationId);
           return;
         }
 
@@ -2610,31 +2662,60 @@ export class LearningAgentMainView extends ItemView {
           id: this.assistantLiveRun.messageId, role: "assistant", content: this.assistantLiveRun.content,
           createdAt: new Date().toISOString(),
         };
+        const appliedCall = [...liveRun.toolCalls].reverse().find(
+          item => item.tool === "apply_vault_change" && item.status === "completed",
+        );
+        const nestedResult = appliedCall?.result?.result;
+        const vaultAction = nestedResult && typeof nestedResult === "object" && !Array.isArray(nestedResult)
+          ? (nestedResult as Record<string, any>)
+          : null;
         const completedMessage: Record<string, any> = {
           ...completedMessageBase,
           reasoningBlocks: this.assistantLiveRun.reasoningBlocks
             .filter(block => block.content.trim())
             .map(block => ({...block, status: "completed"})),
+          _traceSteps: liveRun.steps.map(step => ({...step, status: step.status === "running" ? "completed" : step.status})),
+          _traceToolCalls: liveRun.toolCalls.map(call => ({...call})),
+          _traceContext: liveRun.context,
+          _tracePlannerRound: liveRun.plannerRound,
+          _traceVaultAction: vaultAction,
+          _traceRunId: liveRun.runId,
+          _traceModel: liveRun.model,
         };
         assistantCopy.createEl("small", {text: completedMessage.createdAt ? new Date(completedMessage.createdAt).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) : ""});
         this.renderAssistantMessageActions(assistantCopy, completedMessage, {content});
         if (!regenerateMessageId) {
           this.assistantMessages.push({id: `local-user-${Date.now()}`, role: "user", content, createdAt: new Date().toISOString()});
           this.assistantMessages.push(completedMessage);
+          this.conversationMessageCache.set(runConversationId, [...this.assistantMessages]);
+          // 按对话顺序存储 trace steps，用于切换后恢复
+          const traceLen = completedMessage._traceSteps?.length ?? 0;
+          if (traceLen > 0) {
+            const queue = this.pendingTraces.get(runConversationId) ?? [];
+            queue.push(completedMessage._traceSteps);
+            this.pendingTraces.set(runConversationId, queue);
+            console.log("[saveTrace] saved to pendingTraces, queue now has %d entries", queue.length);
+          }
         }
         this.pendingAttachments = []; input.value = ""; this.assistantDraft = ""; this.assistantRegenerateMessageId = "";
         this.assistantLiveTraceEls.delete(runConversationId);
+        this.assistantLiveAssistantEls.delete(runConversationId);
+        this.assistantLiveConfirmationEls.delete(runConversationId);
       } catch (error: any) {
         if (error?.name === "AbortError") {
           liveRun = cancelledAssistantRun(liveRun);
           this.assistantLiveRuns.set(runConversationId, liveRun);
           this.assistantLiveTraceEls.delete(runConversationId);
+        this.assistantLiveAssistantEls.delete(runConversationId);
+        this.assistantLiveConfirmationEls.delete(runConversationId);
           if (this.conversationId === runConversationId) this.assistantLiveRun = liveRun;
           return;
         }
         // Store failure state for this conversation
         this.assistantLiveRuns.set(runConversationId, liveRun);
         this.assistantLiveTraceEls.delete(runConversationId);
+        this.assistantLiveAssistantEls.delete(runConversationId);
+        this.assistantLiveConfirmationEls.delete(runConversationId);
         if (this.conversationId !== runConversationId) return;
         this.assistantLiveRun = liveRun;
         const failure = humanizeAssistantError(String(error.code ?? error.message ?? ""), String(error.message ?? ""), true);
@@ -2684,11 +2765,28 @@ export class LearningAgentMainView extends ItemView {
     const beganRunning = parent.hasClass("is-idle") && run.status === "running";
     const detailsOpen = beganRunning || (previousDetails?.open ?? run.status === "running");
     const providerReasoningOpen = previousProviderReasoning?.open ?? run.status === "running";
+    // Preserve the spinner element across repaints so the CSS animation
+    // continues smoothly instead of restarting on every stream event.
+    const cachedSpinner = parent.querySelector<HTMLElement>(".la-live-trace__spinner");
+    // Preserve step row DOM elements to avoid flicker from full DOM rebuild
+    const savedStepRows = new Map<string, HTMLElement>();
+    parent.querySelectorAll('.la-live-trace__step').forEach(el => {
+      const stepId = (el as HTMLElement).dataset.step;
+      if (stepId) savedStepRows.set(stepId, el as HTMLElement);
+    });
     parent.empty();
     parent.className = `la-live-trace is-${run.status}`;
     const head = parent.createDiv({cls: "la-live-trace__head"});
     const status = head.createSpan({cls: "la-live-trace__status"});
-    setIcon(status, run.status === "completed" ? "circle-check" : run.status === "failed" ? "circle-alert" : run.status === "cancelled" ? "circle-stop" : "loader-circle");
+    if (run.status === "running") {
+      if (cachedSpinner) {
+        status.appendChild(cachedSpinner);
+      } else {
+        status.createSpan({cls: "la-live-trace__spinner"});
+      }
+    } else {
+      setIcon(status, run.status === "completed" ? "circle-check" : run.status === "failed" ? "circle-alert" : "circle-stop");
+    }
     const copy = head.createDiv();
     copy.createEl("strong", {text: run.status === "completed" ? "知序已完成处理" : run.status === "failed" ? "处理未完成" : run.status === "cancelled" ? "已停止生成" : "知序正在处理"});
     copy.createEl("small", {text: run.model ? `模型 · ${run.model}` : "正在建立本地上下文"});
@@ -2732,8 +2830,19 @@ export class LearningAgentMainView extends ItemView {
           : "running";
     const rendered = run.steps.length ? run.steps : [{id: "pending", label: "理解当前请求与上下文", status: fallbackStatus}];
     for (const step of rendered) {
-      const row = steps.createDiv({cls: `la-live-trace__step is-${step.status}`});
-      setIcon(row.createSpan(), step.status === "completed" ? "check" : step.status === "failed" ? "x" : step.status === "running" ? "loader-circle" : "circle");
+      // Reuse existing DOM when status unchanged to avoid spinner flicker
+      const saved = savedStepRows.get(step.id);
+      if (saved && saved.classList.contains(`is-${step.status}`)) {
+        steps.appendChild(saved);
+        continue;
+      }
+      const row = steps.createDiv({cls: `la-live-trace__step is-${step.status}`, attr: {"data-step": step.id}});
+      const stepIcon = row.createSpan({cls: "la-live-trace__step-icon"});
+      if (step.status === "running") {
+        stepIcon.createSpan({cls: "la-live-trace__step-spinner"});
+      } else {
+        setIcon(stepIcon, step.status === "completed" ? "check" : step.status === "failed" ? "x" : "circle");
+      }
       row.createSpan({text: step.label});
       const call = step.id.startsWith("tool:") ? run.toolCalls.find(item => `tool:${item.id}` === step.id) : undefined;
       row.createEl("small", {text: call?.summary || (step.status === "completed" ? "完成" : step.status === "running" ? "进行中" : step.status === "failed" ? "失败" : "等待")});
@@ -2748,7 +2857,8 @@ export class LearningAgentMainView extends ItemView {
     if (action?.actionId && action.state === "applied") {
       const result = details.createDiv({cls: "la-live-trace__action-result"});
       const resultHead = result.createDiv({cls: "la-live-trace__action-result-head"});
-      setIcon(resultHead.createSpan(), "file-check-2");
+      const iconWrap = resultHead.createSpan({cls: "la-live-trace__action-result-icon"});
+      setIcon(iconWrap, "file-check-2");
       const resultCopy = resultHead.createDiv();
       resultCopy.createEl("strong", {text: "已整理完成"});
       const files = Array.isArray(action.files) ? action.files : [];
@@ -2757,8 +2867,10 @@ export class LearningAgentMainView extends ItemView {
       resultCopy.createEl("small", {text: `${files.length} 个文件 · +${added} -${deleted} · 已校验`});
       const fileList = result.createDiv({cls: "la-live-trace__action-files"});
       for (const item of files.slice(0, 10)) {
-        const file = fileList.createEl("button", {text: String(item.path ?? "Markdown 文件")});
-        file.onclick = () => void this.app.workspace.openLinkText(String(item.path ?? ""), "", false);
+        const file = fileList.createEl("a", {cls: "la-live-trace__action-file", href: "#"});
+        setIcon(file.createSpan({cls: "la-live-trace__action-file-icon"}), "file-text");
+        file.createSpan({cls: "la-live-trace__action-file-path", text: String(item.path ?? "Markdown 文件")});
+        file.onclick = event => { event.preventDefault(); void this.app.workspace.openLinkText(String(item.path ?? ""), "", false); };
       }
       const actions = result.createDiv({cls: "la-live-trace__action-actions"});
       button(actions, "查看变化", async () => {
@@ -2767,14 +2879,14 @@ export class LearningAgentMainView extends ItemView {
           `${String(item.path ?? "")}  +${Number(item.added ?? 0)} -${Number(item.deleted ?? 0)}\n\n${String(item.diff ?? "")}`,
         ).join("\n\n");
         new TextPreviewModal(this.app, "本次修改", preview || "没有文本变化").open();
-      });
+      }, "la-button--ghost");
       if (action.undoAvailable) button(actions, "撤销", async () => {
         await this.client.undoAgentAction(String(action.actionId));
         new Notice("已安全撤销本次修改");
         action.state = "undone";
         action.undoAvailable = false;
         this.paintAssistantLiveTrace(parent, run);
-      });
+      }, "la-button--ghost");
     }
     if (run.proposalRequired) {
       const notice = details.createDiv({cls: "la-live-trace__proposal"}); setIcon(notice.createSpan(), "file-diff");
@@ -2792,7 +2904,12 @@ export class LearningAgentMainView extends ItemView {
     const steps = root.createDiv({cls: "la-assistant-task-steps"});
     for (const step of task.steps) {
       const item = steps.createDiv({cls: `la-assistant-task-step is-${step.status}`});
-      setIcon(item.createSpan(), step.status === "completed" ? "circle-check" : step.status === "running" ? "loader-circle" : step.status === "failed" ? "circle-alert" : "circle");
+      const stepIcon = item.createSpan({cls: "la-assistant-task-step__icon"});
+      if (step.status === "running") {
+        stepIcon.createSpan({cls: "la-live-trace__step-spinner"});
+      } else {
+        setIcon(stepIcon, step.status === "completed" ? "circle-check" : step.status === "failed" ? "circle-alert" : "circle");
+      }
       const text = item.createDiv(); text.createEl("strong", {text: step.label});
       text.createEl("small", {text: step.status === "completed" ? "完成" : step.status === "running" ? "进行中" : step.status === "failed" ? "需要处理" : "待开始"});
     }
@@ -3042,13 +3159,50 @@ export class LearningAgentMainView extends ItemView {
   }
 
   private renderConversationMessage(parent: HTMLElement, message: any, previousUserMessage: any = null): void {
+    const piTrace = message?.metadata?.piTrace;
+    if (piTrace && !message._traceSteps) {
+      message._traceSteps = piTrace.steps;
+      message._traceToolCalls = piTrace.toolCalls;
+      message._traceContext = piTrace.context;
+      message._tracePlannerRound = piTrace.plannerRound;
+      message._traceVaultAction = piTrace.vaultAction;
+      message._traceRunId = piTrace.runId;
+      message._traceModel = piTrace.model;
+    }
     const root = parent.createDiv({cls: `la-message la-message--${message.role === "user" ? "user" : "assistant"}`});
     if (message.role !== "user") renderAssistantAvatar(root, this.app);
     const copy = root.createDiv({cls: "la-message-copy"});
     if (message.role === "user") copy.createEl("p", {text: String(message.content ?? "")});
     else {
-      this.renderProviderReasoning(copy, Array.isArray(message.reasoningBlocks) ? message.reasoningBlocks : [], false);
+      // 缓存消息现在保留完整的 traceSteps 和 reasoningBlocks，无需赘述回退逻辑
+      const traceSteps = message._traceSteps ?? [];
+      const hasTrace = Array.isArray(traceSteps) && traceSteps.length > 0;
+      if (!hasTrace) {
+        this.renderProviderReasoning(copy, Array.isArray(message.reasoningBlocks) ? message.reasoningBlocks : [], false);
+      }
       void this.markdown.render(copy.createDiv({cls: "la-message-markdown"}), String(message.content ?? ""));
+      if (hasTrace) {
+        const traceContainer = copy.createDiv({cls: "la-live-trace is-completed"});
+        const syntheticRun = {
+          runId: String(message._traceRunId ?? message.id ?? ""),
+          conversationId: this.conversationId,
+          messageId: String(message.id ?? ""),
+          model: String(message._traceModel ?? ""),
+          status: "completed" as const,
+          content: "",
+          reasoningBlocks: Array.isArray(message.reasoningBlocks) ? message.reasoningBlocks : [],
+          completedMessage: message,
+          lastSequence: 0,
+          started: true,
+          context: message._traceContext ?? undefined,
+          steps: traceSteps,
+          proposalRequired: false,
+          allowedTools: [] as string[],
+          plannerRound: Number(message._tracePlannerRound ?? 0),
+          toolCalls: message._traceToolCalls ?? [],
+        };
+        this.paintAssistantLiveTrace(traceContainer, syntheticRun);
+      }
     }
     // User metadata is deliberately outside the painted message body. Keeping it
     // inside `.la-message-copy` made the timestamp/actions look like bubble content

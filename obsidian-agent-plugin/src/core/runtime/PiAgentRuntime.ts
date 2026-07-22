@@ -403,7 +403,7 @@ export class PiAgentRuntime implements AgentRuntime {
           isError: decision === "deny",
         } as unknown as AgentMessage);
         // Reset stale agent error state from a previously aborted run
-        const st = session.agent.state as Record<string, unknown>;
+        const st = session.agent.state as unknown as Record<string, unknown>;
         st.errorMessage = undefined;
         st.status = "idle";
         return session.agent.continue();
@@ -431,7 +431,7 @@ export class PiAgentRuntime implements AgentRuntime {
     } else {
       // Reset stale agent error state from a previously aborted run so
       // pi-agent-core does not refuse the new prompt() with a stale error.
-      const st = session.agent.state as Record<string, unknown>;
+      const st = session.agent.state as unknown as Record<string, unknown>;
       st.errorMessage = undefined;
       st.status = "idle";
       running = session.agent
@@ -672,12 +672,12 @@ export class PiAgentRuntime implements AgentRuntime {
   async compact(runId: string, options?: {contextWindow?: number; keepRecent?: number}): Promise<AgentChunk> {
     const session = this.runIndex.get(runId);
     if (!session) throw new Error("pi_run_not_found");
-    if (session.agent.state.isStreaming) throw new Error("pi_compaction_requires_idle_run");
     // Never compact while a permission/question is awaiting a decision; the
     // session must stay intact so the user can resolve it.
     if (session.pendingPermission) {
       return this.noticeChunk(session, "context_compaction_deferred", "权限待确认，暂缓压缩");
     }
+    if (session.agent.state.isStreaming) throw new Error("pi_compaction_requires_idle_run");
     const original = session.agent.state.messages;
     const compact = compactionLimits(session.modelLimits);
     const override = {
@@ -831,7 +831,7 @@ export class PiAgentRuntime implements AgentRuntime {
     if (existing) {
       // If the agent was aborted/errored on a previous run, discard the
       // stale session so a fresh Agent is created for the next turn.
-      if (existing.agent.state.errorMessage || existing.agent.state.status === "failed") {
+      if (existing.agent.state.errorMessage || (existing.agent.state as unknown as Record<string, unknown>).status === "failed") {
         this.conversations.delete(identity.conversationId);
       } else {
         return existing;

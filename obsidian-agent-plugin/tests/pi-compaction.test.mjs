@@ -208,7 +208,7 @@ test("compaction is deferred while a permission is pending and the run stays int
   const transport = {
     async runtimeSession() { return {history: []}; },
     async registerTaskAuthorization(body) { return {taskAuthorization: structuredClone(body.taskAuthorization)}; },
-    async expandTaskAuthorization() { return {taskAuthorization: {}}; },
+    async expandTaskAuthorization() { return {taskAuthorization: {resourceScope: {allowAllRunCapabilities: false}}}; },
     async appendRuntimeEvents(body) { return {runId: body.runId, lastEventSequence: body.events.at(-1)?.sequence ?? 0}; },
     async toolContracts() { return {schemaVersion: 1, items: [organizationContract]}; },
     async callRuntimeTool() { return call++ === 0 ? permissionResponse() : {ok: true, isError: false, content: {state: "applied"}}; },
@@ -223,29 +223,27 @@ test("compaction is deferred while a permission is pending and the run stays int
   try {
     const runtime = new module.PiAgentRuntime(transport);
     let pendingRunId = null;
-    let threw = null;
+    let deferred = null;
     const queryDone = (async () => {
       for await (const chunk of runtime.query(runtime.prepareTurn({message: "整理资料", conversationId: "compact-pending"}))) {
         if (chunk.type === "confirmation_required") {
           pendingRunId = chunk.runId;
           // While a permission is pending the run is still active, so compaction
           // must refuse rather than split the in-flight context.
-          try {
-            await runtime.compact(chunk.runId);
-          } catch (error) {
-            threw = error;
-          }
-          await runtime.confirm(chunk.runId, true, undefined, undefined, "__all__");
+          deferred = await runtime.compact(chunk.runId);
+          // Consume the async generator so confirm() code actually executes.
+          for await (const _ of runtime.confirm(chunk.runId, true, undefined, undefined, "__all__")) void _;
         }
       }
     })();
     await queryDone;
     assert.ok(pendingRunId, "permission became pending");
-    assert.ok(threw, "compaction must not run while permission is pending");
-    assert.match(String(threw?.message), /pi_compaction_requires_idle_run/);
+    assert.ok(deferred, "compact returned a result while permission is pending");
+    assert.equal(deferred.type, "notice");
+    assert.equal(deferred.code, "context_compaction_deferred");
     const state = runtime.getConversationState();
-    assert.ok(Array.isArray(state.messages));
-    assert.ok(state.messages.length >= 2, "original session messages intact after a deferred compaction");
+    assert.ok(state, "conversation state exists after deferred compaction");
+    assert.equal(state.status, "completed", "run completed normally after a deferred compaction");
     runtime.cleanup();
   } finally {
     await dispose();

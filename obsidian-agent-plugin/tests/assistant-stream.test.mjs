@@ -263,7 +263,9 @@ test("assistant production surface uses Pi model proxy, stop and three inspector
   assert.match(css, /\.la-composer-mode\.is-enabled/);
   assert.match(views, /paintSendButton/);
   assert.match(views, /la-composer-submit__arrow/);
-  assert.match(views, /la-composer-submit__stop/);
+  assert.match(views, /la-composer-submit__spinner/);
+  assert.match(css, /\.la-composer-submit__spinner/);
+  assert.match(css, /@keyframes la-spin/);
   assert.match(css, /\.la-composer-submit__arrow/);
   assert.match(views, /SEND_BUTTON_IDLE_VECTOR_DATA_URL/);
   assert.match(views, /data:image\/svg\+xml/);
@@ -273,7 +275,6 @@ test("assistant production surface uses Pi model proxy, stop and three inspector
   assert.match(css, /border-radius:\s*50% !important/);
   assert.match(css, /button\.la-composer-submit[\s\S]*width:\s*36px !important[\s\S]*height:\s*36px !important/);
   assert.match(css, /aspect-ratio:\s*1 \/ 1/);
-  assert.match(css, /\.la-composer-submit__stop/);
   assert.match(css, /\.la-composer-submit\.is-running/);
   assert.match(views, /推理与执行过程/);
   assert.match(views, /供应商真实返回独立 reasoning block/);

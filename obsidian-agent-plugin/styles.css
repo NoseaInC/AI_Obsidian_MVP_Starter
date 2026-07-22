@@ -4231,6 +4231,7 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
 
 @keyframes la-spin { to { transform: rotate(360deg); } }
 
+
 @media (prefers-reduced-motion: reduce) {
   .la-study-loading > span svg { animation: none; }
   .la-study-progress > div > div { transition: none; }
@@ -5011,7 +5012,16 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
 .la-live-trace.is-completed .la-live-trace__status { color: var(--la-green); }
 .la-live-trace.is-failed .la-live-trace__status { color: var(--la-red); }
 .la-live-trace__status svg { width: 16px; height: 16px; }
-.la-live-trace.is-running .la-live-trace__status svg { animation: la-spin 1s linear infinite; }
+.la-live-trace__spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid color-mix(in srgb, var(--la-purple) 25%, transparent);
+  border-top-color: var(--la-purple);
+  border-radius: 50%;
+  animation: la-spin 0.8s linear infinite;
+  vertical-align: middle;
+}
 .la-live-trace__head strong,
 .la-live-trace__head small { display: block; }
 .la-live-trace__head strong { font-size: 10.5px; }
@@ -5097,32 +5107,89 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
 .la-live-trace__step svg { width: 13px; height: 13px; }
 .la-live-trace__step.is-completed { color: var(--la-green); }
 .la-live-trace__step.is-running { color: var(--la-purple); }
+.la-live-trace__step-spinner {
+  display: block;
+  width: 13px;
+  height: 13px;
+  border: 2px solid var(--text-muted);
+  border-top-color: var(--la-purple);
+  border-radius: 50%;
+  animation: la-trace-step-spin 0.6s linear infinite;
+}
+@keyframes la-trace-step-spin { to { transform: rotate(360deg); } }
 .la-live-trace__step small { color: var(--text-faint); font-size: 8px; }
 .la-live-trace__proposal { display: flex; gap: 7px; margin-top: 7px; padding: 7px; border-radius: 6px; background: color-mix(in srgb, var(--color-orange) 9%, transparent); color: var(--text-muted); font-size: 8.5px; }
 .la-live-trace__action-result {
   display: grid;
-  gap: 9px;
+  gap: 10px;
   margin-top: 10px;
-  padding: 11px;
-  border: 1px solid color-mix(in srgb, var(--color-green) 34%, var(--background-modifier-border));
+  padding: 12px 14px;
+  border: 0;
+  border-left: 3px solid color-mix(in srgb, var(--color-green) 60%, var(--background-modifier-border));
   border-radius: var(--la-radius-md);
-  background: color-mix(in srgb, var(--color-green) 5%, var(--background-primary));
+  background: color-mix(in srgb, var(--color-green) 4%, var(--background-primary));
+  box-shadow: none;
 }
-.la-live-trace__action-result-head { display: flex; align-items: center; gap: 9px; }
-.la-live-trace__action-result-head > span { color: var(--color-green); }
-.la-live-trace__action-result-head > div { display: grid; gap: 2px; }
-.la-live-trace__action-result-head small { color: var(--text-muted); }
-.la-live-trace__action-files { display: flex; flex-wrap: wrap; gap: 6px; }
-.la-live-trace__action-files button {
-  min-height: 28px;
-  padding: 3px 8px;
-  border: 1px solid var(--background-modifier-border);
+.la-live-trace__action-result-head { display: flex; align-items: center; gap: 10px; }
+.la-live-trace__action-result-icon {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--color-green) 12%, transparent);
+  color: var(--color-green);
+}
+.la-live-trace__action-result-icon svg { width: 14px; height: 14px; }
+.la-live-trace__action-result-head > div { display: grid; gap: 1px; }
+.la-live-trace__action-result-head strong { font-weight: 600; color: var(--text-normal); }
+.la-live-trace__action-result-head small { color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.la-live-trace__action-files {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
   border-radius: var(--la-radius-sm);
-  background: var(--background-primary);
+  background: color-mix(in srgb, var(--background-primary) 72%, transparent);
+}
+.la-live-trace__action-file {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 26px;
+  padding: 3px 4px;
+  border-radius: var(--la-radius-sm);
   color: var(--text-normal);
+  text-decoration: none;
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+}
+.la-live-trace__action-file:hover {
+  background: color-mix(in srgb, var(--background-modifier-hover) 60%, transparent);
+}
+.la-live-trace__action-file-icon { flex: 0 0 auto; display: grid; place-items: center; color: var(--text-muted); }
+.la-live-trace__action-file-icon svg { width: 13px; height: 13px; }
+.la-live-trace__action-file-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-monospace);
+  font-size: 11px;
+}
+.la-live-trace__action-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.la-live-trace__action-actions .la-button--ghost {
+  padding: 4px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
   font-size: var(--font-ui-smaller);
 }
-.la-live-trace__action-actions { display: flex; justify-content: flex-end; gap: 7px; }
+.la-live-trace__action-actions .la-button--ghost:hover {
+  background: color-mix(in srgb, var(--background-modifier-hover) 60%, transparent);
+  color: var(--text-normal);
+}
 
 .la-assistant-shell-v5 .la-chat-dock { padding: 8px max(22px, calc((100% - 800px) / 2)) 10px; }
 .la-assistant-shell-v5 .la-unified-composer { min-height: 78px; border-color: color-mix(in srgb, var(--la-purple) 55%, var(--la-border)); background: color-mix(in srgb, var(--background-secondary) 18%, var(--background-primary)); }
@@ -6065,14 +6132,6 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   border-radius: 50%;
   object-fit: contain;
   pointer-events: none;
-}
-
-.la-assistant-shell-v8 .la-composer-submit__stop {
-  width: 15px;
-  height: 15px;
-  display: block;
-  border-radius: 5px;
-  background: white;
 }
 
 .la-assistant-shell-v8 .la-composer-submit__spinner {

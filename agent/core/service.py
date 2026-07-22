@@ -1809,6 +1809,11 @@ class AgentService:
         record = self.store.get_compaction_checkpoint(run_id)
         return {"entry": record}
 
+    def update_message_metadata(
+        self, conversation_id: str, message_id: str, metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self.intake.update_message_metadata(conversation_id, message_id, metadata)
+
     def control_pi_run(self, run_id: str, body: dict[str, Any]) -> dict[str, Any]:
         control_type = str(body.get("type") or "")
         text = str(body.get("text") or "").strip()
