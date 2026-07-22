@@ -23,23 +23,28 @@ from agent.core import learning
 from agent.core import recommendations
 from agent.core import learning_directions
 from agent.core.models import KeyStore, ModelProfileService
+from agent.core.pi_model_proxy import PiModelProxy
+from agent.core.task_authorization import TaskAuthorizationService
+from agent.core.reversible_transaction import ReversibleTransactionService
+from agent.core.developer_workspace import DeveloperWorkspace
 from agent.core.redaction import redact, redact_secret_text
 from agent.core.storage import StateStore
 from agent.core.intake import IntakeService
-from agent.core.assistant_outcomes import AssistantOutcome, decide_assistant_outcome
+from agent.core.assistant_outcomes import AssistantOutcome, resolve_assistant_outcome
 from agent.core.conversation_intelligence import build_conversation_summary, extract_knowledge_signals
 from agent.core.web_research import WebResearchService
 from agent.core.vault_autonomy import VaultAutonomyService, render_managed_block
 from agent.core.context_material import ContextMaterialCoordinator
 from agent.core import study_workspace
-from agent.brain import BrainOrchestrator, BrainRequest
+from agent.brain import BrainRequest
 from agent.brain.errors import BrainError
 from agent.brain.schemas import IntentResult
 from agent.brain.model_gateway import BrainModelGateway
-from agent.brain.run_coordinator import AssistantRunCoordinator
+from agent.core.structured_workflow import StructuredWorkflowRunner
 from agent.skills import build_skill_registry
 from agent.tools import build_tool_registry
 from agent.tools.change_set import ChangeSetTools
+from agent.tools.vault_access import read_model_visible_note, safe_read_note
 
 
 class AgentService:
@@ -51,15 +56,27 @@ class AgentService:
         self.store = store or StateStore(self.vault / "90-Local-Only/Agent/agent.sqlite3")
         self.intake = IntakeService(self.vault, self.store)
         self.models = ModelProfileService(self.store, key_store)
+        self.model_proxy = PiModelProxy(self.models, self.store)
         self.web = WebResearchService(self.vault, self.store)
         self.autonomy = VaultAutonomyService(self.vault, self.store)
         self.context_material = ContextMaterialCoordinator(self.vault, self.store, self.intake, self.autonomy, self.apply_autonomous_vault_change)
         self.model_gateway = BrainModelGateway(self.models)
-        self.tools = build_tool_registry(self.vault, self.store)
+        self.tools = build_tool_registry(
+            self.vault,
+            self.store,
+            intake=self.intake,
+            allow_network=False,
+        )
         self.skills = build_skill_registry(self.vault, self.store, self.tools, self.list_prepared, self.model_gateway)
-        self.brain = BrainOrchestrator(self.vault, self.store, self.skills, intent_classifier=self.model_gateway.classify_intent)
-        self.assistant_runtime = AssistantRunCoordinator(self.vault, self.store, self.tools, self.brain.router)
+        self.workflows = StructuredWorkflowRunner(self.vault, self.store, self.skills)
         self.brain_change_sets = ChangeSetTools(self.vault, self.store)
+        self.task_authorizations = TaskAuthorizationService(
+            self.vault, self.store, self.autonomy.classify,
+        )
+        self.reversible_transactions = ReversibleTransactionService(
+            self.vault, self.store, self.task_authorizations,
+        )
+        self.developer_workspace = DeveloperWorkspace(self.vault, self.store)
         self.store.recover_interrupted()
         self.log_path = self.vault / "90-Local-Only/Agent/logs/events.jsonl"
         self.sync_indexes()
@@ -83,18 +100,19 @@ class AgentService:
             "jobs": len(self.store.list_jobs()),
             "pid": os.getpid(),
             "runtime_id": self.runtime_id,
-            "brain_version": self.brain.version,
-            "assistant_runtime_version": self.assistant_runtime.version,
+            "workflow_version": self.workflows.version,
+            "assistant_runtime_version": "pi-agent-runtime/1",
+            "model_proxy_version": self.model_proxy.version,
             "schema_version": self.store.schema_version(),
         }
 
-    def submit_brain(self, body: dict[str, Any], idempotency_key: str = "", *, mode: str | None = None) -> dict[str, Any]:
+    def submit_workflow(self, body: dict[str, Any], idempotency_key: str = "", *, mode: str | None = None) -> dict[str, Any]:
         request_body = dict(body)
         if mode:
             request_body["mode"] = mode
         request = BrainRequest.from_dict(request_body, idempotency_key=idempotency_key)
-        result = self.brain.submit(request)
-        self.log("brain.submitted", {"run_id": result["id"], "correlation_id": result["correlation_id"], "intent": result.get("primary_intent"), "status": result["status"]})
+        result = self.workflows.submit(request)
+        self.log("workflow.submitted", {"run_id": result["id"], "correlation_id": result["correlation_id"], "workflow": result.get("primary_intent"), "status": result["status"]})
         return result
 
     def create_conversation(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -191,10 +209,6 @@ class AgentService:
         self.log("attachment.deleted", {"attachment_id": attachment_id})
         return result
 
-    @staticmethod
-    def _looks_like_revision(text: str) -> bool:
-        return any(token in text for token in ("不要拆", "只保留", "修改", "调整", "改成", "移到周末", "不是事实", "继续完善", "写详细"))
-
     def submit_intake(self, body: dict[str, Any], idempotency_key: str = "") -> dict[str, Any]:
         message = str(body.get("message") or "").strip()
         if not message or len(message) > 250_000:
@@ -247,16 +261,12 @@ class AgentService:
         context_material = self.context_material.prepare(conversation_id, message_row, attachments, body)
         resolved_message = str(context_material["resolvedMessage"])
         precise_intent = context_material["intent"]
-        outcome = decide_assistant_outcome(
-            message,
+        outcome = resolve_assistant_outcome(
+            intent=precise_intent,
             mode=str(body.get("mode") or "auto"),
             has_attachments=bool(attachments),
             personalization_enabled=bool(conversation.get("personalizationEnabled", True)),
         )
-        if precise_intent["writeRequested"]:
-            outcome = AssistantOutcome("propose_write", "resolved-explicit-write-request", True)
-        elif precise_intent["name"] == "organize_preview":
-            outcome = AssistantOutcome("create_artifact", "resolved-organize-preview", True)
         if precise_intent.get("needsTargetClarification"):
             return self._complete_local_intake_answer(
                 conversation_id, intake_id, message_row["id"], context_material,
@@ -271,7 +281,7 @@ class AgentService:
             )
         task_thread: dict[str, Any] | None = None
         active_artifact_id = str(body.get("active_artifact_id") or conversation.get("activeArtifactId") or "")
-        if active_artifact_id and not attachments and self._looks_like_revision(message):
+        if active_artifact_id and not attachments and body.get("artifact_revision") is True:
             task_thread = self.intake.create_task_thread(conversation_id, message_row["id"], "更新当前成果")
             try:
                 artifact = self.intake.revise_artifact(
@@ -330,7 +340,11 @@ class AgentService:
         try:
             if precise_intent.get("inheritedProposal"):
                 request_body["mode"] = "capture"
-            run = self.submit_brain(request_body, idempotency_key)
+            explicit_mode = str(request_body.get("mode") or "auto").casefold()
+            if explicit_mode == "auto":
+                explicit_mode = "material" if attachments else "capture" if outcome.kind == "propose_write" else "organize" if outcome.kind == "create_artifact" else "tutor"
+            request_body["mode"] = explicit_mode
+            run = self.submit_workflow(request_body, idempotency_key)
             self.intake.update_intake_item(intake_id, run["status"], 100, run["id"], run.get("error_code"))
             artifacts = self._artifacts_for_run(conversation_id, run, message_row["id"], attachments, message, outcome.kind)
             # A terse confirmation is already materialized by capture_text as
@@ -903,23 +917,55 @@ class AgentService:
         return self.store.get_brain_run(run_id, include_details=True)
 
     def cancel_brain_run(self, run_id: str) -> dict[str, Any]:
-        result = self.brain.cancel(run_id); self.log("brain.cancel-requested", {"run_id": run_id}); return result
+        self.store.request_brain_cancel(run_id)
+        self.log("workflow.cancel-requested", {"run_id": run_id})
+        return self.store.get_brain_run(run_id, include_details=True)
 
     def retry_brain_run(self, run_id: str) -> dict[str, Any]:
-        result = self.brain.retry(run_id); self.log("brain.retried", {"run_id": result["id"], "prior_run_id": run_id}); return result
+        result = self.workflows.retry(run_id); self.log("workflow.retried", {"run_id": result["id"], "prior_run_id": run_id}); return result
 
-    def brain_events(self, run_id: str) -> dict[str, Any]:
+    def brain_events(self, run_id: str, after_sequence: int = 0) -> dict[str, Any]:
         run = self.get_brain_run(run_id)
-        return {"run_id": run_id, "steps": run["steps"], "tool_events": run["tool_events"], "proposed_actions": run["proposed_actions"]}
+        agent_events = self.store.list_agent_run_events(run_id, after_sequence)
+        return {
+            "schemaVersion": 2,
+            "run_id": run_id,
+            "status": run["status"],
+            "steps": run["steps"],
+            "tool_events": run["tool_events"],
+            "proposed_actions": run["proposed_actions"],
+            "events": [item["payload"] for item in agent_events],
+            "checkpoint": self.store.get_agent_run_checkpoint(run_id),
+        }
+
+    def assistant_run_events(
+        self,
+        run_id: str,
+        after_sequence: int = 0,
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        run = self.store.get_brain_run(run_id)
+        saved = self.store.list_agent_run_events(
+            run_id,
+            max(0, int(after_sequence)),
+            limit,
+        )
+        return {
+            "schemaVersion": 2,
+            "runId": run_id,
+            "status": run["status"],
+            "events": [item["payload"] for item in saved],
+            "checkpoint": self.store.get_agent_run_checkpoint(run_id),
+        }
 
     def brain_capabilities(self) -> dict[str, Any]:
-        return {"brain_version": self.brain.version, "skills": self.skills.definitions(), "tools": self.tools.definitions(), "writes_require_change_set": True, "reviewed_core_read_only": True}
+        return {"workflow_version": self.workflows.version, "skills": self.skills.definitions(), "tools": self.tools.definitions(), "pi_is_only_agent_loop": True, "reviewed_core_read_only": True}
 
     def brain_health(self) -> dict[str, Any]:
         profiles = self.list_model_profiles()
         routes = self.model_routing()
         return {
-            "ok": True, "brain_version": self.brain.version, "schema_version": self.store.schema_version(),
+            "ok": True, "workflow_version": self.workflows.version, "schema_version": self.store.schema_version(),
             "model_configured": any(item["configured"] and item["enabled"] for item in profiles),
             "model_routes": {key: bool(value.get("profileId")) for key, value in routes.items()},
             "fallback_available": True,
@@ -951,7 +997,7 @@ class AgentService:
         jobs = self.store.list_jobs()
         routes = self.model_routing()
         return {
-            "service": {"status": "online", "api_version": "v1", "brain_version": self.brain.version, "schema_version": self.store.schema_version(), "runtime_id": self.runtime_id},
+            "service": {"status": "online", "api_version": "v1", "workflow_version": self.workflows.version, "schema_version": self.store.schema_version(), "runtime_id": self.runtime_id},
             "models": [{"id": item["id"], "name": item["displayName"], "provider": item["providerType"], "base_url_host": urlparse(item["baseUrl"]).hostname or "", "configured": item["configured"], "model": item["defaultModel"]} for item in profiles],
             "brain_runs": self.store.list_brain_runs(20, 0),
             "indexes": {"reviewed": len(learning.scan_reviewed(self.vault)), "curriculum_candidates": len(self.store.list_curriculum_candidates("active")), "research_bundles": len(self.store.list_research_bundles(100, 0)), "pending_reviews": sum(item.get("review_state") == "pending" for item in self.list_reviews()), **counts},
@@ -967,18 +1013,36 @@ class AgentService:
             "recent_error": redact(dict(latest_error)) if latest_error else None,
         }
 
-    def get_brain_change_set(self, change_set_id: str) -> dict[str, Any]:
-        record = self.store.get_brain_change_set(change_set_id)
-        return {**record, "writes": [{key: value for key, value in item.items() if key != "payload_path"} for item in record["writes"]]}
+    def get_change_set(self, change_set_id: str) -> dict[str, Any]:
+        return self.brain_change_sets.public_record(change_set_id)
 
-    def apply_brain_change_set(self, change_set_id: str, confirmed: bool) -> dict[str, Any]:
-        record = self.store.get_brain_change_set(change_set_id)
-        result = self.brain_change_sets.apply({"change_set_id": change_set_id, "confirmed": confirmed})
-        run = self.store.get_brain_run(str(record["run_id"]), include_details=True)
-        if run["status"] == "awaiting_confirmation":
-            self.store.finish_brain_run(str(record["run_id"]), "completed", {**(run.get("result") or {}), "applied_change_set": change_set_id})
-        self.log("brain-change-set.applied", {"change_set_id": change_set_id, "transaction_id": result.get("transaction_id")})
-        return result
+    def diff_change_set(self, change_set_id: str) -> dict[str, Any]:
+        return self.brain_change_sets.diff(change_set_id)
+
+    def _append_assistant_lifecycle_event(
+        self,
+        run_id: str,
+        event_type: str,
+        **payload: Any,
+    ) -> dict[str, Any]:
+        existing = self.store.list_agent_run_events(run_id, 0, 2000)
+        for item in existing:
+            value = item.get("payload") or {}
+            if item.get("type") == event_type and (
+                not payload.get("proposalId")
+                or value.get("proposalId") == payload.get("proposalId")
+            ):
+                return value
+        request = self.store.load_brain_request(run_id)
+        metadata = request.get("metadata") or {}
+        return self.store.append_agent_run_event_next(
+            run_id,
+            event_type,
+            {
+                "conversationId": str(metadata.get("conversation_id") or ""),
+                **payload,
+            },
+        )
 
     def list_research_bundles(self, limit: int = 50, offset: int = 0) -> dict[str, Any]:
         items = self.store.list_research_bundles(limit, offset)
@@ -992,10 +1056,22 @@ class AgentService:
         self.log("web.search-completed", {"query_length": len(query), "result_count": len(result["results"])})
         return result
 
+    def search_academic_web(self, query: str, limit: int = 8) -> dict[str, Any]:
+        result = self.web.search_academic(query, limit)
+        self.log("web.academic-search-completed", {
+            "query_length": len(query),
+            "result_count": len(result["results"]),
+            "provider_failure_count": len(result.get("providerFailures") or []),
+        })
+        return result
+
     def fetch_public_web(self, url: str) -> dict[str, Any]:
-        source = self.web.fetch(url)
+        source = self.web.fetch_for_model(url)
         self.log("web.source-fetched", {"source_id": source["id"], "domain": source["domain"], "prompt_injection_detected": source["promptInjectionDetected"]})
         return source
+
+    def web_capabilities(self) -> dict[str, Any]:
+        return self.web.capabilities()
 
     def research_public_web(self, query: str, urls: list[str] | None = None, limit: int = 5) -> dict[str, Any]:
         result = self.web.research(query, urls, limit)
@@ -1091,7 +1167,7 @@ class AgentService:
         return {"items": self.store.list_curriculum_candidates(status), "status": status}
 
     def refresh_curriculum(self, body: dict[str, Any]) -> dict[str, Any]:
-        return self.submit_brain({**body, "text": str(body.get("text") or "根据当前知识状态生成学习计划"), "mode": "plan", "source": "curriculum"})
+        return self.submit_workflow({**body, "text": str(body.get("text") or "根据当前知识状态生成学习计划"), "mode": "plan", "source": "curriculum"})
 
     def curriculum_candidate_action(self, candidate_id: str, action: str, cooldown_until: str | None = None) -> dict[str, Any]:
         self.store.curriculum_action(candidate_id, action, cooldown_until); self.log("curriculum.action", {"candidate_id": candidate_id, "action": action}); return {"candidate_id": candidate_id, "action": action}
@@ -1255,7 +1331,7 @@ class AgentService:
         recent_adjustment = self.store.latest_daily_adjustment()
         profiles = self.models.list()
         routes = self.models.routing()
-        model_route = next((routes.get(name) for name in ("curriculum_planner", "daily_knowledge_generator", "brain_orchestrator") if routes.get(name, {}).get("profileId")), {})
+        model_route = next((routes.get(name) for name in ("curriculum_planner", "daily_knowledge_generator") if routes.get(name, {}).get("profileId")), {})
         profile = next((item for item in profiles if item["id"] == model_route.get("profileId")), None)
         return {
             **dashboard, "schemaVersion": 1, "generatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -1497,6 +1573,797 @@ class AgentService:
     def model_routing(self) -> dict[str, dict[str, str | None]]: return self.models.routing()
     def set_model_routing(self, routes: dict[str, dict[str, Any]]) -> dict[str, dict[str, str | None]]: return self.models.set_routing(routes)
 
+    def model_capabilities(self, profile_id: str = "") -> dict[str, Any]:
+        return self.model_proxy.capabilities(profile_id)
+
+    def probe_model_capabilities(self, profile_id: str) -> dict[str, Any]:
+        return self.model_proxy.probe(profile_id)
+
+    def stream_model_proxy(self, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
+        return self.model_proxy.stream(body)
+
+    def tool_contracts(self) -> dict[str, Any]:
+        # Pi receives a stable, provider-neutral tool surface. Legacy proposal
+        # tools stay available to the legacy runtime but are not exposed here.
+        permissions = {"read_only"}
+        items = [
+            item
+            for item in self.tools.definitions()
+            if str(item.get("permission_level") or "") in permissions
+        ]
+        markdown_write = {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "minLength": 1, "maxLength": 500},
+                "content": {"type": "string", "minLength": 1, "maxLength": 100000},
+                "category": {"type": "string", "maxLength": 80},
+            },
+            "required": ["path", "content"],
+            "additionalProperties": False,
+        }
+        common = {
+            "output_schema": {"type": "object", "additionalProperties": True},
+            "uses_network": False,
+            "mutates_state": True,
+            "timeout_seconds": 30,
+            "permission_level": "proposal",
+            "cancellable": False,
+            "max_result_bytes": 32000,
+        }
+        items.extend([
+            {
+                "name": "get_current_note",
+                "description": "读取当前 Turn 明确提供的活动笔记；path 必须来自 zhixu_turn_context.currentNote。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string", "minLength": 1, "maxLength": 500}},
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+                "output_schema": {"type": "object", "additionalProperties": True},
+                "uses_network": False,
+                "mutates_state": False,
+                "timeout_seconds": 20,
+                "permission_level": "read_only",
+                "idempotent": True,
+                "cancellable": False,
+                "max_result_bytes": 32000,
+            },
+            {
+                "name": "read_vault_note",
+                "description": "分页读取搜索结果中的安全 Markdown 笔记正文；长笔记按 next_offset 继续读取，修改或完整复制前必须读到 truncated=false。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "minLength": 1, "maxLength": 500},
+                        "offset": {"type": "integer", "minimum": 0, "maximum": 10_000_000},
+                        "max_chars": {"type": "integer", "minimum": 100, "maximum": 50_000},
+                    },
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+                "output_schema": {"type": "object", "additionalProperties": True},
+                "uses_network": False,
+                "mutates_state": False,
+                "timeout_seconds": 20,
+                "permission_level": "read_only",
+                "idempotent": True,
+                "cancellable": False,
+                "max_result_bytes": 200000,
+            },
+            {
+                "name": "find_related_notes",
+                "description": "读取指定笔记的出链、反向链接和图谱相关笔记。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string", "minLength": 1, "maxLength": 500}},
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+                "output_schema": {"type": "object", "additionalProperties": True},
+                "uses_network": False,
+                "mutates_state": False,
+                "timeout_seconds": 20,
+                "permission_level": "read_only",
+                "idempotent": True,
+                "cancellable": False,
+                "max_result_bytes": 32000,
+            },
+            {
+                "name": "search_public_web",
+                "description": "在当前 Turn 已授权联网时搜索公开网页；结果只是待验证外部资料。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "minLength": 1, "maxLength": 500},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 10},
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+                "output_schema": {"type": "object", "additionalProperties": True},
+                "uses_network": True,
+                "mutates_state": False,
+                "timeout_seconds": 45,
+                "permission_level": "read_only",
+                "idempotent": True,
+                "cancellable": True,
+                "max_result_bytes": 32000,
+            },
+            {
+                "name": "fetch_public_url",
+                "description": "在当前 Turn 已授权联网时安全抓取一个公开 URL；正文以不可信证据边界返回。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"url": {"type": "string", "minLength": 8, "maxLength": 2000}},
+                    "required": ["url"],
+                    "additionalProperties": False,
+                },
+                "output_schema": {"type": "object", "additionalProperties": True},
+                "uses_network": True,
+                "mutates_state": False,
+                "timeout_seconds": 45,
+                "permission_level": "read_only",
+                "idempotent": True,
+                "cancellable": True,
+                "max_result_bytes": 48000,
+            },
+            {
+                **common,
+                "name": "plan_vault_change",
+                "description": "为当前任务生成内部 Markdown 写入计划和事后 Diff；不会等待人工审批。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "minLength": 1, "maxLength": 200},
+                        "writes": {"type": "array", "minItems": 1, "maxItems": 10, "items": markdown_write},
+                    },
+                    "required": ["title", "writes"],
+                    "additionalProperties": False,
+                },
+                "idempotent": False,
+            },
+            {
+                **common,
+                "name": "plan_vault_copy",
+                "description": "把已有安全 Markdown 笔记完整复制到 01-Inbox 或 20-Knowledge/Drafts 下的新目录，并生成一个或多个内部 Change Set。正文由 Harness 本地读取，禁止模型先读取再把全文塞进工具参数。返回 change_sets 后逐个调用 apply_vault_change。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "minLength": 1, "maxLength": 200},
+                        "source_paths": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 50,
+                            "items": {"type": "string", "minLength": 1, "maxLength": 500},
+                        },
+                        "destination_root": {"type": "string", "minLength": 1, "maxLength": 500},
+                    },
+                    "required": ["title", "source_paths", "destination_root"],
+                    "additionalProperties": False,
+                },
+                "idempotent": False,
+            },
+            {
+                **common,
+                "name": "organize_vault_notes",
+                "description": (
+                    "在当前 Task Authorization 内批量创建安全 Vault 子目录并移动普通 Markdown 笔记；"
+                    "自动创建目标父目录，整批事务化、失败完整回滚且可撤销。"
+                    "reviewed/core、受保护文件和 Vault 外路径永远禁止移动；"
+                    "10-Sources 仅允许在明确授权后整理非正式 source-index 草稿。"
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "minLength": 1, "maxLength": 200},
+                        "directories": {
+                            "type": "array",
+                            "maxItems": 50,
+                            "items": {"type": "string", "minLength": 1, "maxLength": 500},
+                        },
+                        "moves": {
+                            "type": "array",
+                            "maxItems": 50,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "source_path": {"type": "string", "minLength": 1, "maxLength": 500},
+                                    "target_path": {"type": "string", "minLength": 1, "maxLength": 500},
+                                    "destination_path": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 500,
+                                        "description": "已弃用别名；新调用使用 target_path",
+                                    },
+                                },
+                                "required": ["source_path"],
+                                "anyOf": [
+                                    {"required": ["target_path"]},
+                                    {"required": ["destination_path"]},
+                                ],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "remove_empty_source_dirs": {"type": "boolean", "default": False},
+                    },
+                    "additionalProperties": False,
+                },
+                "idempotent": False,
+            },
+            {
+                **common,
+                "name": "apply_vault_change",
+                "description": "在当前 Task Authorization 内快照、原子应用并校验内部 Change Set；返回可撤销 Action。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"change_set_id": {"type": "string", "minLength": 1, "maxLength": 128}},
+                    "required": ["change_set_id"],
+                    "additionalProperties": False,
+                },
+                "idempotent": True,
+            },
+            {
+                **common,
+                "name": "undo_agent_action",
+                "description": "冲突安全地撤销一个由当前 Harness 完成的可逆 Vault Action。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"action_id": {"type": "string", "minLength": 1, "maxLength": 128}},
+                    "required": ["action_id"],
+                    "additionalProperties": False,
+                },
+                "idempotent": True,
+            },
+        ])
+        developer_common = {
+            "output_schema": {"type": "object", "additionalProperties": True},
+            "uses_network": False,
+            "mutates_state": True,
+            "timeout_seconds": 310,
+            "permission_level": "proposal",
+            "idempotent": False,
+            "cancellable": True,
+            "max_result_bytes": 64000,
+        }
+        workspace_id = {"type": "string", "minLength": 1, "maxLength": 128}
+        run_payload = {
+            "type": "object",
+            "properties": {
+                "workspace_id": workspace_id,
+                "cwd": {"type": "string", "maxLength": 500, "default": "."},
+                "timeoutMs": {"type": "integer", "minimum": 100, "maximum": 300000},
+                "networkPolicy": {"type": "string", "enum": ["deny"]},
+                "expectedOutputs": {"type": "array", "maxItems": 50, "items": {"type": "string", "maxLength": 500}},
+            },
+            "required": ["workspace_id"],
+            "additionalProperties": False,
+        }
+        items.extend([
+            {**developer_common, "name": "create_git_worktree", "description": "为当前开发任务创建隔离的 Git worktree 和任务分支。", "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}},
+            {**developer_common, "mutates_state": False, "idempotent": True, "name": "read_workspace_file", "description": "读取当前受控开发 worktree 内的 UTF-8 文件。", "input_schema": {"type": "object", "properties": {"workspace_id": workspace_id, "path": {"type": "string", "minLength": 1, "maxLength": 500}}, "required": ["workspace_id", "path"], "additionalProperties": False}},
+            {**developer_common, "name": "write_workspace_file", "description": "在当前受控 worktree 内原子写入文件，可带 base hash 防止覆盖并发修改。", "input_schema": {"type": "object", "properties": {"workspace_id": workspace_id, "path": {"type": "string", "minLength": 1, "maxLength": 500}, "content": {"type": "string", "maxLength": 1000000}, "base_hash": {"type": "string", "maxLength": 128}}, "required": ["workspace_id", "path", "content"], "additionalProperties": False}},
+            {**developer_common, "name": "run_command", "description": "用结构化 argv 在 macOS sandbox 内运行白名单开发命令；默认断网且不继承密钥。", "input_schema": {**run_payload, "properties": {**run_payload["properties"], "executable": {"type": "string", "enum": ["git", "npm", "node", "python", "python3", "pytest", "rg", "ls", "find", "make"]}, "args": {"type": "array", "maxItems": 100, "items": {"type": "string", "maxLength": 4000}}}, "required": ["workspace_id", "executable", "args"]}},
+            {**developer_common, "name": "run_bash", "description": "仅在当前 worktree 内运行受 macOS sandbox 和永久拒绝列表约束的 zsh 脚本。优先使用 run_command。", "input_schema": {**run_payload, "properties": {**run_payload["properties"], "script": {"type": "string", "minLength": 1, "maxLength": 40000}, "riskExplanation": {"type": "string", "maxLength": 2000}}, "required": ["workspace_id", "script", "riskExplanation"]}},
+            {**developer_common, "mutates_state": False, "idempotent": True, "name": "git_status", "description": "查看受控任务分支状态。", "input_schema": {"type": "object", "properties": {"workspace_id": workspace_id}, "required": ["workspace_id"], "additionalProperties": False}},
+            {**developer_common, "mutates_state": False, "idempotent": True, "name": "git_diff", "description": "查看受控任务分支未提交 Diff。", "input_schema": {"type": "object", "properties": {"workspace_id": workspace_id}, "required": ["workspace_id"], "additionalProperties": False}},
+            {**developer_common, "name": "git_commit", "description": "在受控任务分支创建本地提交，不推送网络。", "input_schema": {"type": "object", "properties": {"workspace_id": workspace_id, "message": {"type": "string", "minLength": 1, "maxLength": 200}}, "required": ["workspace_id", "message"], "additionalProperties": False}},
+            {**developer_common, "name": "merge_task_branch", "description": "仅在主项目和任务分支都干净时，将已提交任务分支合并到当前项目；失败自动 abort。", "input_schema": {"type": "object", "properties": {"workspace_id": workspace_id}, "required": ["workspace_id"], "additionalProperties": False}},
+            {**developer_common, "name": "activate_runtime_upgrade", "description": "验证已合并任务并请求 Obsidian 进程管理器执行固定检查、构建、安装、Runtime 重启和健康检查；失败时自动调用 rollback_task_branch。", "input_schema": {"type": "object", "properties": {"workspace_id": workspace_id}, "required": ["workspace_id"], "additionalProperties": False}},
+            {**developer_common, "name": "rollback_task_branch", "description": "删除当前任务 worktree 和任务分支，撤销未合并的开发任务。", "input_schema": {"type": "object", "properties": {"workspace_id": workspace_id}, "required": ["workspace_id"], "additionalProperties": False}},
+            {**developer_common, "mutates_state": False, "idempotent": True, "name": "validate_skill_draft", "description": "校验受控 worktree 中的 Skill Draft，不启用、不读取密钥。", "input_schema": {"type": "object", "properties": {"workspace_id": workspace_id, "path": {"type": "string", "minLength": 1, "maxLength": 500}}, "required": ["workspace_id", "path"], "additionalProperties": False}},
+            {**developer_common, "mutates_state": False, "idempotent": True, "name": "validate_mcp_server", "description": "校验受控 worktree 中的 MCP manifest 与隔离权限。", "input_schema": {"type": "object", "properties": {"workspace_id": workspace_id, "path": {"type": "string", "minLength": 1, "maxLength": 500}}, "required": ["workspace_id", "path"], "additionalProperties": False}},
+            {**developer_common, "mutates_state": False, "idempotent": False, "name": "probe_mcp_server", "description": "在断网、最小环境的 sandbox 中临时启动 MCP 并执行 initialize 与 tools/list。", "input_schema": {"type": "object", "properties": {"workspace_id": workspace_id, "path": {"type": "string", "minLength": 1, "maxLength": 500}}, "required": ["workspace_id", "path"], "additionalProperties": False}},
+        ])
+        return {"schemaVersion": 1, "items": items}
+
+    def register_task_authorization(self, body: dict[str, Any]) -> dict[str, Any]:
+        authorization = dict(body.get("taskAuthorization") or {})
+        authorization["conversationId"] = str(
+            body.get("conversationId") or authorization.get("sessionId") or ""
+        )
+        authorization["model"] = str(body.get("model") or "")
+        created = self.task_authorizations.create(authorization)
+        conversation_id = str(authorization.get("conversationId") or "")
+        objective = str(authorization.get("objective") or "").strip()
+        source_message_id = str(authorization.get("sourceMessageId") or "")
+        if conversation_id and objective and source_message_id:
+            self.intake.ensure_runtime_conversation(conversation_id, objective)
+            self.intake.append_message(
+                conversation_id,
+                "user",
+                objective,
+                "pi-runtime",
+                message_id=source_message_id,
+            )
+        return {"taskAuthorization": created}
+
+    def expand_task_authorization(
+        self,
+        authorization_id: str,
+        body: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Apply one typed, explicit grant to the same active Run."""
+        run_id = str(body.get("runId") or "")
+        mode = str(body.get("mode") or "once")
+        writes = body.get("writes")
+        organization = body.get("organization")
+        capability = body.get("capability")
+        if isinstance(capability, dict):
+            if not isinstance(organization, dict) and isinstance(capability.get("organization"), dict):
+                organization = capability.get("organization")
+            if not isinstance(writes, list) and isinstance(capability.get("writes"), list):
+                writes = capability.get("writes")
+        if not run_id:
+            raise ValueError("task_permission_request_invalid")
+        capability_type = (
+            str(capability.get("type") or "") if isinstance(capability, dict) else ""
+        )
+        # Typed capabilities must be dispatched before the generic writes list:
+        # Pi intentionally sends writes=[] for non-Vault permission cards.
+        if capability_type == "developer_workspace":
+            workspace_id = str(capability.get("workspaceId") or "").strip()
+            tool_name = str(capability.get("toolName") or "").strip()
+            if not workspace_id or not tool_name:
+                raise ValueError("developer_workspace_permission_invalid")
+            # Never trust a client-supplied project path. The persisted record
+            # proves Run ownership and that this is an isolated worktree.
+            workspace = self.developer_workspace.get(workspace_id, run_id)
+            self.task_authorizations.register_workspace(
+                authorization_id,
+                run_id,
+                workspace_id,
+                str(workspace["project"]),
+            )
+            result = self.task_authorizations.grant_workspace_operation(
+                authorization_id,
+                run_id,
+                workspace_id,
+                tool_name,
+                mode,
+            )
+            result["capability"] = {
+                "type": "developer_workspace",
+                "workspaceId": workspace_id,
+                "toolName": tool_name,
+            }
+        elif capability_type == "network":
+            # Network scope is represented by networkPolicy on the Turn and is
+            # established before model execution. Never misroute it to an empty
+            # Vault write grant.
+            raise ValueError("network_permission_requires_explicit_turn_policy")
+        elif isinstance(organization, dict):
+            result = self.task_authorizations.grant_organization(
+                authorization_id, run_id, organization, mode,
+            )
+        elif isinstance(writes, list) and len(writes) <= 100:
+            result = self.task_authorizations.grant_scope(
+                authorization_id,
+                run_id,
+                [dict(item) for item in writes if isinstance(item, dict)],
+                mode,
+            )
+        else:
+            raise ValueError("task_permission_request_invalid")
+        return {"taskAuthorization": result["authorization"], **result}
+
+    @staticmethod
+    def _runtime_permission_request(
+        code: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if code in {
+            "task_scope_expansion_requires_new_user_turn",
+            "task_create_root_requires_scope_expansion",
+            "task_create_scope_required",
+            "task_update_scope_required",
+        }:
+            if tool_name == "plan_vault_copy":
+                destination_root = str(arguments.get("destination_root") or "").strip().strip("/")
+                requested_writes = [
+                    {"path": f"{destination_root}/{Path(str(source)).name}"}
+                    for source in list(arguments.get("source_paths") or [])
+                    if str(source).strip()
+                ]
+            else:
+                requested_writes = [
+                    {"path": str(item.get("path") or "")}
+                    for item in list(arguments.get("writes") or [])
+                    if isinstance(item, dict) and item.get("path")
+                ]
+            return {
+                "type": "vault_writes",
+                "toolName": tool_name,
+                "summary": f"授权本轮写入 {len(requested_writes)} 个明确 Markdown 目标",
+                "writes": requested_writes,
+            }
+        if code == "task_organization_scope_required" and tool_name == "organize_vault_notes":
+            moves = [
+                {
+                    "source_path": str(item.get("source_path") or ""),
+                    "target_path": str(
+                        item.get("target_path") or item.get("destination_path") or ""
+                    ),
+                }
+                for item in list(arguments.get("moves") or [])
+                if isinstance(item, dict)
+            ]
+            summary = "; ".join(
+                f"{item['source_path']} → {item['target_path']}" for item in moves
+            )
+            return {
+                "type": "vault_organization",
+                "toolName": "organize_vault_notes",
+                "summary": summary or "创建受控 Vault 子目录",
+                "organization": {
+                    "directories": [str(item) for item in list(arguments.get("directories") or [])],
+                    "moves": moves,
+                    "remove_empty_source_dirs": arguments.get("remove_empty_source_dirs") is True,
+                },
+            }
+        if code in {
+            "developer_workspace_not_authorized",
+            "developer_operation_not_authorized",
+        }:
+            return {
+                "type": "developer_workspace",
+                "toolName": tool_name,
+                "workspaceId": str(arguments.get("workspace_id") or ""),
+                "summary": f"授权当前 Run 在隔离 worktree 执行 {tool_name}",
+            }
+        return None
+
+    def append_pi_events(self, body: dict[str, Any]) -> dict[str, Any]:
+        run_id = str(body.get("runId") or "")
+        events = body.get("events")
+        if not run_id or not isinstance(events, list) or len(events) > 1000:
+            raise ValueError("pi_events_invalid")
+        last = self.store.append_pi_agent_events(run_id, events)
+        terminal = next(
+            (item for item in reversed(events) if item.get("type") in {"done", "error"}),
+            None,
+        )
+        if terminal:
+            status = (
+                "completed"
+                if terminal.get("type") == "done" and terminal.get("status") != "cancelled"
+                else "cancelled" if terminal.get("status") == "cancelled" else "failed"
+            )
+            self.store.complete_pi_run(run_id, status, str(terminal.get("code") or ""))
+            run = self.store.get_pi_run(run_id)
+            text = "".join(
+                str(item.get("content") or "")
+                for item in self.store.list_pi_agent_events(run_id, 0, 5000)
+                if item.get("type") == "text"
+            ).strip()
+            if text:
+                session = self.store.get_pi_session(str(run["session_id"]))
+                conversation_id = str(session.get("conversation_id") or run["session_id"])
+                self.intake.append_message(
+                    conversation_id,
+                    "assistant",
+                    text,
+                    "pi-runtime",
+                    message_id=f"pi-assistant-{run_id}",
+                )
+        return {"runId": run_id, "lastEventSequence": last}
+
+    def pi_run_events(self, run_id: str, after_sequence: int = 0) -> dict[str, Any]:
+        run = self.store.get_pi_run(run_id)
+        return {
+            "run": run,
+            "items": self.store.list_pi_agent_events(run_id, after_sequence),
+            "schemaVersion": 1,
+        }
+
+    def pi_session(self, session_id: str) -> dict[str, Any]:
+        try:
+            session: dict[str, Any] | None = self.store.get_pi_session(session_id)
+            conversation_id = str(session.get("conversation_id") or session_id)
+        except ValueError:
+            session = None
+            conversation_id = session_id
+        try:
+            history = self.intake.get_conversation(conversation_id).get("messages", [])
+        except ValueError:
+            history = []
+        return {
+            "session": session,
+            "history": [
+                {
+                    "id": str(item.get("id") or ""),
+                    "role": str(item.get("role") or ""),
+                    "content": str(item.get("content") or ""),
+                    "createdAt": str(item.get("createdAt") or ""),
+                }
+                for item in history
+                if item.get("role") in {"user", "assistant"} and item.get("content")
+            ],
+            "schemaVersion": 2,
+        }
+
+    def control_pi_run(self, run_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        control_type = str(body.get("type") or "")
+        text = str(body.get("text") or "").strip()
+        if control_type not in {"steering", "follow_up"} or not text or len(text) > 20_000:
+            raise ValueError("pi_control_invalid")
+        run = self.store.get_pi_run(run_id)
+        if str(run.get("status") or "") != "running":
+            raise RuntimeError("pi_run_not_running")
+        entry = self.store.record_pi_control(run_id, control_type, {"text": text})
+        return {"control": entry}
+
+    def cancel_pi_run(self, run_id: str) -> dict[str, Any]:
+        run = self.store.get_pi_run(run_id)
+        if str(run.get("status") or "") not in {"completed", "failed", "cancelled"}:
+            self.store.complete_pi_run(run_id, "cancelled", "user_cancelled")
+        return {"runId": run_id, "status": "cancelled"}
+
+    def get_agent_action(self, action_id: str) -> dict[str, Any]:
+        return {"action": self.reversible_transactions.get(action_id)}
+
+    def get_agent_action_diff(self, action_id: str) -> dict[str, Any]:
+        return self.reversible_transactions.diff(action_id)
+
+    def undo_agent_action(self, action_id: str) -> dict[str, Any]:
+        # This method is reached only from the authenticated, explicit UI undo
+        # endpoint. Model tool calls use the strict Run-bound branch below.
+        return {
+            "action": self.reversible_transactions.undo(
+                action_id,
+                user_confirmed=True,
+            )
+        }
+
+    def call_runtime_tool(self, body: dict[str, Any]) -> dict[str, Any]:
+        tool_name = str(body.get("toolName") or "")
+        arguments = body.get("arguments")
+        if not tool_name or not isinstance(arguments, dict):
+            raise ValueError("runtime_tool_request_invalid")
+        run_id = str(body.get("runId") or "")
+        turn_id = str(body.get("turnId") or "")
+        call_id = str(body.get("toolCallId") or "")
+        if not run_id or not turn_id or not call_id:
+            raise ValueError("runtime_tool_identity_required")
+        stable_writes = {
+            "plan_vault_change", "plan_vault_copy", "organize_vault_notes",
+            "apply_vault_change", "undo_agent_action",
+        }
+        stable_reads = {
+            "get_current_note", "read_vault_note", "find_related_notes",
+            "search_public_web", "fetch_public_url",
+        }
+        developer_tools = {
+            "create_git_worktree", "read_workspace_file", "write_workspace_file",
+            "run_command", "run_bash", "git_status", "git_diff", "git_commit",
+            "merge_task_branch", "activate_runtime_upgrade", "rollback_task_branch", "validate_skill_draft", "validate_mcp_server",
+            "probe_mcp_server",
+        }
+        definition = None if tool_name in stable_writes | stable_reads | developer_tools else self.tools.definition(tool_name)
+        uses_network = tool_name in {"search_public_web", "fetch_public_url"} or bool(definition and definition.uses_network)
+        if uses_network and body.get("networkAuthorized") is not True:
+            return {
+                "ok": False,
+                "error": {
+                    "code": "network_authorization_required",
+                    "message": "当前任务未授权联网",
+                    "recoverable": True,
+                    "retryable": False,
+                },
+                "isError": True,
+            }
+        try:
+            authorization_id = str(body.get("taskAuthorizationId") or "")
+            if tool_name == "plan_vault_change":
+                result = self.brain_change_sets.create({
+                    "run_id": run_id,
+                    "task_authorization_id": authorization_id,
+                    "title": str(arguments.get("title") or "Agent 写入计划"),
+                    "writes": list(arguments.get("writes") or []),
+                })
+                _, bundle = self.brain_change_sets.prepared(str(result["id"]))
+                try:
+                    planned = self.task_authorizations.plan(
+                        authorization_id,
+                        list(bundle["writes"]),
+                    )
+                except Exception:
+                    self.brain_change_sets.update_state(str(result["id"]), "failed")
+                    raise
+                result = {
+                    **result,
+                    "authorization": planned["authorization"],
+                    "diff": self.brain_change_sets.diff(str(result["id"])),
+                }
+            elif tool_name == "plan_vault_copy":
+                destination_root = str(arguments.get("destination_root") or "").strip().strip("/")
+                if not (
+                    destination_root == "01-Inbox"
+                    or destination_root.startswith("01-Inbox/")
+                    or destination_root == "20-Knowledge/Drafts"
+                    or destination_root.startswith("20-Knowledge/Drafts/")
+                ):
+                    raise PermissionError("vault_copy_destination_requires_draft_root")
+                writes: list[dict[str, Any]] = []
+                seen_targets: set[str] = set()
+                for raw_source in list(arguments.get("source_paths") or []):
+                    source = safe_read_note(self.vault, str(raw_source))
+                    if not source.is_file():
+                        raise FileNotFoundError("copy_source_not_found")
+                    source_text = read_model_visible_note(source)
+                    target = f"{destination_root}/{source.name}"
+                    if target in seen_targets:
+                        raise ValueError("copy_target_collision")
+                    seen_targets.add(target)
+                    writes.append({
+                        "path": target,
+                        "content": source_text,
+                        "category": "vault-copy",
+                    })
+                change_sets: list[dict[str, Any]] = []
+                title = str(arguments.get("title") or "复制 Vault 笔记")
+                for batch_index in range(0, len(writes), 10):
+                    batch = writes[batch_index:batch_index + 10]
+                    planned = self.brain_change_sets.create({
+                        "run_id": run_id,
+                        "task_authorization_id": authorization_id,
+                        "title": title if len(writes) <= 10 else f"{title}（{batch_index // 10 + 1}）",
+                        "writes": batch,
+                    })
+                    _, bundle = self.brain_change_sets.prepared(str(planned["id"]))
+                    try:
+                        authorization = self.task_authorizations.plan(
+                            authorization_id,
+                            list(bundle["writes"]),
+                        )
+                    except Exception:
+                        self.brain_change_sets.update_state(str(planned["id"]), "failed")
+                        raise
+                    # Keep the full authenticated Diff in the Change Set store.
+                    # Returning every copied body/Diff to the model would defeat
+                    # this server-side batch tool and can exhaust the transport.
+                    change_sets.append({
+                        "id": planned["id"],
+                        "state": planned["state"],
+                        "title": planned["title"],
+                        "files": [item["path"] for item in planned["writes"]],
+                        "fileCount": len(planned["writes"]),
+                    })
+                result = {
+                    "sourceCount": len(writes),
+                    "destinationRoot": destination_root,
+                    "change_sets": change_sets,
+                    "next": "逐个调用 apply_vault_change，并传入每个 change_set 的 id",
+                }
+            elif tool_name == "apply_vault_change":
+                result = self.reversible_transactions.apply_change_set(
+                    self.brain_change_sets,
+                    {
+                        "change_set_id": str(arguments.get("change_set_id") or ""),
+                        "task_authorization_id": authorization_id,
+                        "turn_id": turn_id,
+                        "source_message_id": str(body.get("sourceMessageId") or ""),
+                    },
+                )
+            elif tool_name == "organize_vault_notes":
+                result = self.reversible_transactions.organize({
+                    "task_authorization_id": authorization_id,
+                    "run_id": run_id,
+                    "turn_id": turn_id,
+                    "source_message_id": str(body.get("sourceMessageId") or ""),
+                    "title": str(arguments.get("title") or "整理 Vault 笔记"),
+                    "directories": list(arguments.get("directories") or []),
+                    "moves": list(arguments.get("moves") or []),
+                    "remove_empty_source_dirs": arguments.get("remove_empty_source_dirs") is True,
+                })
+            elif tool_name == "undo_agent_action":
+                result = self.reversible_transactions.undo(
+                    str(arguments.get("action_id") or ""),
+                    authorization_id=authorization_id,
+                    run_id=run_id,
+                )
+            elif tool_name in {"get_current_note", "read_vault_note"}:
+                result = self.tools.call(
+                    "read_note_excerpt",
+                    {
+                        "path": str(arguments.get("path") or ""),
+                        "offset": max(0, int(arguments.get("offset") or 0)),
+                        "max_chars": max(100, min(50_000, int(arguments.get("max_chars") or 12_000))),
+                    },
+                    run_id=run_id,
+                    step_id=f"{turn_id}:{call_id}",
+                    allowed_permissions=("read_only",),
+                    record_event=False,
+                )
+            elif tool_name == "find_related_notes":
+                result = self.tools.call(
+                    "get_related_notes",
+                    {"path": str(arguments.get("path") or "")},
+                    run_id=run_id,
+                    step_id=f"{turn_id}:{call_id}",
+                    allowed_permissions=("read_only",),
+                    record_event=False,
+                )
+            elif tool_name == "search_public_web":
+                result = self.web.search(
+                    str(arguments.get("query") or ""),
+                    max(1, min(10, int(arguments.get("limit") or 8))),
+                )
+            elif tool_name == "fetch_public_url":
+                result = self.web.fetch_for_model(str(arguments.get("url") or ""))
+            elif tool_name == "create_git_worktree":
+                result = self.developer_workspace.create(run_id)
+                self.task_authorizations.register_workspace(
+                    authorization_id, run_id, str(result["id"]), str(result["project"]),
+                )
+            elif tool_name in developer_tools:
+                workspace_id_value = str(arguments.get("workspace_id") or "")
+                self.task_authorizations.validate_workspace(
+                    authorization_id, run_id, workspace_id_value, tool_name,
+                )
+                if tool_name == "read_workspace_file":
+                    result = self.developer_workspace.read(workspace_id_value, run_id, str(arguments.get("path") or ""))
+                elif tool_name == "write_workspace_file":
+                    result = self.developer_workspace.write(workspace_id_value, run_id, str(arguments.get("path") or ""), str(arguments.get("content") or ""), str(arguments.get("base_hash") or ""))
+                elif tool_name == "run_command":
+                    result = self.developer_workspace.run_command(workspace_id_value, run_id, arguments)
+                elif tool_name == "run_bash":
+                    result = self.developer_workspace.run_bash(workspace_id_value, run_id, arguments)
+                elif tool_name == "git_status":
+                    result = self.developer_workspace.git_status(workspace_id_value, run_id)
+                elif tool_name == "git_diff":
+                    result = self.developer_workspace.git_diff(workspace_id_value, run_id)
+                elif tool_name == "git_commit":
+                    result = self.developer_workspace.git_commit(workspace_id_value, run_id, str(arguments.get("message") or ""))
+                elif tool_name == "merge_task_branch":
+                    result = self.developer_workspace.merge(workspace_id_value, run_id)
+                elif tool_name == "activate_runtime_upgrade":
+                    result = self.developer_workspace.activation_request(workspace_id_value, run_id)
+                elif tool_name == "rollback_task_branch":
+                    result = self.developer_workspace.rollback(workspace_id_value, run_id)
+                elif tool_name == "validate_skill_draft":
+                    result = self.developer_workspace.validate_skill(workspace_id_value, run_id, str(arguments.get("path") or ""))
+                elif tool_name == "validate_mcp_server":
+                    result = self.developer_workspace.validate_mcp(workspace_id_value, run_id, str(arguments.get("path") or ""))
+                else:
+                    result = self.developer_workspace.probe_mcp(workspace_id_value, run_id, str(arguments.get("path") or ""))
+            else:
+                result = self.tools.call(
+                    tool_name,
+                    arguments,
+                    run_id=run_id,
+                    step_id=f"{turn_id}:{call_id}",
+                    allowed_permissions=("read_only",),
+                    # Pi lifecycle events are persisted in the assistant runtime
+                    # event store. The legacy tool_events table is FK-bound to
+                    # brain_runs and must not receive Pi run identifiers.
+                    record_event=False,
+                )
+            return {
+                "ok": True,
+                "content": result,
+                "isError": False,
+                "recoverable": False,
+                "action": result if tool_name in {
+                    "organize_vault_notes", "apply_vault_change", "undo_agent_action",
+                } else None,
+            }
+        except (ValueError, FileNotFoundError, FileExistsError, PermissionError, RuntimeError) as exc:
+            code = str(exc)[:160] or type(exc).__name__
+            permission_request = self._runtime_permission_request(code, tool_name, arguments)
+            return {
+                "ok": False,
+                "error": {
+                    "code": code,
+                    "message": "工具未能完成；请根据该 Observation 调整步骤",
+                    "recoverable": permission_request is not None or not isinstance(exc, PermissionError),
+                    "retryable": isinstance(exc, (FileNotFoundError, RuntimeError)),
+                    **({"permissionRequest": permission_request} if permission_request else {}),
+                },
+                "isError": True,
+            }
+
     def chat(self, body: dict[str, Any], stream: bool = False) -> dict[str, Any]:
         routes = self.model_routing(); route = routes.get("assistant_chat") or routes.get("assistant", {})
         profile_id = str(body.get("profile_id") or route.get("profileId") or "")
@@ -1527,159 +2394,6 @@ class AgentService:
         with (root / f"{conversation_id}.jsonl").open("a", encoding="utf-8") as handle: handle.write(json.dumps(record, ensure_ascii=False) + "\n")
         self.log("chat.completed", {"conversation_id": conversation_id, "profile_id": profile_id, "model": model, "message_count": len(clean)})
         return {"conversation_id": conversation_id, "model": model, "message": {"role": "assistant", "content": content}, "streaming": False, "stream_requested": stream}
-
-    def assistant_stream(self, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
-        """Stream one persisted turn through the canonical Agent Runtime."""
-        message = str(body.get("message") or "").strip()
-        if not message or len(message) > 250_000:
-            raise ValueError("message must contain 1–250000 characters")
-        conversation_id = self.intake.ensure_conversation(
-            str(body.get("conversation_id") or "") or None, self._conversation_title(message),
-        )
-        attachment_ids = [str(item.get("attachment_id") if isinstance(item, dict) else item) for item in body.get("attachments", [])][:20]
-        attachments: list[dict[str, Any]] = []
-        for attachment_id in attachment_ids:
-            attachment = self.intake.get_attachment(attachment_id)
-            if attachment["conversationId"] != conversation_id:
-                raise ValueError("attachment_conversation_mismatch")
-            attachments.append(attachment)
-
-        regenerate_message_id = str(body.get("regenerate_message_id") or "").strip()
-        if regenerate_message_id:
-            user_row = self.intake.get_message(conversation_id, regenerate_message_id)
-            if user_row.get("role") != "user":
-                raise ValueError("regenerate_message_must_be_user")
-            message = str(user_row.get("content") or "").strip()
-        else:
-            user_row = self.intake.append_message(conversation_id, "user", message)
-        prepared = self.context_material.prepare(conversation_id, user_row, attachments, body)
-        routes = self.model_routing(); route = routes.get("assistant_chat") or routes.get("assistant", {})
-        profile_id = str(body.get("profile_id") or route.get("profileId") or "")
-        if not profile_id:
-            raise RuntimeError("No assistant model profile is configured")
-        profile = next((item for item in self.store.list_model_profiles() if item["id"] == profile_id), None)
-        if not profile or not profile["enabled"]:
-            raise RuntimeError("Assistant model profile is unavailable")
-        model = str(body.get("model") or route.get("modelOverride") or profile["defaultModel"])
-        provider = self.models.provider(profile_id)
-        run_id, assistant_message_id = f"run-{uuid.uuid4().hex}", f"msg-{uuid.uuid4().hex}"
-        sequence = 0
-        def event(kind: str, **payload: Any) -> dict[str, Any]:
-            nonlocal sequence
-            sequence += 1
-            return {"schemaVersion": 1, "seq": sequence, "type": kind, "runId": run_id,
-                    "conversationId": conversation_id, **payload}
-
-        focus = prepared.get("focus") or {}
-        understanding = (prepared.get("materialBundle") or {}).get("understanding") or {}
-        sources = [{"id": item.get("id"), "title": item.get("displayName"), "kind": item.get("kind"), "status": item.get("status")} for item in attachments]
-        active_note = body.get("active_note") if isinstance(body.get("active_note"), dict) else {}
-        if active_note.get("path"):
-            sources.append({"id": "active-note", "title": str(active_note.get("path")), "kind": "vault_note", "status": "local"})
-        context_text = self._assistant_grounding_text(attachments, active_note)
-        recent = (
-            self.intake.recent_messages_through(conversation_id, regenerate_message_id, 20)
-            if regenerate_message_id else self.intake.recent_messages(conversation_id, 20)
-        )
-        settings = profile["settings"]
-        chunks: list[str] = []
-        finish_reason = ""
-        session = None
-        yield event(
-            "run.started", model=model, profileId=profile_id,
-            intent=prepared.get("intent") or {}, regenerationOf=regenerate_message_id or None,
-        )
-        yield event("context.resolved", focus=focus, understanding=understanding, sources=sources)
-        yield event("step.updated", step={"id": "context", "label": "解析当前笔记、会话焦点与本地来源", "status": "running"})
-        try:
-            options = body.get("options") if isinstance(body.get("options"), dict) else {}
-            request = BrainRequest(
-                text=str(prepared.get("resolvedMessage") or message),
-                mode=str(body.get("mode") or "auto"), source="assistant-stream",
-                active_note=str(active_note.get("path") or ""),
-                selected_text=str(active_note.get("selection") or ""),
-                time_budget_minutes=options.get("available_minutes") if isinstance(options.get("available_minutes"), int) else None,
-                metadata={
-                    "conversation_id": conversation_id,
-                    "assistant_intent": prepared.get("intent") or {},
-                    "source_evidence": sources,
-                    "allow_network": options.get("allow_network") is True,
-                },
-            )
-            resolved_intent = str((prepared.get("intent") or {}).get("name") or "")
-            intent_name = {
-                "answer_question": "ask_question",
-                "continue_explanation": "learn_topic",
-                "organize_preview": "organize_text",
-                "create_daily_task": "generate_daily_plan",
-            }.get(resolved_intent)
-            session = self.assistant_runtime.begin(
-                run_id, request, focus=focus, understanding=understanding,
-                sources=sources, material_excerpt=context_text, profile_id=profile_id,
-                intent_hint=IntentResult(intent_name, basis="conversation-focus") if intent_name else None,
-            )
-            yield event("step.updated", step={"id": "context", "label": "解析当前笔记、会话焦点与本地来源", "status": "completed"})
-            for runtime_event in self.assistant_runtime.execute_tools(
-                session, provider, model=model,
-                native_tool_calling=bool(settings.get("toolCalling", False)),
-            ):
-                kind = str(runtime_event.pop("type"))
-                yield event(kind, **runtime_event)
-            model_messages = self.assistant_runtime.final_messages(session, recent)
-            yield event("message.started", messageId=assistant_message_id, role="assistant")
-            yield event("step.updated", step={"id": "model", "label": "基于工具结果生成回答", "status": "running"})
-            for provider_event in provider.stream_chat(
-                model, model_messages,
-                temperature=settings.get("temperature", .3), max_tokens=settings.get("maxTokens", 2000),
-            ):
-                kind = str(provider_event.get("type") or "")
-                if kind == "delta":
-                    delta = str(provider_event.get("content") or "")
-                    if delta:
-                        chunks.append(delta)
-                        yield event("message.delta", messageId=assistant_message_id, delta=delta)
-                elif kind == "finish":
-                    finish_reason = str(provider_event.get("finishReason") or "")
-        except GeneratorExit:
-            partial = "".join(chunks).strip()
-            if partial:
-                self.intake.append_message(conversation_id, "assistant", partial, "partial")
-            if session is not None:
-                self.assistant_runtime.fail(session, BrainError("brain_cancelled", "任务已取消"), cancelled=True)
-            self.log("assistant.stream-cancelled", {"run_id": run_id, "conversation_id": conversation_id, "partial": bool(partial)})
-            raise
-        except Exception as exc:
-            partial = "".join(chunks).strip()
-            if partial:
-                self.intake.append_message(conversation_id, "assistant", partial, "partial")
-            if session is not None:
-                self.assistant_runtime.fail(session, exc)
-            self.log("assistant.stream-failed", {"run_id": run_id, "conversation_id": conversation_id, "error": type(exc).__name__, "partial": bool(partial)})
-            yield event("run.failed", code=type(exc).__name__, message=str(redact(str(exc))), partial=bool(partial))
-            return
-        content = "".join(chunks).strip()
-        if not content:
-            if session is not None:
-                self.assistant_runtime.fail(session, BrainError("empty_model_response", "模型没有返回可显示内容", True, "重试或切换模型"))
-            yield event("run.failed", code="empty_model_response", message="模型没有返回可显示内容", partial=False)
-            return
-        try:
-            stored = self.intake.append_message(conversation_id, "assistant", content, "markdown")
-            if session is not None:
-                self.assistant_runtime.complete(session, answer=content, model=model)
-        except Exception as exc:
-            if session is not None:
-                self.assistant_runtime.fail(session, exc)
-            self.log("assistant.completion-failed", {"run_id": run_id, "conversation_id": conversation_id, "error": type(exc).__name__})
-            yield event("run.failed", code="assistant_completion_failed", message="回答已生成，但本地运行记录未能完整提交", partial=True)
-            return
-        yield event("step.updated", step={"id": "model", "label": "基于工具结果生成回答", "status": "completed"})
-        if bool((prepared.get("intent") or {}).get("writeRequested")):
-            yield event("approval.required", reason="知识写入必须先生成 Change Set、Diff 并由用户确认")
-            yield event("write.proposal-required", reason="知识写入必须先生成 Change Set、Diff 并由用户确认")
-        yield event("message.completed", message=stored, streamMessageId=assistant_message_id, finishReason=finish_reason)
-        yield event("run.completed", messageId=stored["id"], model=model, brainRunId=run_id)
-        self.log("assistant.stream-completed", {"run_id": run_id, "conversation_id": conversation_id, "model": model, "characters": len(content), "tool_count": len(session.tool_calls) if session else 0})
 
     def _assistant_grounding_text(self, attachments: list[dict[str, Any]], active_note: dict[str, Any]) -> str:
         sections: list[str] = []

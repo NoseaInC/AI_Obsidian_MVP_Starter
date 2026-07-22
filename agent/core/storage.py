@@ -116,6 +116,14 @@ CREATE TABLE IF NOT EXISTS brain_change_sets (
   updated_at TEXT NOT NULL, applied_at TEXT,
   FOREIGN KEY(run_id) REFERENCES brain_runs(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS assistant_change_sets (
+  id TEXT PRIMARY KEY, run_id TEXT NOT NULL, state TEXT NOT NULL,
+  title TEXT NOT NULL, writes_json TEXT NOT NULL, preview TEXT NOT NULL,
+  base_hashes_json TEXT NOT NULL, transaction_id TEXT, created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL, applied_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_assistant_change_sets_run
+  ON assistant_change_sets(run_id, created_at);
 CREATE TABLE IF NOT EXISTS research_bundles (
   id TEXT PRIMARY KEY, run_id TEXT, title TEXT NOT NULL, question TEXT NOT NULL,
   status TEXT NOT NULL, source_count INTEGER NOT NULL, estimated_minutes INTEGER NOT NULL,
@@ -351,7 +359,112 @@ CREATE TABLE IF NOT EXISTS organization_actions (
 );
 """
 
-SCHEMA_VERSION = 7
+AGENT_RUNTIME_V3_SCHEMA = """
+CREATE TABLE IF NOT EXISTS agent_run_events (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  sequence INTEGER NOT NULL,
+  event_type TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  schema_version INTEGER NOT NULL DEFAULT 1,
+  UNIQUE(run_id, sequence),
+  FOREIGN KEY(run_id) REFERENCES brain_runs(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_agent_run_events_run_sequence
+  ON agent_run_events(run_id, sequence);
+
+CREATE TABLE IF NOT EXISTS agent_run_checkpoints (
+  run_id TEXT PRIMARY KEY,
+  checkpoint_version INTEGER NOT NULL,
+  phase TEXT NOT NULL,
+  state_json TEXT NOT NULL,
+  pending_approval_id TEXT,
+  last_event_sequence INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  schema_version INTEGER NOT NULL DEFAULT 1,
+  FOREIGN KEY(run_id) REFERENCES brain_runs(id) ON DELETE CASCADE
+);
+"""
+
+PI_RUNTIME_SCHEMA = """
+CREATE TABLE IF NOT EXISTS pi_agent_sessions (
+  session_id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  selected_model TEXT,
+  state_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS pi_agent_runs (
+  run_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  source_message_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  parent_run_id TEXT,
+  forked_from_sequence INTEGER,
+  last_event_sequence INTEGER NOT NULL DEFAULT 0,
+  checkpoint_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT,
+  error_code TEXT,
+  FOREIGN KEY(session_id) REFERENCES pi_agent_sessions(session_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_pi_agent_runs_session
+  ON pi_agent_runs(session_id, created_at);
+CREATE TABLE IF NOT EXISTS pi_agent_events (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  sequence INTEGER NOT NULL,
+  event_type TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(run_id, sequence),
+  FOREIGN KEY(run_id) REFERENCES pi_agent_runs(run_id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS task_authorizations (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  source_message_id TEXT NOT NULL,
+  objective TEXT NOT NULL,
+  resource_scope_json TEXT NOT NULL,
+  operation_scope_json TEXT NOT NULL,
+  reversible_only INTEGER NOT NULL,
+  network_policy TEXT NOT NULL,
+  external_side_effects INTEGER NOT NULL,
+  expires_at_run_end INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(run_id) REFERENCES pi_agent_runs(run_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_task_authorizations_run
+  ON task_authorizations(run_id, status);
+CREATE TABLE IF NOT EXISTS pi_session_entries (
+  id TEXT PRIMARY KEY,
+  parent_id TEXT,
+  timestamp TEXT NOT NULL,
+  entry_type TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  FOREIGN KEY(session_id) REFERENCES pi_agent_sessions(session_id) ON DELETE CASCADE,
+  FOREIGN KEY(run_id) REFERENCES pi_agent_runs(run_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_pi_session_entries_session_time
+  ON pi_session_entries(session_id, timestamp, id);
+"""
+
+
+
+SCHEMA_VERSION = 9
 
 
 def _now() -> str:
@@ -370,8 +483,571 @@ class StateStore:
         self._migrate_daily_intelligence()
         self._migrate_assistant_chat_first()
         self._migrate_learning_brain()
+        self._migrate_agent_runtime_v3()
+        self._migrate_pi_runtime()
         self._record_schema_version()
         self.connection.commit()
+
+    def _migrate_agent_runtime_v3(self) -> None:
+        self.connection.executescript(AGENT_RUNTIME_V3_SCHEMA)
+
+    def _migrate_pi_runtime(self) -> None:
+        self.connection.executescript(PI_RUNTIME_SCHEMA)
+
+    def create_pi_task_authorization(self, authorization: dict[str, Any]) -> dict[str, Any]:
+        required = (
+            "id", "sessionId", "runId", "turnId", "sourceMessageId",
+            "objective", "resourceScope", "operationScope",
+        )
+        if any(key not in authorization for key in required):
+            raise ValueError("task_authorization_invalid")
+        now = _now()
+        session_id = str(authorization["sessionId"])
+        run_id = str(authorization["runId"])
+        with self.lock:
+            self.connection.execute(
+                """INSERT OR IGNORE INTO pi_agent_sessions(
+                     session_id, conversation_id, status, selected_model,
+                     state_json, created_at, updated_at
+                   ) VALUES (?, ?, 'running', ?, '{}', ?, ?)""",
+                (
+                    session_id,
+                    str(authorization.get("conversationId") or session_id),
+                    str(authorization.get("model") or ""),
+                    now,
+                    now,
+                ),
+            )
+            self.connection.execute(
+                """INSERT OR IGNORE INTO pi_agent_runs(
+                     run_id, session_id, turn_id, source_message_id, status,
+                     parent_run_id, forked_from_sequence, created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?)""",
+                (
+                    run_id,
+                    session_id,
+                    str(authorization["turnId"]),
+                    str(authorization["sourceMessageId"]),
+                    authorization.get("parentRunId"),
+                    authorization.get("forkedFromSequence"),
+                    now,
+                    now,
+                ),
+            )
+            existing = self.connection.execute(
+                "SELECT * FROM task_authorizations WHERE id=?",
+                (str(authorization["id"]),),
+            ).fetchone()
+            if existing:
+                decoded = self._decode_task_authorization(existing)
+                comparable = {
+                    key: decoded[key]
+                    for key in (
+                        "id", "sessionId", "runId", "turnId", "sourceMessageId",
+                        "objective", "resourceScope", "operationScope",
+                        "reversibleOnly", "networkPolicy", "externalSideEffects",
+                        "expiresAtRunEnd",
+                    )
+                }
+                incoming = {
+                    "id": str(authorization["id"]),
+                    "sessionId": session_id,
+                    "runId": run_id,
+                    "turnId": str(authorization["turnId"]),
+                    "sourceMessageId": str(authorization["sourceMessageId"]),
+                    "objective": str(authorization["objective"]),
+                    "resourceScope": dict(authorization["resourceScope"]),
+                    "operationScope": list(authorization["operationScope"]),
+                    "reversibleOnly": authorization.get("reversibleOnly") is True,
+                    "networkPolicy": str(authorization.get("networkPolicy") or "deny"),
+                    "externalSideEffects": authorization.get("externalSideEffects") is True,
+                    "expiresAtRunEnd": authorization.get("expiresAtRunEnd") is not False,
+                }
+                if comparable != incoming:
+                    raise RuntimeError("task_authorization_id_conflict")
+                return decoded
+            self.connection.execute(
+                """INSERT INTO task_authorizations(
+                     id, session_id, run_id, turn_id, source_message_id,
+                     objective, resource_scope_json, operation_scope_json,
+                     reversible_only, network_policy, external_side_effects,
+                     expires_at_run_end, status, created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
+                (
+                    str(authorization["id"]),
+                    session_id,
+                    run_id,
+                    str(authorization["turnId"]),
+                    str(authorization["sourceMessageId"]),
+                    str(authorization["objective"])[:20_000],
+                    json.dumps(dict(authorization["resourceScope"]), ensure_ascii=False),
+                    json.dumps(list(authorization["operationScope"]), ensure_ascii=False),
+                    int(authorization.get("reversibleOnly") is True),
+                    str(authorization.get("networkPolicy") or "deny"),
+                    int(authorization.get("externalSideEffects") is True),
+                    int(authorization.get("expiresAtRunEnd") is not False),
+                    now,
+                    now,
+                ),
+            )
+            run = self.connection.execute(
+                "SELECT * FROM pi_agent_runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            assert run is not None
+            self._append_pi_session_entry_locked(
+                run,
+                f"pi-entry-auth-{authorization['id']}",
+                "task_authorization",
+                {
+                    "authorizationId": str(authorization["id"]),
+                    "objective": str(authorization["objective"])[:20_000],
+                    "resourceScope": dict(authorization["resourceScope"]),
+                    "operationScope": list(authorization["operationScope"]),
+                    "networkPolicy": str(authorization.get("networkPolicy") or "deny"),
+                    "reversibleOnly": authorization.get("reversibleOnly") is True,
+                },
+                now,
+            )
+            self.connection.commit()
+        return self.get_task_authorization(str(authorization["id"]))
+
+    @staticmethod
+    def _decode_task_authorization(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        item = dict(row)
+        return {
+            "id": item["id"],
+            "sessionId": item["session_id"],
+            "runId": item["run_id"],
+            "turnId": item["turn_id"],
+            "sourceMessageId": item["source_message_id"],
+            "objective": item["objective"],
+            "resourceScope": json.loads(item["resource_scope_json"]),
+            "operationScope": json.loads(item["operation_scope_json"]),
+            "reversibleOnly": bool(item["reversible_only"]),
+            "networkPolicy": item["network_policy"],
+            "externalSideEffects": bool(item["external_side_effects"]),
+            "expiresAtRunEnd": bool(item["expires_at_run_end"]),
+            "status": item["status"],
+            "createdAt": item["created_at"],
+            "updatedAt": item["updated_at"],
+        }
+
+    def get_task_authorization(self, authorization_id: str) -> dict[str, Any]:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT * FROM task_authorizations WHERE id=?",
+                (authorization_id,),
+            ).fetchone()
+        if not row:
+            raise ValueError("task_authorization_not_found")
+        return self._decode_task_authorization(row)
+
+    def update_task_authorization_scope(
+        self,
+        authorization_id: str,
+        resource_scope: dict[str, Any],
+        operation_scope: list[str],
+    ) -> dict[str, Any]:
+        now = _now()
+        with self.lock:
+            cursor = self.connection.execute(
+                """UPDATE task_authorizations
+                   SET resource_scope_json=?, operation_scope_json=?, updated_at=?
+                   WHERE id=? AND status='active'""",
+                (
+                    json.dumps(resource_scope, ensure_ascii=False),
+                    json.dumps(sorted(set(operation_scope)), ensure_ascii=False),
+                    now,
+                    authorization_id,
+                ),
+            )
+            if not cursor.rowcount:
+                raise RuntimeError("task_authorization_not_active")
+            self.connection.commit()
+        return self.get_task_authorization(authorization_id)
+
+    def complete_pi_run(self, run_id: str, status: str, error_code: str = "") -> None:
+        if status not in {"completed", "failed", "cancelled"}:
+            raise ValueError("pi_run_status_invalid")
+        now = _now()
+        with self.lock:
+            self.connection.execute(
+                """UPDATE pi_agent_runs
+                   SET status=?, completed_at=?, updated_at=?, error_code=?
+                   WHERE run_id=?""",
+                (status, now, now, error_code or None, run_id),
+            )
+            self.connection.execute(
+                """UPDATE task_authorizations SET status='expired', updated_at=?
+                   WHERE run_id=? AND expires_at_run_end=1""",
+                (now, run_id),
+            )
+            self.connection.execute(
+                """UPDATE pi_agent_sessions SET status=?, updated_at=?
+                   WHERE session_id=(SELECT session_id FROM pi_agent_runs WHERE run_id=?)""",
+                (status, now, run_id),
+            )
+            self.connection.commit()
+
+    @staticmethod
+    def _pi_entry_type(event_type: str) -> str:
+        return {
+            "text": "message",
+            "tool_use": "tool_call",
+            "tool_result": "tool_result",
+            "action_result": "action",
+            "context_compacted": "compaction",
+            "confirmation_required": "confirmation",
+            "question_required": "confirmation",
+            "scope_expansion_required": "permission_decision",
+        }.get(event_type, "custom")
+
+    @staticmethod
+    def _pi_session_payload(event: dict[str, Any]) -> dict[str, Any]:
+        event_type = str(event.get("type") or "notice")
+        if event_type == "tool_result":
+            result = event.get("result") if isinstance(event.get("result"), dict) else {}
+            nested = result.get("result") if isinstance(result.get("result"), dict) else {}
+            action_id = str(nested.get("actionId") or "")
+            return {
+                "sequence": int(event.get("sequence") or 0),
+                "callId": str(event.get("id") or ""),
+                "tool": str(event.get("name") or ""),
+                "status": str(event.get("status") or ""),
+                "summary": str(event.get("summary") or "")[:1000],
+                "observationHash": hashlib.sha256(
+                    json.dumps(result, ensure_ascii=False, sort_keys=True).encode()
+                ).hexdigest(),
+                **({"actionId": action_id} if action_id else {}),
+            }
+        if event_type == "action_result":
+            return {
+                "sequence": int(event.get("sequence") or 0),
+                "actionId": str(event.get("actionId") or ""),
+                "state": str(event.get("state") or ""),
+            }
+        payload = dict(event)
+        payload.pop("result", None)
+        return payload
+
+    def _append_pi_session_entry_locked(
+        self,
+        run: sqlite3.Row,
+        entry_id: str,
+        entry_type: str,
+        payload: dict[str, Any],
+        now: str,
+    ) -> None:
+        session = self.connection.execute(
+            "SELECT state_json FROM pi_agent_sessions WHERE session_id=?",
+            (run["session_id"],),
+        ).fetchone()
+        state = json.loads(session["state_json"] or "{}") if session else {}
+        parent_id = str(state.get("currentLeafId") or "") or None
+        inserted = self.connection.execute(
+            """INSERT OR IGNORE INTO pi_session_entries(
+                 id, parent_id, timestamp, entry_type, session_id, run_id,
+                 turn_id, payload_json
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                entry_id,
+                parent_id,
+                now,
+                entry_type,
+                run["session_id"],
+                run["run_id"],
+                run["turn_id"],
+                json.dumps(payload, ensure_ascii=False),
+            ),
+        )
+        if inserted.rowcount:
+            state["currentLeafId"] = entry_id
+            self.connection.execute(
+                "UPDATE pi_agent_sessions SET state_json=?, updated_at=? WHERE session_id=?",
+                (json.dumps(state, ensure_ascii=False), now, run["session_id"]),
+            )
+
+    def append_pi_agent_events(self, run_id: str, events: list[dict[str, Any]]) -> int:
+        with self.lock:
+            run = self.connection.execute(
+                "SELECT * FROM pi_agent_runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if not run:
+                raise ValueError("pi_run_not_found")
+            last = 0
+            for event in events:
+                event_now = datetime.now().astimezone().isoformat(timespec="microseconds")
+                sequence = int(event.get("sequence") or event.get("seq") or 0)
+                if sequence < 1:
+                    raise ValueError("pi_event_sequence_invalid")
+                last = max(last, sequence)
+                payload = json.dumps(event, ensure_ascii=False)
+                existing = self.connection.execute(
+                    "SELECT payload_json FROM pi_agent_events WHERE run_id=? AND sequence=?",
+                    (run_id, sequence),
+                ).fetchone()
+                if existing:
+                    if existing["payload_json"] != payload:
+                        raise RuntimeError("pi_event_sequence_conflict")
+                    continue
+                self.connection.execute(
+                    "INSERT INTO pi_agent_events VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        f"pi-event-{uuid.uuid4().hex}",
+                        run_id,
+                        sequence,
+                        str(event.get("type") or "notice"),
+                        payload,
+                        event_now,
+                    ),
+                )
+                self._append_pi_session_entry_locked(
+                    run,
+                    f"pi-entry-{run_id}-{sequence:012d}",
+                    self._pi_entry_type(str(event.get("type") or "notice")),
+                    self._pi_session_payload(event),
+                    event_now,
+                )
+            if last:
+                now = _now()
+                self.connection.execute(
+                    "UPDATE pi_agent_runs SET last_event_sequence=?, updated_at=? WHERE run_id=?",
+                    (last, now, run_id),
+                )
+            self.connection.commit()
+        return last
+
+    def record_pi_control(self, run_id: str, control_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if control_type not in {"steering", "follow_up", "model_change", "active_tools_change", "branch_summary"}:
+            raise ValueError("pi_control_type_invalid")
+        now = datetime.now().astimezone().isoformat(timespec="microseconds")
+        entry_id = f"pi-entry-{uuid.uuid4().hex}"
+        with self.lock:
+            run = self.connection.execute(
+                "SELECT * FROM pi_agent_runs WHERE run_id=?", (run_id,),
+            ).fetchone()
+            if not run:
+                raise ValueError("pi_run_not_found")
+            self._append_pi_session_entry_locked(
+                run,
+                entry_id,
+                control_type,
+                {key: value for key, value in payload.items() if key not in {"apiKey", "secret"}},
+                now,
+            )
+            self.connection.commit()
+        return {"id": entry_id, "type": control_type, "runId": run_id}
+
+    def get_pi_run(self, run_id: str) -> dict[str, Any]:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT * FROM pi_agent_runs WHERE run_id=?", (run_id,),
+            ).fetchone()
+        if not row:
+            raise ValueError("pi_run_not_found")
+        return dict(row)
+
+    def list_pi_agent_events(self, run_id: str, after_sequence: int = 0, limit: int = 1000) -> list[dict[str, Any]]:
+        with self.lock:
+            rows = self.connection.execute(
+                """SELECT payload_json FROM pi_agent_events
+                   WHERE run_id=? AND sequence>? ORDER BY sequence LIMIT ?""",
+                (run_id, max(0, int(after_sequence)), max(1, min(5000, int(limit)))),
+            ).fetchall()
+        return [json.loads(row["payload_json"]) for row in rows]
+
+    def get_pi_session(self, session_id: str) -> dict[str, Any]:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT * FROM pi_agent_sessions WHERE session_id=?", (session_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError("pi_session_not_found")
+            entries = self.connection.execute(
+                "SELECT * FROM pi_session_entries WHERE session_id=? ORDER BY timestamp, id",
+                (session_id,),
+            ).fetchall()
+        item = dict(row)
+        item["state"] = json.loads(item.pop("state_json") or "{}")
+        item["entries"] = [
+            {**dict(entry), "payload": json.loads(entry["payload_json"])}
+            for entry in entries
+        ]
+        for entry in item["entries"]:
+            entry.pop("payload_json", None)
+        return item
+
+
+    def append_agent_run_event(
+        self,
+        run_id: str,
+        sequence: int,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if sequence < 1:
+            raise ValueError("agent_event_sequence_invalid")
+        event_id = f"agent-event-{uuid.uuid4().hex}"
+        now = _now()
+        with self.lock:
+            existing = self.connection.execute(
+                "SELECT payload_json FROM agent_run_events "
+                "WHERE run_id=? AND sequence=?",
+                (run_id, sequence),
+            ).fetchone()
+            if existing:
+                saved = json.loads(existing["payload_json"])
+                if saved != payload:
+                    raise RuntimeError("agent_event_sequence_conflict")
+                return saved
+            self.connection.execute(
+                """INSERT INTO agent_run_events(
+                     id, run_id, sequence, event_type, payload_json,
+                     created_at, schema_version
+                   ) VALUES (?, ?, ?, ?, ?, ?, 1)""",
+                (
+                    event_id,
+                    run_id,
+                    sequence,
+                    event_type,
+                    json.dumps(payload, ensure_ascii=False),
+                    now,
+                ),
+            )
+            self.connection.execute(
+                """UPDATE agent_run_checkpoints
+                   SET last_event_sequence=?, updated_at=?
+                   WHERE run_id=?""",
+                (sequence, now, run_id),
+            )
+            self.connection.commit()
+        return payload
+
+
+    def list_agent_run_events(
+        self,
+        run_id: str,
+        after_sequence: int = 0,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        with self.lock:
+            rows = self.connection.execute(
+                """SELECT sequence, event_type, payload_json, created_at
+                   FROM agent_run_events
+                   WHERE run_id=? AND sequence>?
+                   ORDER BY sequence
+                   LIMIT ?""",
+                (
+                    run_id,
+                    max(0, int(after_sequence)),
+                    max(1, min(2000, int(limit))),
+                ),
+            ).fetchall()
+        return [
+            {
+                "sequence": row["sequence"],
+                "type": row["event_type"],
+                "payload": json.loads(row["payload_json"]),
+                "createdAt": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    def append_agent_run_event_next(
+        self,
+        run_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT COALESCE(MAX(sequence), 0) AS last_sequence "
+                "FROM agent_run_events WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+            sequence = int(row["last_sequence"]) + 1
+            value = {
+                **payload,
+                "schemaVersion": 2,
+                "seq": sequence,
+                "type": event_type,
+                "runId": run_id,
+            }
+            return self.append_agent_run_event(
+                run_id,
+                sequence,
+                event_type,
+                value,
+            )
+
+
+    def save_agent_run_checkpoint(
+        self,
+        run_id: str,
+        phase: str,
+        state: dict[str, Any],
+        *,
+        pending_approval_id: str | None = None,
+    ) -> dict[str, Any]:
+        now = _now()
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT checkpoint_version, created_at, last_event_sequence "
+                "FROM agent_run_checkpoints WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+            version = int(row["checkpoint_version"]) + 1 if row else 1
+            created_at = str(row["created_at"]) if row else now
+            last_sequence = int(row["last_event_sequence"]) if row else 0
+            self.connection.execute(
+                """INSERT INTO agent_run_checkpoints(
+                     run_id, checkpoint_version, phase, state_json,
+                     pending_approval_id, last_event_sequence,
+                     created_at, updated_at, schema_version
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+                   ON CONFLICT(run_id) DO UPDATE SET
+                     checkpoint_version=excluded.checkpoint_version,
+                     phase=excluded.phase,
+                     state_json=excluded.state_json,
+                     pending_approval_id=excluded.pending_approval_id,
+                     updated_at=excluded.updated_at""",
+                (
+                    run_id,
+                    version,
+                    str(phase)[:80],
+                    json.dumps(state, ensure_ascii=False),
+                    pending_approval_id,
+                    last_sequence,
+                    created_at,
+                    now,
+                ),
+            )
+            self.connection.commit()
+        return self.get_agent_run_checkpoint(run_id) or {}
+
+
+    def get_agent_run_checkpoint(
+        self,
+        run_id: str,
+    ) -> dict[str, Any] | None:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT * FROM agent_run_checkpoints WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "runId": row["run_id"],
+            "checkpointVersion": row["checkpoint_version"],
+            "phase": row["phase"],
+            "state": json.loads(row["state_json"] or "{}"),
+            "pendingApprovalId": row["pending_approval_id"],
+            "lastEventSequence": row["last_event_sequence"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+            "schemaVersion": row["schema_version"],
+        }
 
     def _migrate_jobs(self) -> None:
         """Add runtime columns without invalidating an existing local state DB."""
@@ -934,6 +1610,20 @@ class StateStore:
         item["snapshots"] = [dict(value) for value in snapshots]; item["changes"] = [dict(value) for value in changes]
         return item
 
+    def find_agent_action_for_change_set(self, change_set_id: str) -> dict[str, Any] | None:
+        """Return the newest exact action match without trusting a LIKE-only hit."""
+        with self.lock:
+            rows = self.connection.execute(
+                "SELECT id FROM agent_actions WHERE action_type='apply_vault_change' "
+                "AND details_json LIKE ? ORDER BY created_at DESC LIMIT 50",
+                (f'%"changeSetId": "{change_set_id}"%',),
+            ).fetchall()
+        for row in rows:
+            action = self.get_agent_action(str(row["id"]))
+            if str(action.get("details", {}).get("changeSetId") or "") == change_set_id:
+                return action
+        return None
+
     def list_agent_actions(self, limit: int = 100) -> list[dict[str, Any]]:
         with self.lock:
             rows = self.connection.execute(
@@ -1045,6 +1735,27 @@ class StateStore:
                 f"error_message='本地 Runtime 上次意外中断；可以安全重试', completed_at=?, updated_at=? "
                 f"WHERE status IN ({placeholders})",
                 (now, now, *transient),
+            )
+            # A Pi run lives partly in the Obsidian renderer process.  Once the
+            # local Runtime has restarted, a row still marked running cannot
+            # have a live model stream behind it and must not remain a ghost
+            # task forever.
+            self.connection.execute(
+                "UPDATE pi_agent_runs SET status='failed', error_code='pi_runtime_interrupted', "
+                "completed_at=?, updated_at=? WHERE status='running'",
+                (now, now),
+            )
+            self.connection.execute(
+                "UPDATE task_authorizations SET status='expired', updated_at=? "
+                "WHERE status='active' AND run_id IN "
+                "(SELECT run_id FROM pi_agent_runs WHERE error_code='pi_runtime_interrupted')",
+                (now,),
+            )
+            self.connection.execute(
+                "UPDATE pi_agent_sessions SET status='failed', updated_at=? "
+                "WHERE session_id IN "
+                "(SELECT session_id FROM pi_agent_runs WHERE error_code='pi_runtime_interrupted')",
+                (now,),
             )
             self.connection.commit(); return recovered_jobs
 
@@ -1472,6 +2183,45 @@ class StateStore:
             self.connection.execute(
                 "INSERT INTO proposed_actions VALUES (?, ?, 'change_set', ?, ?, 'low', 'pending', ?, ?, NULL)",
                 (action_id, run_id, title, f"{len(writes)} 个候选写入", change_set_id, now),
+            )
+            self.connection.commit()
+
+    def create_assistant_change_set(self, change_set_id: str, run_id: str, title: str, writes: list[dict[str, Any]], preview: str, base_hashes: dict[str, str]) -> None:
+        """Persist an internal write proposal without coupling it to legacy brain runs."""
+        now = _now()
+        with self.lock:
+            self.connection.execute(
+                "INSERT INTO assistant_change_sets VALUES (?, ?, 'proposed', ?, ?, ?, ?, NULL, ?, ?, NULL)",
+                (change_set_id, run_id, title, json.dumps(writes, ensure_ascii=False), preview, json.dumps(base_hashes), now, now),
+            )
+            self.connection.commit()
+
+    def is_assistant_runtime_run(self, run_id: str) -> bool:
+        with self.lock:
+            try:
+                return self.connection.execute(
+                    "SELECT 1 FROM assistant_framework_runs WHERE run_id=?",
+                    (run_id,),
+                ).fetchone() is not None
+            except sqlite3.OperationalError:
+                return False
+
+    def get_assistant_change_set(self, change_set_id: str) -> dict[str, Any]:
+        with self.lock:
+            row = self.connection.execute("SELECT * FROM assistant_change_sets WHERE id=?", (change_set_id,)).fetchone()
+            if not row:
+                raise RuntimeError("Change Set not found")
+            item = dict(row)
+            item["writes"] = json.loads(item.pop("writes_json"))
+            item["base_hashes"] = json.loads(item.pop("base_hashes_json"))
+            return item
+
+    def update_assistant_change_set(self, change_set_id: str, state: str, transaction_id: str | None = None) -> None:
+        now = _now()
+        with self.lock:
+            self.connection.execute(
+                "UPDATE assistant_change_sets SET state=?, transaction_id=?, updated_at=?, applied_at=? WHERE id=?",
+                (state, transaction_id, now, now if state == "applied" else None, change_set_id),
             )
             self.connection.commit()
 

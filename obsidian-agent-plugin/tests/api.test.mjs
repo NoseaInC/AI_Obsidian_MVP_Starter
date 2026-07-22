@@ -26,9 +26,26 @@ test("plugin owns a tokenized localhost runtime lifecycle", () => {
   assert.match(source, /SIGTERM/);
   assert.match(source, /agent\.api\.server/);
   assert.doesNotMatch(source, /shell:\s*true/);
+  assert.match(source, /activateRuntimeUpgrade/);
+  assert.match(source, /runFixedRepositoryScript\("check\.sh"/);
+  assert.match(source, /runFixedRepositoryScript\("install-plugin\.sh"/);
+  assert.match(source, /await this\.restart\(\)/);
+  assert.match(source, /await this\.isHealthy\(\)/);
+  assert.match(source, /KEY\|TOKEN\|SECRET\|PASSWORD\|CREDENTIAL/);
 });
 
-test("plugin exposes required commands and explicit confirmation", () => {
+test("runtime upgrade is a two-phase plugin-owned activation with rollback", () => {
+  const api = readFileSync(new URL("../src/api.ts", import.meta.url), "utf8");
+  const main = readFileSync(new URL("../main.ts", import.meta.url), "utf8");
+  assert.match(api, /configureRuntimeUpgradeHandler/);
+  assert.match(api, /activate_runtime_upgrade/);
+  assert.match(api, /rollback_task_branch/);
+  assert.match(api, /runtime_upgrade_failed_and_rolled_back/);
+  assert.match(main, /configureRuntimeUpgradeHandler/);
+  assert.match(main, /activateRuntimeUpgrade/);
+});
+
+test("plugin exposes required commands without browser confirmation", () => {
   const source = readFileSync(new URL("../main.ts", import.meta.url), "utf8");
   for (const id of ["import-pdf", "view-jobs", "review", "expand-idea", "today-learning", "next-week"]) assert.match(source, new RegExp(`id: "${id}"`));
   assert.match(source, /LearningAgentMainView/);
@@ -64,7 +81,8 @@ test("recommendation filtering, sorting and state counts are deterministic", asy
 
 test("workspace contains chat-first shell and real interaction components", () => {
   const source = readFileSync(new URL("../src/views.ts", import.meta.url), "utf8");
-  for (const component of ["la-workspace","la-module-nav","la-chat-first","la-material-center","la-review-layout","la-plan-focus","la-today-focus","la-unified-composer","la-artifact-card","la-action-bar"]) assert.match(source, new RegExp(component));
+  for (const component of ["la-workspace","la-module-nav","la-chat-first","la-material-center","la-plan-focus","la-today-focus","la-unified-composer","la-artifact-card","la-action-bar"]) assert.match(source, new RegExp(component));
+  assert.doesNotMatch(source, /this\.navStat\(stats, "需要你确认"/);
   for (const action of ["later","tomorrow","weekend","favorite","not_interested"]) assert.match(source, new RegExp(action));
   assert.match(source, /requires_confirmation/);
   assert.match(source, /\/intake\/submit/);
@@ -86,12 +104,14 @@ test("retired right sidebar is detached and can no longer be opened", () => {
   assert.doesNotMatch(views, /class LearningAgentSidebarView|la-sidebar|renderStatsInspector|inspectorOpen|la-stats-inspector/);
 });
 
-test("chat-first UI includes five modules, Artifact surfaces, provider drawer and strict scroll ownership", () => {
+test("chat-first UI uses four outcome modules with confirmations kept in the assistant", () => {
   const views = readFileSync(new URL("../src/views.ts", import.meta.url), "utf8");
   const css = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
   for (const surface of ["la-material-center","la-review-layout","la-plan-focus","la-today-focus","la-assistant-shell-v3","la-provider-drawer","la-artifact-card"]) assert.match(views + css, new RegExp(surface));
   for (const field of ["Base URL","API Key","模型名称","任务模型路由","OpenAI-compatible","Custom"]) assert.match(views, new RegExp(field));
-  for (const module of ["today", "sources", "review", "plan", "assistant"]) assert.match(views, new RegExp(`id: "${module}"`));
+  for (const module of ["today", "sources", "plan", "assistant"]) assert.match(views, new RegExp(`id: "${module}"`));
+  assert.doesNotMatch(views, /\{id: "review", label: "审核"/);
+  assert.doesNotMatch(views, /setTab\("review"\)/);
   assert.doesNotMatch(views, /学习 Agent/);
   assert.doesNotMatch(views, /renderGlobalHeader|la-global-header|全局快速搜索/);
   assert.doesNotMatch(views, /createDiv\(\{cls: "la-history-nav"\}\)/);
@@ -145,31 +165,43 @@ test("review preview hides audit identifiers outside collapsed technical details
   assert.doesNotMatch(preview, /pdf-secret|private\/vault|artifact_id/);
 });
 
-test("Agent Brain UI uses the governed request lifecycle and proposal confirmation", () => {
+test("assistant UI uses the Pi runtime and inline governed confirmation", () => {
   const views = readFileSync(new URL("../src/views.ts", import.meta.url), "utf8");
   const api = readFileSync(new URL("../src/api.ts", import.meta.url), "utf8");
   const css = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
   for (const mode of ["对话", "整理", "研究", "规划"]) assert.match(views, new RegExp(mode));
-  for (const component of ["la-chat-first", "la-brain-timeline", "la-brain-result", "la-change-set-proposal", "la-brain-error", "la-artifact-card"]) assert.match(views + css, new RegExp(component));
-  assert.match(views, /\/intake\/submit/);
-  assert.match(views, /active_artifact_id/);
-  assert.match(views, /\/brain-change-sets\/.*\/apply/);
-  assert.match(views, /confirmed: true/);
+  for (const component of ["la-chat-first", "la-live-trace", "renderInlineAgentConfirmation", "la-artifact-card"]) assert.match(views + css, new RegExp(component));
+  assert.match(views, /PiAgentRuntime/);
+  assert.doesNotMatch(views, /PydanticAgentRuntime/);
+  assert.match(views, /renderInlineAgentConfirmation/);
+  const confirmation = readFileSync(new URL("../src/assistant-inline-confirmation.ts", import.meta.url), "utf8");
+  assert.match(confirmation, /confirmation\.kind === "question"/);
+  assert.match(confirmation, /handlers\.answer/);
+  assert.match(confirmation, /本会话允许在/);
+  assert.doesNotMatch(confirmation, /window\.(?:prompt|confirm|alert)\(/);
+  assert.match(views, /\/change-sets\/.*\/diff/);
+  assert.doesNotMatch(views, /assistant.*\/intake\/submit/);
   assert.doesNotMatch(views, /this\.client\.post<any>\("\/chat"/);
   assert.match(api, /Idempotency-Key/);
 });
 
 test("assistant model picker only changes chat routing", () => {
   const views = readFileSync(new URL("../src/views.ts", import.meta.url), "utf8");
-  const handler = views.match(/selector\.onchange\s*=\s*\(\)\s*=>[^;]+;/)?.[0] ?? "";
+  const handler = views.match(/updateModelRoute\("assistant_chat", selectedProfileId\)[^;]*;/)?.[0] ?? "";
   assert.match(handler, /assistant_chat/);
   assert.doesNotMatch(handler, /brain_orchestrator/);
+  assert.match(views, /la-model-popover/);
+  assert.match(views, /Auto 模式/);
+  assert.match(views, /modelBrand/);
+  for (const provider of ["deepseek", "claude", "anthropic", "gemini", "mistral", "ollama", "huggingface", "meta", "grok", "xai", "openai", "qwen", "kimi", "minimax", "chatglm", "glm"]) assert.match(views, new RegExp(`slug: "${provider}"`));
+  assert.doesNotMatch(views, /createEl\("select", \{cls: "la-composer-model"/);
 });
 
-test("provider settings expose Keychain references and all Brain model routes", () => {
+test("provider settings expose Keychain references and explicit model routes", () => {
   const views = readFileSync(new URL("../src/views.ts", import.meta.url), "utf8");
-  for (const field of ["API Key Reference", "组织 ID（可选）", "支持流式响应", "支持 JSON Schema", "支持工具调用"]) assert.match(views, new RegExp(field));
-  for (const route of ["brain_orchestrator", "intent_router", "curriculum_planner", "research_synthesis", "tutor", "quiz", "evaluation", "pdf_prepare", "assistant_chat"]) assert.match(views, new RegExp(route));
+  for (const field of ["API Key Reference", "组织 ID（可选）", "支持流式响应", "支持 JSON Schema", "支持工具调用", "流式 Tool Call 参数", "支持深度推理协议", "并行 Tool Calls", "Reasoning Effort"]) assert.match(views, new RegExp(field));
+  for (const route of ["agent_runtime", "curriculum_planner", "research_synthesis", "tutor", "quiz", "evaluation", "pdf_prepare", "assistant_chat"]) assert.match(views, new RegExp(route));
+  assert.doesNotMatch(views, /brain_orchestrator|intent_router/);
   assert.match(views, /apiKeyReference: keyReference\.value/);
   assert.match(views, /organizationId: organizationId\.value/);
   assert.doesNotMatch(views, /localStorage|sessionStorage/);

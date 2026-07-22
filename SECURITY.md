@@ -20,13 +20,16 @@
 ## Filesystem
 
 - Resolve every path and reject traversal or symlink escape.
-- All knowledge mutations pass through Change Set and transaction layers.
+- All knowledge mutations pass through Task Authorization and the reversible transaction layer. Change Sets are internal plans, not approval records.
+- The Harness validates each concrete action against task scope, safe roots, base hashes and protection state. In-scope reversible Markdown creates and updates apply directly; only scope expansion or external/irreversible effects ask the user.
+- Every successful Harness commit is verified against the immutable Change Set payload hashes before the Run can report success.
 - `reviewed/core` prose is immutable; only explicit user-confirmed learning metadata transitions are permitted.
 - Human content outside managed blocks is preserved.
 - High autonomy is still scoped: only Agent-managed creation and small managed-block maintenance may apply automatically. Each automatic change creates a private snapshot, bounded diff record and audit action.
 - Undo refuses to run if the current target changed after the Agent action, preventing restoration over a later user edit.
 - `Private/`, `Personal/`, `Secrets/`, `agent_access: denied`, `agent_protected: true`, source material and reviewed/core remain outside automatic mutation.
-- Explicit save in high-autonomy mode permits only marked new drafts and managed-block appends under approved roots. The permission does not extend to deletes, moves, renames, bulk rewrites or real Prepared PDF Apply.
+- Task authorization never permits deletes, moves, protected/core changes, path escape, stale-hash overwrite or real Prepared PDF Apply unless a separate governed workflow explicitly supports the action.
+- The first structured write plan freezes the Turn's operation/path scope. A later plan that adds a target, root or operation is rejected as scope expansion and cannot inherit authority from model prose.
 - Conversation Focus, Material Bundles and Knowledge Units store named entities and references only. Long token-like entities and raw pasted/message bodies are excluded from SQLite.
 
 ## Secrets
@@ -38,15 +41,16 @@
 - A Profile does not own its Key reference; deleting a Profile never deletes a shared/pre-existing Keychain secret.
 - Provider custom headers reject Authorization, Host, Content-Length and newline injection. External Base URLs require HTTPS; local HTTP is limited to loopback hosts.
 
-## Agent Brain
+## Pi runtime and Harness
 
 - Full requests and Change Set bodies remain under `90-Local-Only`; SQLite contains hashes, summaries and references only.
-- Every write-producing Skill creates a Change Set. Apply rechecks payload hash, path policy, symlink policy, base hashes, reviewed/core status and explicit confirmation under the writer lock.
+- Every write-producing tool creates an internal plan. Apply rechecks authorization, payload hash, path and symlink policy, base hashes and reviewed/core status under the writer lock, then snapshots, atomically writes, verifies and records conflict-safe Undo.
 - Research source fetch rejects credentials in URLs, private/non-global destinations, unsafe redirects, unsupported content types and oversized bodies.
 - External source adapters are unavailable by default and provider failures are surfaced rather than replaced with invented content.
 - Tool events, error responses and exported diagnostics pass through secret and long-text redaction.
 - Public web content is wrapped as untrusted source text; embedded instructions cannot grant tools, filesystem access or policy changes.
 - Conversation export stays under `90-Local-Only`. Summary-only retention and deletion require explicit confirmation; bulk conversation deletion is never implicit.
+- Runtime activation accepts no model-authored command. Python validates a merged, clean, exact commit; the plugin runs only fixed project scripts with a scrubbed environment, restarts the loopback service, checks health and performs governed source rollback plus rebuild if activation fails.
 
 ## Security test checklist
 

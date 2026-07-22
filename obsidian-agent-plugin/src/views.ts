@@ -46,6 +46,7 @@ import {
 } from "./assistant-thread";
 import {
   AssistantLiveRun,
+  agentChunkToAssistantEvent,
   cancelledAssistantRun,
   initialAssistantLiveRun,
   reduceAssistantStream,
@@ -59,12 +60,17 @@ import {
   type StudyWorkspaceState,
 } from "./study-workspace";
 import {isAssistantReadableVaultPath, referencedVaultNotePath} from "./vault-note-policy";
+import {renderInlineAgentConfirmation} from "./assistant-inline-confirmation";
+import type {AgentRuntime} from "./core/runtime/AgentRuntime";
+import {PiAgentRuntime} from "./core/runtime/PiAgentRuntime";
+import {AgentRuntimeRegistry} from "./core/runtime/AgentRuntimeRegistry";
+import {SettingsService} from "./core/settings/SettingsService";
 
 export const MAIN_VIEW = "learning-agent-main";
 export const SIDEBAR_VIEW = "zhixu-sidebar-v2";
 export const LEGACY_SIDEBAR_VIEW = "obsidian-learning-agent-view";
 
-type MainTab = "today" | "sources" | "review" | "plan" | "assistant";
+type MainTab = "today" | "sources" | "plan" | "assistant";
 type SourceFilter = "all" | "pending" | "running" | "research" | "applied" | "failed" | "history";
 interface DailyViewPreferences {
   trackingEnabled: boolean;
@@ -91,7 +97,6 @@ interface ModelProfile {
 const MODULES: Array<{id: MainTab; label: string; icon: string}> = [
   {id: "today", label: "今日", icon: "calendar-days"},
   {id: "sources", label: "资料", icon: "files"},
-  {id: "review", label: "审核", icon: "clipboard-check"},
   {id: "plan", label: "计划", icon: "calendar-range"},
   {id: "assistant", label: "助手", icon: "messages-square"},
 ];
@@ -99,7 +104,6 @@ const MODULES: Array<{id: MainTab; label: string; icon: string}> = [
 const MODULE_TITLES: Record<MainTab, string> = {
   today: "今天，继续前进",
   sources: "资料中心",
-  review: "待审核的 Change Set",
   plan: "学习计划",
   assistant: "助手",
 };
@@ -112,6 +116,73 @@ function iconButton(parent: HTMLElement, icon: string, label: string, action: ()
   setIcon(element, icon);
   element.onclick = action;
   return element;
+}
+
+const ASSISTANT_AVATAR_PATH = ".obsidian/plugins/obsidian-learning-agent/assets/zhixu-assistant-avatar.png";
+const MODEL_ICON_ROOT = ".obsidian/plugins/obsidian-learning-agent/assets/model-icons";
+// Exact transparent cutout supplied by the user. Inlining avoids app:// resolution differences between Vaults.
+const SEND_BUTTON_IDLE_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEQAAABECAYAAAA4E5OyAAAAAXNSR0IArs4c6QAAADhlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAAqACAAQAAAABAAAARKADAAQAAAABAAAARAAAAADjEeGFAAADBElEQVR4Ae3ZgXHqMAwGYN67NwIMwRIMAXPCOgwBO/Td31acGyxHsiTHTpO7XmiwbOmzQrh2t9uOTaB7gev1+oGfHhL90yoJa8GXy6VJrqGLWBG4zYrECQGJgsgBeeO4grSEmOJ4wbiALAmRwnigmEB6gUhR8NoCUw3SKwbh1KJUgfSOYUFRg4yCUYuiAhkNowZFDDIqhhZFBDI6hgZlFmQtGFKUvzRwO38JFDtkbd1Bm176jsJ2SEuM0+m0Ox6PlO+iZxakVVaA2O/3nyCAaXGUNjsLUgrwTBgYaWcA5nA4eC6hnisLop6lMiDFoCly1+g9zzO36YuBcIXT7eNZvGauNxBOTjOpZCwHgtjSe5K5pWNytb6BSCezjJMULBljyYGL3UAmMj9Aci00GW/+VbPzLR7D05p/gJirFUygAVniMdwURINBtjUxFFtz7h6kdZc0A7HstCVW2yVNQFCQpaiWXdIERLtLufEW0Nx83LUXyPTxwwVor1u7g9aL7JK09hcILex99txZz7m4Ol8gpb8iccFz170LiOqStPYXyFxxNe97gyCHiDnT2sJAohJHl0TNDZjhQJD0cCCRCQMER9QaIR2iSfb5fO7u9/vnD15LD80a0jkx7p9msGSsNFGCeDwer2kBgz8ySz8nsBZiPI+3f1SlX1JqFjqfz8WwHAQXgILngG+3Gxcuup4+chHg2iGlfyHQbSHK8nsQxZRgsGbaZZr5c2NdQaaJoRtwzdrWJZjpmrkiNdfebhkEW28b6hTvZKkw+pwhcLquPU9vF8S7dgglFAWRzh+1Rvaxm5OjZNZ+zoKsvWjUx206C8IFrB2LBVlz4aXNzj5lUgzrEyedq4fXJQzk9ys7pLQxsx2C4LV0yVx3oFYRyBpQJBgqkJFRpBhqkBFRNBhVICOhaDGqQUZAqcEwgfSMUothBsEEOHp5LFsgvipRPHYpgDsvieIBQXWJv4dQwNy5JYwnBNXlDkIT4xyFEwFBeYeC0CIeOJEIaZ5dvEYnRXVTFwVuSaxI4D/GKxZNHjtewwAAAABJRU5ErkJggg==";
+const SEND_BUTTON_IDLE_VECTOR_DATA_URL = `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72" fill="none"><circle cx="36" cy="36" r="34" fill="#A8A8A8"/><path d="M36 19.5L49.5 47.5L36 39.5L22.5 47.5L36 19.5Z" fill="#FFFFFF"/></svg>',
+)}`;
+
+function modelBrand(profile?: ModelProfile): {asset?: string; fallback: string; slug: string} {
+  const identity = `${profile?.providerType ?? ""} ${profile?.displayName ?? ""} ${profile?.defaultModel ?? ""}`.toLowerCase();
+  if (identity.includes("deepseek")) return {asset: "deepseek-color.svg", fallback: "waves", slug: "deepseek"};
+  if (identity.includes("claude")) return {asset: "claude-color.svg", fallback: "a-large-small", slug: "claude"};
+  if (identity.includes("anthropic")) return {asset: "anthropic.svg", fallback: "a-large-small", slug: "anthropic"};
+  if (identity.includes("gemini") || identity.includes("google")) return {asset: "gemini-color.svg", fallback: "sparkles", slug: "gemini"};
+  if (identity.includes("mistral")) return {asset: "mistral-color.svg", fallback: "blocks", slug: "mistral"};
+  if (identity.includes("ollama")) return {asset: "ollama.svg", fallback: "bot", slug: "ollama"};
+  if (identity.includes("hugging") || identity.includes("hf-")) return {asset: "huggingface-color.svg", fallback: "smile", slug: "huggingface"};
+  if (identity.includes("llama") || identity.includes("meta")) return {asset: "meta-color.svg", fallback: "infinity", slug: "meta"};
+  if (identity.includes("grok")) return {asset: "grok.svg", fallback: "x", slug: "grok"};
+  if (identity.includes("xai") || identity.includes("x.ai")) return {asset: "xai.svg", fallback: "x", slug: "xai"};
+  if (identity.includes("openai") || /\bgpt[-\s]/.test(identity)) return {asset: "openai.svg", fallback: "flower-2", slug: "openai"};
+  if (identity.includes("qwen") || identity.includes("tongyi") || identity.includes("alibaba")) return {asset: "qwen-color.svg", fallback: "cloud-cog", slug: "qwen"};
+  if (identity.includes("kimi") || identity.includes("moonshot")) return {asset: "kimi-color.svg", fallback: "moon-star", slug: "kimi"};
+  if (identity.includes("minimax")) return {asset: "minimax-color.svg", fallback: "audio-waveform", slug: "minimax"};
+  if (identity.includes("chatglm")) return {asset: "chatglm-color.svg", fallback: "badge-zap", slug: "chatglm"};
+  if (identity.includes("glm") || identity.includes("zhipu")) return {asset: "zhipu-color.svg", fallback: "badge-zap", slug: "glm"};
+  return {fallback: identity.includes("compatible") ? "braces" : "sparkles", slug: "custom"};
+}
+
+function renderModelBrand(parent: HTMLElement, profile: ModelProfile | undefined, app: App): void {
+  const brand = modelBrand(profile);
+  parent.empty();
+  parent.addClass(`la-model-icon--${brand.slug}`);
+  parent.setAttribute("title", profile?.displayName || profile?.defaultModel || "自定义模型");
+  if (!brand.asset) {
+    setIcon(parent, brand.fallback);
+    return;
+  }
+  const image = parent.createEl("img", {
+    attr: {
+      src: app.vault.adapter.getResourcePath(`${MODEL_ICON_ROOT}/${brand.asset}`),
+      alt: "",
+      draggable: "false",
+    },
+  });
+  image.addEventListener("error", () => {
+    image.remove();
+    setIcon(parent, brand.fallback);
+  }, {once: true});
+}
+
+function renderAssistantAvatar(parent: HTMLElement, app: App): HTMLElement {
+  const avatar = parent.createDiv({cls: "la-message-avatar la-message-avatar--zhixu", attr: {"aria-label": "知序"}});
+  const image = avatar.createEl("img", {
+    attr: {
+      src: app.vault.adapter.getResourcePath(ASSISTANT_AVATAR_PATH),
+      alt: "",
+      draggable: "false",
+    },
+  });
+  image.addEventListener("error", () => {
+    image.remove();
+    setIcon(avatar, "bot");
+  }, {once: true});
+  return avatar;
 }
 
 function badge(parent: HTMLElement, kind: string, text: string): HTMLElement {
@@ -409,9 +480,14 @@ export class LearningAgentMainView extends ItemView {
   private assistantConversationQuery = "";
   private assistantInspectorTab: "context" | "sources" | "changes" = "context";
   private assistantInspectorOpen = true;
+  private assistantNetworkEnabled = false;
+  private assistantModelAuto = true;
+  private assistantReasoningMode: "auto" | "deep" = "auto";
+  private assistantPermissionMode: "ask" | "allow_all" = "ask";
   private assistantLiveRun: AssistantLiveRun = initialAssistantLiveRun();
   private assistantVisibleMessageLimit = 160;
   private assistantDraft = "";
+  private assistantSubmitInFlight = false;
   private assistantRegenerateMessageId = "";
   private assistantToday = new Set<string>();
   private pendingAttachments: any[] = [];
@@ -431,11 +507,17 @@ export class LearningAgentMainView extends ItemView {
   private studyAssistantMessages: Array<{role: "user" | "assistant"; content: string}> = [];
   private exposedRecommendations = new Set<string>();
   private markdown: ObsidianAssistantMarkdownRenderer;
+  private agentRuntime: AgentRuntime;
+  private settingsService: SettingsService;
 
   constructor(leaf: WorkspaceLeaf, private client: AgentClient, private dailyPreferences: () => DailyViewPreferences = () => ({trackingEnabled: true, recordLearningDuration: true, useQuizResults: true, useRecommendationFeedback: true, dailyKnowledgeCount: 1})) {
     super(leaf);
     this.dailyEngine = new LocalDailyIntelligenceEngine(client, () => this.dailyPreferences().trackingEnabled);
     this.markdown = new ObsidianAssistantMarkdownRenderer(this.app, this);
+    const runtimes = new AgentRuntimeRegistry();
+    runtimes.register("pi-agent", () => new PiAgentRuntime(client));
+    this.agentRuntime = runtimes.create("pi-agent");
+    this.settingsService = new SettingsService(client);
   }
 
   getViewType(): string { return MAIN_VIEW; }
@@ -450,6 +532,7 @@ export class LearningAgentMainView extends ItemView {
 
   async onClose(): Promise<void> {
     this.abort?.abort();
+    this.agentRuntime.cleanup();
     await this.dailyEngine.dispose();
   }
 
@@ -457,7 +540,10 @@ export class LearningAgentMainView extends ItemView {
 
   getState(): Record<string, unknown> {
     return {tab: this.tab, assistantDrawerOpen: this.assistantDrawerOpen, conversationId: this.conversationId,
-      assistantInspectorTab: this.assistantInspectorTab, assistantInspectorOpen: this.assistantInspectorOpen, studyState: this.studyState};
+      assistantInspectorTab: this.assistantInspectorTab, assistantInspectorOpen: this.assistantInspectorOpen,
+      assistantNetworkEnabled: this.assistantNetworkEnabled, assistantModelAuto: this.assistantModelAuto,
+      assistantPermissionMode: this.assistantPermissionMode,
+      studyState: this.studyState};
   }
 
   async setState(state: any): Promise<void> {
@@ -466,6 +552,9 @@ export class LearningAgentMainView extends ItemView {
     this.conversationId = String(state?.conversationId ?? "");
     if (["context", "sources", "changes"].includes(state?.assistantInspectorTab)) this.assistantInspectorTab = state.assistantInspectorTab;
     this.assistantInspectorOpen = state?.assistantInspectorOpen !== false;
+    this.assistantNetworkEnabled = state?.assistantNetworkEnabled === true;
+    this.assistantModelAuto = state?.assistantModelAuto !== false;
+    this.assistantPermissionMode = state?.assistantPermissionMode === "allow_all" ? "allow_all" : "ask";
     if (state?.studyState?.recommendationId) this.studyState = state.studyState as StudyWorkspaceState;
     this.history = [this.tab];
     this.historyIndex = 0;
@@ -579,7 +668,6 @@ export class LearningAgentMainView extends ItemView {
     progress.createEl("strong", {text: `${percentage}%`});
     const bar = progress.createDiv({cls: "la-job-progress"});
     bar.createDiv({attr: {style: `width:${percentage}%`}});
-    this.navStat(stats, "待确认", (summary?.prepared_count ?? 0) + (summary?.review_count_pending ?? 0));
     this.navStat(stats, "运行任务", summary?.active_job_count ?? 0);
 
     const status = nav.createDiv({cls: "la-nav-runtime la-nav-runtime--footer"});
@@ -677,7 +765,6 @@ export class LearningAgentMainView extends ItemView {
     if (!this.dashboard) return;
     if (this.tab === "today") this.renderToday(body);
     else if (this.tab === "sources") await this.renderSources(body);
-    else if (this.tab === "review") await this.renderReviews(body);
     else if (this.tab === "plan") await this.renderPlan(body);
     else await this.renderAssistant(body);
   }
@@ -1887,21 +1974,35 @@ export class LearningAgentMainView extends ItemView {
       }
     }
     this.assistantConversations = conversations.items ?? this.assistantConversations;
-    const shell = body.createDiv({cls: `la-assistant-shell-v4 la-assistant-shell-v5 la-chat-shell ${this.assistantDrawerOpen ? "has-drawer" : ""} ${this.assistantInspectorOpen ? "has-inspector" : "inspector-closed"}`});
+    const shell = body.createDiv({cls: `la-assistant-shell-v4 la-assistant-shell-v5 la-assistant-shell-v6 la-assistant-shell-v7 la-assistant-shell-v8 la-chat-shell ${this.assistantDrawerOpen ? "has-drawer" : ""} ${this.assistantInspectorOpen ? "has-inspector" : "inspector-closed"}`});
     const chat = shell.createDiv({cls: "la-assistant-main"});
     const context = shell.createEl("aside", {cls: "la-assistant-context", attr: {"aria-label": "本次任务上下文"}});
     const drawer = shell.createDiv({cls: `la-provider-drawer la-provider-drawer--overlay ${this.assistantDrawerOpen ? "is-open" : ""}`, attr: {"aria-label": "模型与 API 设置"}});
     const header = chat.createDiv({cls: "la-assistant-head la-chat-toolbar"});
     const title = header.createDiv({cls: "la-chat-toolbar__title"});
     title.createEl("h1", {text: humanTitle(loadedConversation?.title, "新会话")});
-    title.createEl("p", {text: this.assistantContext?.focus?.activeTopic?.displayName ? `当前笔记 · ${this.assistantContext.focus.activeTopic.displayName}` : "统一输入与任务执行入口"});
-    const selector = header.createEl("select", {attr: {"aria-label": "助手模型"}});
-    selector.createEl("option", {value: "", text: profiles.length ? "本地能力 · 未选模型" : "本地能力可用"});
-    for (const profile of profiles.filter(item => item.enabled)) selector.createEl("option", {value: profile.id, text: `${profile.displayName} · ${profile.defaultModel || "手动模型"}`});
-    selector.value = routes.assistant_chat?.profileId ?? routes.assistant?.profileId ?? "";
-    selector.onchange = () => void this.client.patch("/model-routing", {routes: {assistant_chat: {profileId: selector.value, modelOverride: ""}}});
-    const historyButton = iconButton(header, "history", "历史会话", () => undefined);
-    historyButton.onclick = event => {
+    let networkSafetyText: HTMLElement | null = null;
+    let networkStatusIcon: HTMLElement | null = null;
+    let networkStatusLabel: HTMLElement | null = null;
+    let networkToggleButton: HTMLButtonElement | null = null;
+    const paintNetworkToggle = (): void => {
+      if (networkStatusIcon) {
+        networkStatusIcon.empty();
+        setIcon(networkStatusIcon, this.assistantNetworkEnabled ? "globe-2" : "shield-check");
+      }
+      networkStatusLabel?.setText(this.assistantNetworkEnabled ? "联网" : "本地");
+      networkToggleButton?.toggleClass("is-enabled", this.assistantNetworkEnabled);
+      networkToggleButton?.setAttribute("aria-pressed", String(this.assistantNetworkEnabled));
+      networkToggleButton?.setAttribute("aria-label", this.assistantNetworkEnabled ? "关闭联网检索" : "开启联网检索");
+      if (networkToggleButton) networkToggleButton.title = this.assistantNetworkEnabled ? "联网已开启，点击关闭" : "联网已关闭，点击开启";
+      networkSafetyText?.setText(this.assistantNetworkEnabled ? "联网来源不可信 · 写入可撤销" : "本地优先 · 低风险写入可撤销");
+    };
+    const toggleNetwork = (): void => {
+      this.assistantNetworkEnabled = !this.assistantNetworkEnabled;
+      paintNetworkToggle();
+      new Notice(this.assistantNetworkEnabled ? "已为本会话开启联网检索" : "已切回仅本地模式");
+    };
+    const showHistoryMenu = (event: MouseEvent): void => {
       const menu = new Menu();
       if (!(conversations.items ?? []).length) menu.addItem(item => item.setTitle("暂无历史会话").setDisabled(true));
       for (const conversation of conversations.items ?? []) menu.addItem(item => item
@@ -1930,45 +2031,42 @@ export class LearningAgentMainView extends ItemView {
       }
       menu.showAtMouseEvent(event);
     };
-    historyButton.addClass("la-toolbar-history");
-    const newConversationButton = button(header, "新会话", async () => {
+    const startNewConversation = async (): Promise<void> => {
       const response = await this.client.post<any>("/conversations", {title: "新会话"});
       this.conversationId = String(response.conversation.id); this.assistantMessages = []; this.assistantArtifacts = [];
       this.assistantTaskThread = null; this.assistantArtifactGroup = null;
       this.pendingAttachments = []; this.assistantDraft = ""; this.assistantRegenerateMessageId = ""; this.assistantRun = null; this.assistantVisibleMessageLimit = 160; await this.refresh();
-    }, "mod-cta la-toolbar-action la-toolbar-new");
-    const newConversationIcon = header.ownerDocument.createElement("span");
-    newConversationIcon.addClass("la-toolbar-action__icon"); setIcon(newConversationIcon, "message-square-plus");
-    newConversationButton.prepend(newConversationIcon);
-    const inspectorToggle = button(header, "上下文", () => {
-      this.assistantInspectorOpen = !this.assistantInspectorOpen;
+    };
+    const setInspectorOpen = (open: boolean): void => {
+      this.assistantInspectorOpen = open;
       shell.toggleClass("has-inspector", this.assistantInspectorOpen); shell.toggleClass("inspector-closed", !this.assistantInspectorOpen);
-      inspectorToggle.setAttribute("aria-pressed", String(this.assistantInspectorOpen));
-    }, "la-context-toggle");
-    const inspectorIcon = header.ownerDocument.createElement("span");
-    inspectorIcon.addClass("la-button-icon"); setIcon(inspectorIcon, "panel-right"); inspectorToggle.prepend(inspectorIcon);
-    inspectorToggle.setAttribute("aria-pressed", String(this.assistantInspectorOpen));
-    const more = iconButton(header, "ellipsis", "助手菜单", () => undefined);
-    more.onclick = event => {
-      const menu = new Menu();
-      menu.addItem(item => item.setTitle("模型与 API 设置").setIcon("settings-2").onClick(() => {
-        this.assistantDrawerOpen = true; shell.addClass("has-drawer"); drawer.addClass("is-open");
-      }));
-      menu.addItem(item => item.setTitle(this.assistantInspectorOpen ? "关闭上下文" : "打开上下文").setIcon("panel-right").onClick(() => inspectorToggle.click()));
-      menu.addItem(item => item.setTitle("刷新会话").setIcon("refresh-cw").onClick(() => void this.refresh()));
-      menu.showAtMouseEvent(event);
+    };
+    const openProviderDrawer = (): void => {
+      this.assistantDrawerOpen = true; shell.addClass("has-drawer"); drawer.addClass("is-open");
     };
 
     const messages = chat.createDiv({cls: "la-message-list la-chat-stream", attr: {"aria-live": "polite"}});
     if (!this.assistantMessages.length) {
       const welcome = messages.createDiv({cls: "la-message la-message--assistant la-chat-welcome"});
-      const avatar = welcome.createDiv({cls: "la-message-avatar"}); setIcon(avatar, "bot");
+      renderAssistantAvatar(welcome, this.app);
       const copy = welcome.createDiv(); copy.createEl("strong", {text: "你好，我是知序 🚀"});
       copy.createEl("p", {text: "你可以直接告诉我想做什么，也可以拖入 PDF、链接、路径、文本或当前笔记。"});
       const quick = copy.createDiv({cls: "la-assistant-quick-actions"});
-      for (const [label, command, icon] of [["整理材料", "帮我整理这些材料，并安排后续学习", "file-scan"], ["找资料", "研究这个主题并生成阅读路线：", "search"], ["存入 Obsidian", "请整理并保存下面的内容：", "database"], ["安排学习", "根据当前状态安排接下来两天的学习", "calendar-check"], ["检查理解", "请检查我的复述：", "badge-check"]]) {
+      const quickActions: Array<{label: string; command: string; icon: string; needsNetwork: boolean}> = [
+        {label: "整理材料", command: "帮我整理这些材料，并安排后续学习", icon: "file-scan", needsNetwork: false},
+        {label: "联网研究", command: "请联网检索可信网页与论文，研究这个主题并生成带来源的阅读路线：", icon: "globe-2", needsNetwork: true},
+        {label: "存入 Obsidian", command: "请整理并保存下面的内容：", icon: "database", needsNetwork: false},
+        {label: "安排学习", command: "根据当前状态安排接下来两天的学习", icon: "calendar-check", needsNetwork: false},
+      ];
+      for (const {label, command, icon, needsNetwork} of quickActions) {
         const control = quick.createEl("button"); setIcon(control.createSpan(), icon); control.createSpan({text: label});
-        control.onclick = () => { input.value = command; this.assistantDraft = command; input.focus(); };
+        control.onclick = () => {
+          if (needsNetwork) {
+            this.assistantNetworkEnabled = true; paintNetworkToggle();
+            networkSafetyText?.setText("联网来源不可信 · 写入可撤销");
+          }
+          input.value = command; this.assistantDraft = command; input.focus();
+        };
       }
     } else {
       const hidden = Math.max(0, this.assistantMessages.length - this.assistantVisibleMessageLimit);
@@ -2000,7 +2098,7 @@ export class LearningAgentMainView extends ItemView {
       iconButton(chip, "x", "移除附件", () => { this.pendingAttachments = this.pendingAttachments.filter(item => item.id !== attachment.id); chip.remove(); });
     }
     const composer = dock.createDiv({cls: "la-assistant-composer la-unified-composer"});
-    const input = composer.createEl("textarea", {attr: {placeholder: "告诉我你想做什么，或拖入文件、链接、路径、文本…", "aria-label": "知序统一输入"}});
+    const input = composer.createEl("textarea", {attr: {placeholder: "今天帮你做些什么？  @ 引用对话文件，/ 调用技能与指令", "aria-label": "知序统一输入"}});
     input.value = this.assistantDraft;
     input.oninput = () => {
       this.assistantDraft = input.value;
@@ -2008,23 +2106,272 @@ export class LearningAgentMainView extends ItemView {
     };
     const composerTools = composer.createDiv({cls: "la-composer-tools"});
     const fileInput = composerTools.createEl("input", {type: "file", cls: "la-visually-hidden", attr: {multiple: "true", accept: ".pdf,.md,.txt,.json,text/plain,text/markdown,application/pdf"}});
-    const attach = iconButton(composerTools, "paperclip", "添加附件", () => fileInput.click());
     const currentFile = this.app.workspace.getActiveFile();
-    iconButton(composerTools, "file-text", "引用当前笔记", () => {
+    const citeCurrentNote = (): void => {
       if (!currentFile) { new Notice("请先打开一篇 Obsidian 笔记"); return; }
       if (!isAssistantReadableVaultPath(currentFile.path)) { new Notice("当前笔记不在 Agent 允许读取的知识目录中"); return; }
       input.value = `${input.value}${input.value ? "\n" : ""}@${currentFile.path}`; this.assistantDraft = input.value; input.focus();
-    });
-    iconButton(composerTools, "at-sign", "选择笔记", () => {
+    };
+    const chooseVaultNote = (): void => {
       new VaultNotePickerModal(this.app, file => {
         input.value = `${input.value}${input.value ? "\n" : ""}@${file.path}`;
         this.assistantDraft = input.value;
         input.focus();
       }).open();
+    };
+    const attach = iconButton(composerTools, "plus", "添加内容或打开工具", () => undefined);
+    attach.addClass("la-composer-plus");
+    attach.onclick = event => {
+      const menu = new Menu();
+      menu.addItem(item => item.setTitle("添加文件").setIcon("paperclip").onClick(() => fileInput.click()));
+      menu.addItem(item => item.setTitle("引用当前笔记").setIcon("file-text").onClick(citeCurrentNote));
+      menu.addItem(item => item.setTitle("选择 Vault 笔记").setIcon("at-sign").onClick(chooseVaultNote));
+      menu.addItem(item => item.setTitle("插入命令").setIcon("slash").onClick(() => {
+        input.value = `${input.value}/`; this.assistantDraft = input.value; input.focus();
+      }));
+      menu.addSeparator();
+      menu.addItem(item => item
+        .setTitle(this.assistantNetworkEnabled ? "关闭联网" : "开启联网")
+        .setIcon(this.assistantNetworkEnabled ? "shield-check" : "globe-2")
+        .onClick(toggleNetwork));
+      menu.addItem(item => item
+        .setTitle(this.assistantReasoningMode === "deep" ? "切换为自动思考" : "开启深度思考")
+        .setIcon("brain-circuit")
+        .onClick(() => {
+          this.assistantReasoningMode = this.assistantReasoningMode === "deep" ? "auto" : "deep";
+          paintModelTrigger();
+        }));
+      menu.addItem(item => item
+        .setTitle(this.assistantInspectorOpen ? "关闭上下文" : "打开上下文")
+        .setIcon("panel-right")
+        .onClick(() => setInspectorOpen(!this.assistantInspectorOpen)));
+      menu.addItem(item => item.setTitle("历史会话").setIcon("history").onClick(() => {
+        window.setTimeout(() => showHistoryMenu(event), 0);
+      }));
+      menu.addItem(item => item.setTitle("新会话").setIcon("message-square-plus").onClick(() => void startNewConversation()));
+      if (this.assistantLiveRun.status === "running" && this.assistantLiveRun.runId) {
+        menu.addSeparator();
+        menu.addItem(item => item.setTitle("调整当前任务").setIcon("corner-down-left").onClick(() => {
+          input.focus();
+          input.setAttribute("placeholder", "输入后按 Enter，在下一个安全工具边界调整当前任务");
+        }));
+        menu.addItem(item => item.setTitle("完成后继续").setIcon("list-plus").onClick(() => {
+          const text = input.value.trim();
+          if (!text) { new Notice("请先输入要在当前任务完成后继续处理的内容"); input.focus(); return; }
+          const runId = this.assistantLiveRun.runId;
+          void this.agentRuntime.followUp(runId, text).then(() => {
+            const user = messages.createDiv({cls: "la-message la-message--user"});
+            user.createDiv({cls: "la-message-copy", text: `完成后继续：${text}`});
+            input.value = ""; this.assistantDraft = "";
+            new Notice("已加入完成后队列");
+          }).catch(error => new Notice(`加入后续任务失败：${error.message}`));
+        }));
+      }
+      menu.addSeparator();
+      menu.addItem(item => item.setTitle("模型与 API 设置").setIcon("settings-2").onClick(openProviderDrawer));
+      menu.addItem(item => item.setTitle("刷新会话").setIcon("refresh-cw").onClick(() => void this.refresh()));
+      menu.showAtMouseEvent(event);
+    };
+    const permissionPicker = composerTools.createDiv({cls: "la-composer-permission-picker"});
+    const permissionButton = permissionPicker.createEl("button", {
+      cls: "la-composer-permission",
+      attr: {
+        type: "button",
+        "aria-haspopup": "menu",
+        "aria-expanded": "false",
+      },
     });
-    iconButton(composerTools, "slash", "命令", () => { input.value = `${input.value}/`; this.assistantDraft = input.value; input.focus(); });
-    const safetyText = composerTools.createSpan({cls: "la-composer-local", text: "本地优先 · 低风险写入可撤销"});
-    const send = iconButton(composerTools, "send", "发送", () => void sendMessage());
+    const permissionPopover = permissionPicker.createDiv({
+      cls: "la-permission-popover",
+      attr: {role: "menu", tabindex: "-1", "aria-label": "当前任务权限模式"},
+    });
+    permissionPopover.hidden = true;
+    const paintPermissionButton = (): void => {
+      permissionButton.empty();
+      setIcon(permissionButton.createSpan(), this.assistantPermissionMode === "allow_all" ? "shield-check" : "shield-question");
+      permissionButton.createSpan({text: this.assistantPermissionMode === "allow_all" ? "全部允许" : "请求权限"});
+      setIcon(permissionButton.createSpan({cls: "la-composer-permission__chevron"}), "chevron-up");
+      permissionButton.toggleClass("is-all", this.assistantPermissionMode === "allow_all");
+      permissionButton.setAttribute("aria-label", this.assistantPermissionMode === "allow_all"
+        ? "当前任务全部允许；点击修改"
+        : "需要敏感能力时请求权限；点击修改");
+    };
+    const rebuildPermissionPopover = (): void => {
+      permissionPopover.empty();
+      const intro = permissionPopover.createDiv({cls: "la-permission-popover__intro"});
+      intro.createEl("strong", {text: "当前任务权限"});
+      intro.createEl("p", {text: this.assistantPermissionMode === "allow_all"
+        ? "安全且可逆的能力可在当前 Run 内自动扩展；受保护知识、任意外部副作用和越界路径仍然禁止。"
+        : "默认在受控沙箱中运行。需要写入、整理目录或使用开发工作区时，知序会暂停并在最新对话下方请求；批准后原地继续。"});
+      const addChoice = (modeValue: "ask" | "allow_all", label: string, detail: string, icon: string): void => {
+        const row = permissionPopover.createEl("button", {
+          cls: `la-permission-option ${this.assistantPermissionMode === modeValue ? "is-selected" : ""}`,
+          attr: {type: "button", role: "menuitemradio", "aria-checked": String(this.assistantPermissionMode === modeValue)},
+        });
+        setIcon(row.createSpan({cls: "la-permission-option__icon"}), icon);
+        const copy = row.createSpan({cls: "la-permission-option__copy"});
+        copy.createSpan({text: label});
+        copy.createEl("small", {text: detail});
+        if (this.assistantPermissionMode === modeValue) setIcon(row.createSpan({cls: "la-permission-option__check"}), "check");
+        row.onclick = () => {
+          this.assistantPermissionMode = modeValue;
+          paintPermissionButton();
+          permissionPopover.hidden = true;
+          permissionButton.setAttribute("aria-expanded", "false");
+        };
+      };
+      addChoice("ask", "请求权限", "遇到敏感操作时暂停，确认后同一任务继续", "shield-question");
+      addChoice("allow_all", "当前任务全部允许", "仅开放当前 Run 的安全可逆能力", "shield-check");
+    };
+    paintPermissionButton();
+    rebuildPermissionPopover();
+    permissionButton.onclick = () => {
+      const open = permissionPopover.hidden;
+      if (open) rebuildPermissionPopover();
+      permissionPopover.hidden = !open;
+      permissionButton.setAttribute("aria-expanded", String(open));
+      if (open) permissionPopover.focus();
+    };
+    permissionPicker.addEventListener("focusout", () => window.setTimeout(() => {
+      if (!permissionPicker.contains(document.activeElement)) {
+        permissionPopover.hidden = true;
+        permissionButton.setAttribute("aria-expanded", "false");
+      }
+    }, 0));
+    permissionPicker.onkeydown = event => {
+      if (event.key === "Escape") {
+        permissionPopover.hidden = true;
+        permissionButton.setAttribute("aria-expanded", "false");
+        permissionButton.focus();
+      }
+    };
+    const safetyText = composerTools.createSpan({cls: "la-composer-local", text: this.assistantNetworkEnabled ? "联网来源不可信 · 写入可撤销" : "本地优先 · 低风险写入可撤销"});
+    networkSafetyText = safetyText;
+    const mode = composerTools.createEl("button", {
+      cls: `la-composer-mode ${this.assistantNetworkEnabled ? "is-enabled" : ""}`,
+      attr: {
+        type: "button",
+        "aria-pressed": String(this.assistantNetworkEnabled),
+        "aria-label": this.assistantNetworkEnabled ? "关闭联网检索" : "开启联网检索",
+      },
+    });
+    networkToggleButton = mode;
+    mode.onclick = toggleNetwork;
+    networkStatusIcon = mode.createSpan();
+    networkStatusLabel = mode.createSpan();
+    const enabledProfiles = profiles.filter(item => item.enabled);
+    let selectedProfileId = String(routes.assistant_chat?.profileId ?? routes.assistant?.profileId ?? "");
+    if (!selectedProfileId || !enabledProfiles.some(item => item.id === selectedProfileId)) {
+      selectedProfileId = String(enabledProfiles[0]?.id ?? "");
+    }
+    const modelPicker = composerTools.createDiv({cls: "la-model-picker"});
+    const modelTrigger = modelPicker.createEl("button", {
+      cls: "la-composer-model",
+      attr: {type: "button", "aria-label": "选择助手模型", "aria-haspopup": "listbox", "aria-expanded": "false"},
+    });
+    const modelTriggerIcon = modelTrigger.createSpan({cls: "la-model-icon"});
+    const modelTriggerLabel = modelTrigger.createSpan({cls: "la-composer-model__label"});
+    const modelTriggerChevron = modelTrigger.createSpan({cls: "la-composer-model__chevron"}); setIcon(modelTriggerChevron, "chevron-up");
+    const modelPopover = modelPicker.createDiv({cls: "la-model-popover", attr: {role: "listbox", tabindex: "-1", "aria-label": "助手模型列表"}});
+    modelPopover.hidden = true;
+    const paintModelTrigger = (): void => {
+      const selected = enabledProfiles.find(item => item.id === selectedProfileId);
+      modelTriggerIcon.empty();
+      if (this.assistantModelAuto) setIcon(modelTriggerIcon, "sparkles");
+      else renderModelBrand(modelTriggerIcon, selected, this.app);
+      const modelLabel = this.assistantModelAuto ? "Auto" : (selected?.displayName || selected?.defaultModel || "选择模型");
+      modelTriggerLabel.setText(this.assistantReasoningMode === "deep" ? `${modelLabel} · 深度` : modelLabel);
+      modelTrigger.toggleClass("is-deep", this.assistantReasoningMode === "deep");
+      modelTrigger.title = this.assistantModelAuto
+        ? `Auto · ${selected?.displayName || selected?.defaultModel || "按助手路由选择"}${this.assistantReasoningMode === "deep" ? " · 深度思考" : ""}`
+        : `${selected?.displayName || "模型"} · ${selected?.defaultModel || "手动模型"}${this.assistantReasoningMode === "deep" ? " · 深度思考" : ""}`;
+    };
+    const closeModelPopover = (): void => {
+      modelPopover.hidden = true;
+      modelTrigger.setAttribute("aria-expanded", "false");
+    };
+    const rebuildModelPopover = (): void => {
+      modelPopover.empty();
+      const reasoningRow = modelPopover.createEl("button", {
+        cls: "la-model-popover__reasoning",
+        attr: {type: "button", role: "switch", "aria-checked": String(this.assistantReasoningMode === "deep")},
+      });
+      const reasoningIcon = reasoningRow.createSpan({cls: "la-model-icon"}); setIcon(reasoningIcon, "brain-circuit");
+      const reasoningCopy = reasoningRow.createSpan({cls: "la-model-popover__reasoning-copy"});
+      reasoningCopy.createSpan({text: "深度思考"});
+      reasoningCopy.createEl("small", {text: "提高推理预算，并要求证据与结果校验"});
+      const reasoningSwitch = reasoningRow.createSpan({cls: `la-model-switch ${this.assistantReasoningMode === "deep" ? "is-on" : ""}`, attr: {"aria-hidden": "true"}}); reasoningSwitch.createSpan();
+      reasoningRow.onclick = () => {
+        this.assistantReasoningMode = this.assistantReasoningMode === "deep" ? "auto" : "deep";
+        paintModelTrigger(); rebuildModelPopover();
+      };
+      const autoRow = modelPopover.createEl("button", {cls: "la-model-popover__auto", attr: {type: "button", role: "option", "aria-selected": String(this.assistantModelAuto)}});
+      const autoIcon = autoRow.createSpan({cls: "la-model-icon"}); setIcon(autoIcon, "sparkles");
+      autoRow.createSpan({cls: "la-model-popover__label", text: "Auto 模式"});
+      const autoSwitch = autoRow.createSpan({cls: `la-model-switch ${this.assistantModelAuto ? "is-on" : ""}`, attr: {"aria-hidden": "true"}}); autoSwitch.createSpan();
+      autoRow.onclick = () => {
+        this.assistantModelAuto = !this.assistantModelAuto;
+        paintModelTrigger(); rebuildModelPopover();
+      };
+      const list = modelPopover.createDiv({cls: "la-model-popover__list"});
+      if (!enabledProfiles.length) list.createDiv({cls: "la-model-popover__empty", text: "尚未配置可用模型"});
+      for (const profile of enabledProfiles) {
+        const row = list.createEl("button", {
+          cls: `la-model-option ${profile.id === selectedProfileId && !this.assistantModelAuto ? "is-selected" : ""}`,
+          attr: {type: "button", role: "option", "aria-selected": String(profile.id === selectedProfileId && !this.assistantModelAuto)},
+        });
+        const icon = row.createSpan({cls: "la-model-icon"}); renderModelBrand(icon, profile, this.app);
+        const copy = row.createSpan({cls: "la-model-option__copy"});
+        copy.createSpan({cls: "la-model-option__name", text: profile.displayName || profile.defaultModel || "自定义模型"});
+        if (profile.defaultModel && profile.defaultModel !== profile.displayName) copy.createSpan({cls: "la-model-option__model", text: profile.defaultModel});
+        if (profile.id === selectedProfileId && !this.assistantModelAuto) { const check = row.createSpan({cls: "la-model-option__check"}); setIcon(check, "check"); }
+        row.onclick = () => {
+          selectedProfileId = profile.id;
+          this.assistantModelAuto = false;
+          paintModelTrigger(); closeModelPopover();
+          void this.settingsService.updateModelRoute("assistant_chat", selectedProfileId).catch(error => new Notice(`模型切换失败：${error.message}`));
+        };
+      }
+      const configure = modelPopover.createEl("button", {cls: "la-model-popover__configure", attr: {type: "button"}});
+      const configureIcon = configure.createSpan(); setIcon(configureIcon, "pencil"); configure.createSpan({text: "配置自定义模型"});
+      configure.onclick = () => { closeModelPopover(); openProviderDrawer(); };
+    };
+    rebuildModelPopover(); paintModelTrigger();
+    modelTrigger.onclick = () => {
+      const open = modelPopover.hidden;
+      if (open) { rebuildModelPopover(); modelPopover.hidden = false; modelPopover.focus(); }
+      else closeModelPopover();
+      modelTrigger.setAttribute("aria-expanded", String(open));
+    };
+    modelPicker.addEventListener("focusout", () => window.setTimeout(() => {
+      if (!modelPicker.contains(document.activeElement)) closeModelPopover();
+    }, 0));
+    modelPicker.onkeydown = event => {
+      if (event.key === "Escape") { closeModelPopover(); modelTrigger.focus(); }
+    };
+    const send = iconButton(composerTools, "arrow-up", "发送", () => void sendMessage());
+    send.addClass("la-composer-submit");
+    const paintSendButton = (running: boolean): void => {
+      send.empty();
+      send.toggleClass("is-running", running);
+      send.setAttribute("aria-label", running ? "停止生成" : "发送");
+      send.title = running ? "停止生成" : "发送";
+      if (running) {
+        send.createSpan({cls: "la-composer-submit__stop", attr: {"aria-hidden": "true"}});
+      } else {
+        send.createEl("img", {
+          cls: "la-composer-submit__arrow",
+          attr: {
+            src: SEND_BUTTON_IDLE_VECTOR_DATA_URL,
+            alt: "",
+            draggable: "false",
+            "aria-hidden": "true",
+          },
+        });
+      }
+    };
+    paintSendButton(false);
+    paintNetworkToggle();
 
     const ensureConversation = async (): Promise<string> => {
       if (this.conversationId) return this.conversationId;
@@ -2055,6 +2402,9 @@ export class LearningAgentMainView extends ItemView {
       if (/^https?:\/\/\S+$/i.test(text)) {
         event.preventDefault();
         void (async () => {
+          this.assistantNetworkEnabled = true;
+          paintNetworkToggle();
+          safetyText.setText("联网来源不可信 · 写入可撤销");
           const conversationId = await ensureConversation();
           const response = await this.client.post<any>("/intake/attachments", {conversation_id: conversationId, url: text, allow_network: true});
           this.pendingAttachments.push(response.attachment); input.value = `${input.value}${input.value ? "\n" : ""}请研究这个链接并整理关键内容`; this.assistantDraft = input.value; void this.refresh();
@@ -2065,18 +2415,35 @@ export class LearningAgentMainView extends ItemView {
     const sendMessage = async (): Promise<void> => {
       let content = input.value.trim();
       const regenerateMessageId = this.assistantRegenerateMessageId;
+      if (this.assistantSubmitInFlight && this.assistantLiveRun.status !== "running") return;
       if (this.assistantLiveRun.status === "running") {
+        const activeRunId = this.assistantLiveRun.runId;
+        if (content && activeRunId) {
+          await this.agentRuntime.steer(activeRunId, content);
+          const user = messages.createDiv({cls: "la-message la-message--user"});
+          user.createDiv({cls: "la-message-copy", text: content});
+          input.value = ""; this.assistantDraft = "";
+          input.setAttribute("placeholder", "运行中：输入可调整当前任务；也可从 + 选择完成后继续");
+          messages.scrollTop = messages.scrollHeight;
+          return;
+        }
         this.abort?.abort();
+        if (activeRunId) {
+          await this.agentRuntime.cancel(activeRunId).catch(() => undefined);
+        }
         this.assistantLiveRun = cancelledAssistantRun(this.assistantLiveRun);
         const traces = messages.querySelectorAll<HTMLElement>(".la-live-trace");
         const activeTrace = traces.item(traces.length - 1);
         if (activeTrace) this.paintAssistantLiveTrace(activeTrace, this.assistantLiveRun);
-        setIcon(send, "send"); send.setAttribute("aria-label", "发送"); send.title = "发送";
+        paintSendButton(false);
         return;
       }
       if (!content && !this.pendingAttachments.length) return;
-      input.disabled = true;
+      this.assistantSubmitInFlight = true;
+      send.disabled = true;
+      const submittedDraft = content;
       let progressiveMarkdown: ProgressiveAssistantMarkdown | null = null;
+      let awaitingInlineConfirmation = false;
       try {
         const conversationId = await ensureConversation();
         if (!this.pendingAttachments.length && /^\/(?:Users|Volumes)\/[^\n]+$/.test(content)) {
@@ -2088,33 +2455,6 @@ export class LearningAgentMainView extends ItemView {
         }
         const mentionedNotePath = referencedVaultNotePath(content);
         const contextualNotePath = currentFile && isAssistantReadableVaultPath(currentFile.path) ? currentFile.path : mentionedNotePath;
-        const governedWrite = !regenerateMessageId && /(保存|写入|存入\s*Obsidian|更新(?:到|进|当前)|修改(?:当前)?笔记|应用修改|整理到)/i.test(content);
-        if (governedWrite) {
-          const user = messages.createDiv({cls: "la-message la-message--user"}); user.createEl("p", {text: content || "处理这些附件"});
-          const trace = messages.createEl("section", {cls: "la-live-trace is-running", attr: {"aria-label": "受控写入任务"}});
-          this.paintAssistantLiveTrace(trace, {
-            ...initialAssistantLiveRun(), status: "running", started: true,
-            steps: [
-              {id: "context", label: "理解目标与来源", status: "running"},
-              {id: "proposal", label: "生成 Change Set 与 Diff", status: "pending"},
-              {id: "verify", label: "校验权限与目标状态", status: "pending"},
-            ],
-          });
-          const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-          const result = await this.client.post<any>("/intake/submit", {
-            message: content || "请整理这些附件并生成写入提案",
-            conversation_id: conversationId, mode: this.assistantMode,
-            attachments: this.pendingAttachments.map(item => ({attachment_id: item.id, kind: item.kind, display_name: item.displayName})),
-            references: contextualNotePath ? [{kind: "vault_note", path: contextualNotePath}] : [],
-            active_note: {path: contextualNotePath, selection: markdownView?.editor?.getSelection() ?? ""},
-            active_artifact_id: resultActiveArtifact(this.assistantArtifacts),
-            options: {available_minutes: 25, allow_network: true},
-          }, `intake-${Date.now()}-${Math.random().toString(16).slice(2)}`);
-          this.assistantRun = result.run; this.assistantArtifacts = result.artifacts ?? [];
-          this.assistantMessages = result.conversation?.messages ?? [];
-          this.assistantTaskThread = result.task_thread ?? null; this.assistantArtifactGroup = result.artifact_group ?? null;
-          this.pendingAttachments = []; input.value = ""; this.assistantDraft = ""; await this.refresh(); return;
-        }
         if (!regenerateMessageId) {
           const user = messages.createDiv({cls: "la-message la-message--user"});
           const userCopy = user.createDiv({cls: "la-message-copy"}); userCopy.createEl("p", {text: content || "处理这些附件"});
@@ -2122,16 +2462,23 @@ export class LearningAgentMainView extends ItemView {
         }
         const trace = messages.createEl("section", {cls: "la-live-trace is-running", attr: {"aria-label": "任务执行进度"}});
         const assistant = messages.createDiv({cls: "la-message la-message--assistant la-message--streaming"});
-        const avatar = assistant.createDiv({cls: "la-message-avatar"}); setIcon(avatar, "sparkles");
+        renderAssistantAvatar(assistant, this.app);
         const assistantCopy = assistant.createDiv({cls: "la-message-copy"});
         const markdown = assistantCopy.createDiv({cls: "la-message-markdown"});
         markdown.createSpan({cls: "la-stream-caret", text: "正在连接已选模型…"});
+        const confirmationHost = messages.createDiv({cls: "la-inline-confirmation-host"});
+        confirmationHost.hidden = true;
+        let disposeConfirmation: (() => void) | undefined;
         progressiveMarkdown = new ProgressiveAssistantMarkdown(this.markdown, markdown);
         messages.scrollTop = messages.scrollHeight;
         this.assistantLiveRun = initialAssistantLiveRun();
         this.paintAssistantLiveTrace(trace, this.assistantLiveRun);
+        input.value = "";
+        this.assistantDraft = "";
         this.abort?.abort(); this.abort = new AbortController();
-        setIcon(send, "square"); send.setAttribute("aria-label", "停止生成"); send.title = "停止生成";
+        paintSendButton(true);
+        send.disabled = false;
+        input.setAttribute("placeholder", "运行中：输入可调整当前任务；也可从 + 选择完成后继续");
         const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
         const selection = markdownView?.editor?.getSelection() ?? "";
         let frame = 0;
@@ -2140,32 +2487,87 @@ export class LearningAgentMainView extends ItemView {
           progressiveMarkdown?.push(this.assistantLiveRun.content || "正在生成…");
           if (messages.scrollHeight - messages.scrollTop - messages.clientHeight < 180) messages.scrollTop = messages.scrollHeight;
         };
-        await this.client.streamAssistant({
+        const turn = this.agentRuntime.prepareTurn({
           message: content || "请处理这些附件并告诉我下一步",
-          regenerate_message_id: regenerateMessageId || undefined,
-          conversation_id: conversationId,
-          profile_id: selector.value,
-          mode: this.assistantMode,
-          attachments: this.pendingAttachments.map(item => ({attachment_id: item.id, kind: item.kind, display_name: item.displayName})),
-          references: contextualNotePath ? [{kind: "vault_note", path: contextualNotePath}] : [],
-          active_note: {path: contextualNotePath, selection},
-          active_artifact_id: resultActiveArtifact(this.assistantArtifacts),
-          options: {available_minutes: 25, allow_network: true},
-        }, event => {
+          regenerateMessageId: regenerateMessageId || undefined,
+          conversationId,
+          profileId: selectedProfileId,
+          model: enabledProfiles.find(item => item.id === selectedProfileId)?.defaultModel || undefined,
+          attachments: this.pendingAttachments.map(item => ({
+            attachment_id: item.id,
+            kind: item.kind,
+            display_name: item.displayName,
+          })),
+          activeNote: {path: contextualNotePath, selection},
+          options: {
+            available_minutes: 25,
+            allow_network: this.assistantNetworkEnabled,
+            mode: this.assistantMode,
+            reasoning_mode: this.assistantReasoningMode,
+            permission_mode: this.assistantPermissionMode,
+          },
+        });
+        for await (const chunk of this.agentRuntime.query(turn, this.abort.signal)) {
+          const event = agentChunkToAssistantEvent(chunk);
           this.assistantLiveRun = reduceAssistantStream(this.assistantLiveRun, event);
           this.paintAssistantLiveTrace(trace, this.assistantLiveRun);
           if (event.type === "context.resolved") {
             this.assistantContext = {...(this.assistantContext ?? {}), focus: event.focus, currentUnderstanding: event.understanding};
           }
+          if (
+            event.type === "tool.completed" &&
+            ["search_public_web", "search_academic_sources", "fetch_public_url"].includes(String(event.tool ?? "")) &&
+            this.assistantInspectorTab === "sources"
+          ) {
+            context.empty();
+            this.renderAssistantContext(context, loadedConversation, primaryArtifact, input);
+          }
           if (event.type === "message.delta" && !frame) frame = window.requestAnimationFrame(paintDelta);
-        }, this.abort.signal);
-        if (frame) { window.cancelAnimationFrame(frame); paintDelta(); }
+          if (event.type === "inline.confirmation.required" && this.assistantLiveRun.confirmation) {
+            awaitingInlineConfirmation = true;
+            dock.addClass("is-waiting-confirmation");
+            input.disabled = true;
+            disposeConfirmation?.();
+            confirmationHost.hidden = false;
+            confirmationHost.empty();
+            const confirmation = this.assistantLiveRun.confirmation;
+            const handlers: Parameters<typeof renderInlineAgentConfirmation>[2] = {
+              confirm: async (runId, scope) => resumeInlineConfirmation(runId, true, scope),
+              reject: async runId => resumeInlineConfirmation(runId, false),
+              answer: async (runId, answer) => resumeInlineConfirmation(runId, true, "", answer),
+            };
+            if (confirmation.kind !== "permission" && confirmation.proposal_id) {
+              handlers.openDiff = async proposalId => {
+                const detail = await this.client.get<any>(`/change-sets/${encodeURIComponent(proposalId)}/diff`);
+                const files = Array.isArray(detail.diff?.files) ? detail.diff.files : [];
+                const preview = files.map((item: any) => `${String(item.path ?? "")}  +${Number(item.added ?? 0)} -${Number(item.deleted ?? 0)}\n\n${String(item.diff ?? "")}`).join("\n\n");
+                new TextPreviewModal(this.app, "修改预览", preview || "暂无候选写入").open();
+              };
+            }
+            disposeConfirmation = renderInlineAgentConfirmation(confirmationHost, confirmation, handlers);
+            messages.scrollTop = messages.scrollHeight;
+          } else if (event.type === "inline.confirmation.resolved") {
+            awaitingInlineConfirmation = false;
+            disposeConfirmation?.();
+            disposeConfirmation = undefined;
+            confirmationHost.empty();
+            confirmationHost.hidden = true;
+            dock.removeClass("is-waiting-confirmation");
+            input.disabled = false;
+          }
+        }
         if (this.assistantLiveRun.status === "failed") throw new Error(this.assistantLiveRun.error?.code ?? "assistant_stream_failed");
         if (this.assistantLiveRun.content) await progressiveMarkdown.flush(this.assistantLiveRun.content);
         assistant.removeClass("la-message--streaming");
-        const completedMessage = this.assistantLiveRun.completedMessage ?? {
+        const completedMessageBase = this.assistantLiveRun.completedMessage ?? {
           id: this.assistantLiveRun.messageId, role: "assistant", content: this.assistantLiveRun.content,
           createdAt: new Date().toISOString(),
+        };
+        const completedMessage: Record<string, any> = {
+          ...completedMessageBase,
+          reasoningBlocks: this.assistantLiveRun.reasoningBlocks
+            .filter(block => block.content.trim())
+            .map(block => ({...block, status: "completed"})),
         };
         assistantCopy.createEl("small", {text: completedMessage.createdAt ? new Date(completedMessage.createdAt).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) : ""});
         this.renderAssistantMessageActions(assistantCopy, completedMessage, {content});
@@ -2181,6 +2583,10 @@ export class LearningAgentMainView extends ItemView {
           return;
         }
         const failure = humanizeAssistantError(String(error.code ?? error.message ?? ""), String(error.message ?? ""), true);
+        if (!input.value.trim() && submittedDraft) {
+          input.value = submittedDraft;
+          this.assistantDraft = submittedDraft;
+        }
         const failed = messages.createDiv({cls: "la-assistant-recovery"});
         setIcon(failed.createSpan({cls: "la-assistant-recovery__icon"}), "circle-alert");
         const copy = failed.createDiv(); copy.createEl("strong", {text: failure.title}); copy.createEl("p", {text: failure.message});
@@ -2190,17 +2596,39 @@ export class LearningAgentMainView extends ItemView {
         const technical = copy.createEl("details", {cls: "la-technical"}); technical.createEl("summary", {text: "技术详情"}); technical.createEl("code", {text: String(failure.technicalCode ?? "assistant_error")});
       } finally {
         progressiveMarkdown?.dispose();
-        this.abort = null; input.disabled = false; setIcon(send, "send"); send.setAttribute("aria-label", "发送"); send.title = "发送"; input.focus();
+        this.abort = null;
+        this.assistantSubmitInFlight = false;
+        send.disabled = false;
+        input.disabled = awaitingInlineConfirmation;
+        paintSendButton(false);
+        input.setAttribute("placeholder", "今天帮你做些什么？  @ 引用对话文件，/ 调用技能与指令");
+        if (!awaitingInlineConfirmation) input.focus();
+      }
+    };
+    const resumeInlineConfirmation = async (
+      runId: string,
+      confirmed: boolean,
+      scope = "",
+      answer = "",
+    ): Promise<void> => {
+      for await (const chunk of this.agentRuntime.confirm(runId, confirmed, undefined, answer, scope)) {
+          const event = agentChunkToAssistantEvent(chunk);
+          this.assistantLiveRun = reduceAssistantStream(this.assistantLiveRun, event);
       }
     };
     const resultActiveArtifact = (artifacts: any[]): string => String([...artifacts].reverse().find(item => !["change_set", "quiz"].includes(item.type))?.id ?? "");
     input.onkeydown = event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } };
-    const safety = dock.createDiv({cls: "la-assistant-safety"}); setIcon(safety.createSpan(), "shield-check"); safety.createSpan({text: "低风险维护可撤销；正式知识和受保护笔记仍需审核。"});
+    const safety = dock.createDiv({cls: "la-assistant-safety"}); setIcon(safety.createSpan(), "shield-check"); safety.createSpan({text: "低风险维护由 Harness 校验并可撤销；受保护知识会在当前对话中请求授权。"});
     this.renderAssistantContext(context, loadedConversation, primaryArtifact, input);
     this.renderProviderDrawer(drawer, profiles, routes);
   }
 
   private paintAssistantLiveTrace(parent: HTMLElement, run: AssistantLiveRun): void {
+    const previousDetails = parent.querySelector<HTMLDetailsElement>(".la-live-trace__details");
+    const previousProviderReasoning = parent.querySelector<HTMLDetailsElement>(".la-provider-reasoning");
+    const beganRunning = parent.hasClass("is-idle") && run.status === "running";
+    const detailsOpen = beganRunning || (previousDetails?.open ?? run.status === "running");
+    const providerReasoningOpen = previousProviderReasoning?.open ?? run.status === "running";
     parent.empty();
     parent.className = `la-live-trace is-${run.status}`;
     const head = parent.createDiv({cls: "la-live-trace__head"});
@@ -2209,19 +2637,93 @@ export class LearningAgentMainView extends ItemView {
     const copy = head.createDiv();
     copy.createEl("strong", {text: run.status === "completed" ? "知序已完成处理" : run.status === "failed" ? "处理未完成" : run.status === "cancelled" ? "已停止生成" : "知序正在处理"});
     copy.createEl("small", {text: run.model ? `模型 · ${run.model}` : "正在建立本地上下文"});
-    const details = parent.createEl("details", {cls: "la-live-trace__details", attr: run.status === "running" ? {open: ""} : {}});
-    details.createEl("summary", {text: run.status === "running" ? "查看过程" : "执行记录"});
+    const details = parent.createEl("details", {cls: "la-live-trace__details"});
+    details.open = detailsOpen;
+    details.createEl("summary", {text: "推理与执行过程"});
+    details.createDiv({
+      cls: "la-live-trace__disclaimer",
+      text: "模型推理仅在供应商真实返回独立 reasoning block 时出现；工具状态来自实际运行事件。",
+    });
+    this.renderProviderReasoning(details, run.reasoningBlocks, providerReasoningOpen);
+    const thinking = details.createDiv({cls: "la-live-trace__thinking"});
+    const sourceCount = run.context?.sources?.length ?? 0;
+    const thinkingText = run.status === "running"
+      ? run.content
+        ? "已取得所需观察结果，正在组织回答"
+        : run.toolCalls.some(item => item.status === "running")
+          ? "正在根据工具观察推进当前任务"
+          : run.context
+            ? `已装配当前上下文${sourceCount ? `与 ${sourceCount} 条来源` : ""}，正在决定下一步`
+            : "正在理解请求并装配当前笔记、附件与会话上下文"
+      : run.status === "completed"
+        ? "已完成上下文理解、工具执行与结果校验"
+        : run.status === "cancelled"
+          ? "任务已由你停止，已返回的内容仍然保留"
+          : run.status === "failed"
+            ? "执行未完成；可展开下方步骤定位失败环节"
+            : "等待任务开始";
+    setIcon(thinking.createSpan(), "brain-circuit");
+    const thinkingCopy = thinking.createDiv();
+    thinkingCopy.createEl("strong", {text: "执行摘要"});
+    thinkingCopy.createEl("p", {text: thinkingText});
+    if (run.plannerRound > 0) thinkingCopy.createEl("small", {text: `已完成 ${run.plannerRound} 轮观察与重新规划`});
     const steps = details.createDiv({cls: "la-live-trace__steps"});
-    const rendered = run.steps.length ? run.steps : [{id: "pending", label: "理解当前请求与上下文", status: "running"}];
+    const fallbackStatus = run.status === "completed"
+      ? "completed"
+      : run.status === "failed"
+        ? "failed"
+        : run.status === "cancelled"
+          ? "cancelled"
+          : "running";
+    const rendered = run.steps.length ? run.steps : [{id: "pending", label: "理解当前请求与上下文", status: fallbackStatus}];
     for (const step of rendered) {
       const row = steps.createDiv({cls: `la-live-trace__step is-${step.status}`});
       setIcon(row.createSpan(), step.status === "completed" ? "check" : step.status === "failed" ? "x" : step.status === "running" ? "loader-circle" : "circle");
       row.createSpan({text: step.label});
-      row.createEl("small", {text: step.status === "completed" ? "完成" : step.status === "running" ? "进行中" : step.status === "failed" ? "失败" : "等待"});
+      const call = step.id.startsWith("tool:") ? run.toolCalls.find(item => `tool:${item.id}` === step.id) : undefined;
+      row.createEl("small", {text: call?.summary || (step.status === "completed" ? "完成" : step.status === "running" ? "进行中" : step.status === "failed" ? "失败" : "等待")});
+    }
+    const appliedCall = [...run.toolCalls].reverse().find(
+      item => item.tool === "apply_vault_change" && item.status === "completed",
+    );
+    const nestedResult = appliedCall?.result?.result;
+    const action = nestedResult && typeof nestedResult === "object"
+      ? nestedResult as Record<string, any>
+      : null;
+    if (action?.actionId && action.state === "applied") {
+      const result = details.createDiv({cls: "la-live-trace__action-result"});
+      const resultHead = result.createDiv({cls: "la-live-trace__action-result-head"});
+      setIcon(resultHead.createSpan(), "file-check-2");
+      const resultCopy = resultHead.createDiv();
+      resultCopy.createEl("strong", {text: "已整理完成"});
+      const files = Array.isArray(action.files) ? action.files : [];
+      const added = files.reduce((sum: number, item: any) => sum + Number(item.added ?? 0), 0);
+      const deleted = files.reduce((sum: number, item: any) => sum + Number(item.deleted ?? 0), 0);
+      resultCopy.createEl("small", {text: `${files.length} 个文件 · +${added} -${deleted} · 已校验`});
+      const fileList = result.createDiv({cls: "la-live-trace__action-files"});
+      for (const item of files.slice(0, 10)) {
+        const file = fileList.createEl("button", {text: String(item.path ?? "Markdown 文件")});
+        file.onclick = () => void this.app.workspace.openLinkText(String(item.path ?? ""), "", false);
+      }
+      const actions = result.createDiv({cls: "la-live-trace__action-actions"});
+      button(actions, "查看变化", async () => {
+        const diff = await this.client.agentActionDiff(String(action.actionId));
+        const preview = (Array.isArray(diff.files) ? diff.files : []).map((item: any) =>
+          `${String(item.path ?? "")}  +${Number(item.added ?? 0)} -${Number(item.deleted ?? 0)}\n\n${String(item.diff ?? "")}`,
+        ).join("\n\n");
+        new TextPreviewModal(this.app, "本次修改", preview || "没有文本变化").open();
+      });
+      if (action.undoAvailable) button(actions, "撤销", async () => {
+        await this.client.undoAgentAction(String(action.actionId));
+        new Notice("已安全撤销本次修改");
+        action.state = "undone";
+        action.undoAvailable = false;
+        this.paintAssistantLiveTrace(parent, run);
+      });
     }
     if (run.proposalRequired) {
       const notice = details.createDiv({cls: "la-live-trace__proposal"}); setIcon(notice.createSpan(), "file-diff");
-      notice.createSpan({text: "涉及知识写入：必须先生成 Change Set 与 Diff，再由你确认。"});
+      notice.createSpan({text: "该操作超出当前任务授权，需要在当前对话中处理。"});
     }
   }
 
@@ -2246,9 +2748,9 @@ export class LearningAgentMainView extends ItemView {
       const text = recovery.createDiv(); text.createEl("strong", {text: failure.title}); text.createEl("p", {text: failure.message});
       const actions = text.createDiv({cls: "la-assistant-recovery__actions"});
       for (const action of failure.actions) button(actions, action.label, async () => {
-        if (action.id === "retry" && task.technical?.runId) {
-          const response = await this.client.post<any>(`/brain/runs/${encodeURIComponent(task.technical.runId)}/retry`, {});
-          this.assistantRun = response.run; await this.refresh(); return;
+        if (action.id === "retry") {
+          setComposer("请根据刚才保留的上下文重试这个任务，并从失败的工具步骤继续。");
+          return;
         }
         if (action.id === "change-model") { this.assistantDrawerOpen = true; await this.refresh(); return; }
         setComposer(action.id === "trusted-research" ? "请搜索可信网页和论文后继续这个任务" : action.id === "limited-guide" ? "先生成来源范围明确的概念导读" : "请调整并继续这个任务");
@@ -2314,16 +2816,28 @@ export class LearningAgentMainView extends ItemView {
       const resolved = this.assistantLiveRun.context?.sources ?? [];
       const recent = this.assistantContext?.recentMaterials ?? [];
       const artifactSources = assistantInspectorSources(this.assistantArtifacts);
-      const items = [...resolved, ...recent, ...artifactSources].filter((item, index, all) => all.findIndex(other => String(other.id || other.path || other.url || other.title) === String(item.id || item.path || item.url || item.title)) === index);
-      if (!items.length) parent.createEl("p", {cls: "la-assistant-context-empty", text: "当前回答没有附加本地来源。模型的一般知识会明确视为待验证内容。"});
+      const webSources = this.assistantLiveRun.toolCalls.flatMap(call => {
+        const result: any = call.result ?? {};
+        if (["search_public_web", "search_academic_sources"].includes(call.tool)) return Array.isArray(result.results) ? result.results : [];
+        if (call.tool === "fetch_public_url" && result.source) return [result.source];
+        return [];
+      }).map((item: any) => ({...item, kind: item.sourceType ?? "public_web", status: "untrusted-web"}));
+      const items = [...webSources, ...resolved, ...recent, ...artifactSources].filter((item, index, all) => all.findIndex(other => String(other.id || other.path || other.url || other.title) === String(item.id || item.path || item.url || item.title)) === index);
+      if (!items.length) {
+        const empty = parent.createDiv({cls: "la-assistant-context-empty la-source-empty"});
+        empty.createEl("p", {text: this.assistantNetworkEnabled ? "当前回答还没有引用来源；知序会在需要时主动检索并显示在这里。" : "当前为仅本地模式。需要最新资料时，可为本会话开启联网。"});
+        if (!this.assistantNetworkEnabled) button(empty, "开启联网研究", () => { this.assistantNetworkEnabled = true; void this.refresh(); }, "mod-cta");
+      }
       for (const source of items) {
-        const card = parent.createDiv({cls: "la-assistant-source-card"});
-        const icon = card.createSpan(); setIcon(icon, source.kind === "pdf" ? "file-text" : source.kind === "vault_note" ? "notebook-text" : "link-2");
-        const copy = card.createDiv(); copy.createEl("strong", {text: humanTitle(source.title, "本地来源")});
-        copy.createEl("small", {text: `${String(source.kind ?? "material").replace(/_/g, " ")} · ${statusLabel(String(source.status ?? "local"))}`});
+        const isWeb = Boolean(source.url);
+        const card = parent.createDiv({cls: `la-assistant-source-card ${isWeb ? "is-web" : ""}`});
+        const icon = card.createSpan(); setIcon(icon, source.kind === "pdf" ? "file-text" : source.kind === "vault_note" ? "notebook-text" : isWeb ? "globe-2" : "link-2");
+        const copy = card.createDiv(); copy.createEl("strong", {text: humanTitle(source.title, isWeb ? source.domain || "公开来源" : "本地来源")});
+        copy.createEl("small", {text: isWeb ? `${source.domain || "公开网页"} · ${source.provider || "web"}${source.qualityScore ? ` · 质量 ${Math.round(Number(source.qualityScore) * 100)}%` : ""}` : `${String(source.kind ?? "material").replace(/_/g, " ")} · ${statusLabel(String(source.status ?? "local"))}`});
+        if (isWeb && source.snippet) copy.createEl("p", {text: String(source.snippet), cls: "la-source-snippet"});
         if (source.path) copy.createEl("small", {text: String(source.path)});
-        card.toggleClass("is-clickable", Boolean(source.path));
-        card.onclick = () => source.path ? void this.app.workspace.openLinkText(String(source.path), "", false) : undefined;
+        card.toggleClass("is-clickable", Boolean(source.path || source.url));
+        card.onclick = () => source.path ? void this.app.workspace.openLinkText(String(source.path), "", false) : source.url ? window.open(String(source.url), "_blank", "noopener,noreferrer") : undefined;
       }
       const related = parent.createEl("section", {cls: "la-assistant-context-section"}); related.createEl("h3", {text: "相关笔记"});
       for (const note of this.assistantContext?.relatedNotes ?? []) {
@@ -2356,7 +2870,7 @@ export class LearningAgentMainView extends ItemView {
         });
         const changeSetId = String(change.changeSetId ?? change.changeSet?.id ?? "");
         if (changeSetId) button(actions, "查看 Diff", async () => {
-          const detail = await this.client.get<any>(`/brain-change-sets/${encodeURIComponent(changeSetId)}`);
+          const detail = await this.client.get<any>(`/change-sets/${encodeURIComponent(changeSetId)}`);
           const changeSet = detail.change_set ?? {};
           const writes = (changeSet.writes ?? []).map((item: any) => `${String(item.action ?? "update").toUpperCase()}  ${item.path}`).join("\n");
           new TextPreviewModal(this.app, changeSet.title ?? "Change Set", `${changeSet.preview ?? "等待确认"}\n\n${writes || "暂无候选写入"}`).open();
@@ -2364,7 +2878,7 @@ export class LearningAgentMainView extends ItemView {
         if (change.undoAvailable && change.actionId) button(actions, "撤销", async () => {
           await this.client.post(`/agent-actions/${encodeURIComponent(change.actionId)}/undo`, {}); new Notice("已安全撤销"); await this.refresh();
         });
-        if (changeSetId) button(actions, "打开审核", () => this.setTab("review"), "mod-cta");
+        if (changeSetId) button(actions, "在助手中处理", () => this.setTab("assistant"), "mod-cta");
       }
       return;
     }
@@ -2420,7 +2934,7 @@ export class LearningAgentMainView extends ItemView {
           await this.client.post(`/agent-actions/${encodeURIComponent(change.actionId)}/undo`, {});
           new Notice("已安全撤销；后续人工修改不会被覆盖"); await this.refresh();
         });
-        if (change.changeSet?.id) button(actions, "打开审核", () => this.setTab("review"));
+        if (change.changeSet?.id) button(actions, "在助手中处理", () => this.setTab("assistant"));
       }
     }
     const signals = parent.createEl("section", {cls: "la-assistant-context-section la-assistant-signals"});
@@ -2474,13 +2988,22 @@ export class LearningAgentMainView extends ItemView {
 
   private renderConversationMessage(parent: HTMLElement, message: any, previousUserMessage: any = null): void {
     const root = parent.createDiv({cls: `la-message la-message--${message.role === "user" ? "user" : "assistant"}`});
-    if (message.role !== "user") { const avatar = root.createDiv({cls: "la-message-avatar"}); setIcon(avatar, "bot"); }
+    if (message.role !== "user") renderAssistantAvatar(root, this.app);
     const copy = root.createDiv({cls: "la-message-copy"});
     if (message.role === "user") copy.createEl("p", {text: String(message.content ?? "")});
-    else void this.markdown.render(copy.createDiv({cls: "la-message-markdown"}), String(message.content ?? ""));
-    copy.createEl("small", {text: message.createdAt ? new Date(message.createdAt).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) : ""});
-    const actions = copy.createDiv({cls: "la-message-actions"});
+    else {
+      this.renderProviderReasoning(copy, Array.isArray(message.reasoningBlocks) ? message.reasoningBlocks : [], false);
+      void this.markdown.render(copy.createDiv({cls: "la-message-markdown"}), String(message.content ?? ""));
+    }
+    // User metadata is deliberately outside the painted message body. Keeping it
+    // inside `.la-message-copy` made the timestamp/actions look like bubble content
+    // under several Obsidian themes, even when the outer message was transparent.
+    const metaParent = message.role === "user" ? root : copy;
+    const meta = metaParent.createDiv({cls: `la-message-meta la-message-meta--${message.role === "user" ? "user" : "assistant"}`});
+    meta.createEl("small", {text: message.createdAt ? new Date(message.createdAt).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) : ""});
     if (message.role === "user") {
+      const actions = meta.createDiv({cls: "la-message-actions"});
+      iconButton(actions, "copy", "复制消息", () => void navigator.clipboard.writeText(String(message.content ?? "")));
       iconButton(actions, "pencil", "编辑后重发", () => {
         const composer = this.containerEl.querySelector<HTMLTextAreaElement>('textarea[aria-label="知序统一输入"]');
         if (!composer) return;
@@ -2491,8 +3014,28 @@ export class LearningAgentMainView extends ItemView {
       });
       return;
     }
-    actions.remove();
-    this.renderAssistantMessageActions(copy, message, previousUserMessage);
+    this.renderAssistantMessageActions(meta, message, previousUserMessage);
+  }
+
+  private renderProviderReasoning(
+    parent: HTMLElement,
+    blocks: Array<{id?: string; provider?: string; content?: string; status?: string}>,
+    open: boolean,
+  ): void {
+    const visible = blocks.filter(block => String(block.content ?? "").trim());
+    if (!visible.length) return;
+    const details = parent.createEl("details", {cls: "la-provider-reasoning"});
+    details.open = open;
+    const summary = details.createEl("summary");
+    setIcon(summary.createSpan({cls: "la-provider-reasoning__icon"}), "brain-circuit");
+    summary.createSpan({text: "模型推理"});
+    const providers = [...new Set(visible.map(block => String(block.provider ?? "provider")).filter(Boolean))];
+    const streaming = visible.some(block => block.status === "streaming");
+    summary.createEl("small", {
+      text: `供应商原始返回${providers.length ? ` · ${providers.join(" / ")}` : ""}${streaming ? " · 接收中" : ""}`,
+    });
+    const body = details.createDiv({cls: "la-provider-reasoning__body"});
+    for (const block of visible) body.createEl("pre", {text: String(block.content ?? "")});
   }
 
   private renderAssistantMessageActions(copy: HTMLElement, message: any, previousUserMessage: any = null): void {
@@ -2552,115 +3095,13 @@ export class LearningAgentMainView extends ItemView {
       return;
     }
     if (artifact.type === "update_suggestion") {
-      button(actions, "打开审核", () => this.setTab("review"), "mod-cta");
+      button(actions, "在助手中处理", () => this.setTab("assistant"), "mod-cta");
       if (payload.targetPath) button(actions, "查看原笔记", () => void this.app.workspace.openLinkText(String(payload.targetPath), "", false));
       return;
     }
-    const target: MainTab = artifact.type === "material" || artifact.type === "research_bundle" ? "sources" : artifact.type === "learning_plan" ? "plan" : artifact.type === "change_set" || artifact.type === "capture_proposal" ? "review" : "today";
-    button(actions, target === "review" ? "打开审核" : target === "sources" ? "查看资料" : target === "plan" ? "查看计划" : "加入今日", () => this.setTab(target));
+    const target: MainTab = artifact.type === "material" || artifact.type === "research_bundle" ? "sources" : artifact.type === "learning_plan" ? "plan" : artifact.type === "change_set" || artifact.type === "capture_proposal" ? "assistant" : "today";
+    button(actions, target === "assistant" ? "在助手中处理" : target === "sources" ? "查看资料" : target === "plan" ? "查看计划" : "加入今日", () => this.setTab(target));
     if (!["change_set", "quiz"].includes(artifact.type)) button(actions, "继续调整", () => { new Notice("在下方继续描述修改要求，将生成同一成果的新版本。" ); });
-  }
-
-  private async renderBrainRun(parent: HTMLElement, run: any): Promise<void> {
-    parent.addClass("la-brain-run");
-    const head = parent.createDiv({cls: "la-brain-run__head"});
-    const status = statusLabel(String(run.status ?? "running"));
-    badge(head, run.status === "failed" ? "error" : run.status === "completed" ? "review" : "learn", status);
-    head.createEl("strong", {text: this.brainIntentLabel(String(run.primary_intent ?? ""))});
-    const timeline = parent.createDiv({cls: "la-brain-timeline", attr: {"aria-label": "主脑执行过程"}});
-    const stages = [
-      ["理解", "理解目标与上下文"], ["计划", "选择 Skill"], ["策略", "检查权限"],
-      ["执行", "调用受限 Tool"], ["校验", "验证结果"], ["提案", "等待确认"],
-    ];
-    const statusIndex = ({created: 0, understanding: 0, planning: 1, awaiting_authorization: 2, running: 3, verifying: 4, awaiting_confirmation: 5, completed: 6, failed: 6, cancelled: 6} as Record<string, number>)[run.status] ?? 0;
-    stages.forEach(([label, description], index) => {
-      const row = timeline.createDiv({cls: index < statusIndex ? "is-done" : index === statusIndex ? "is-current" : ""});
-      setIcon(row.createSpan(), index < statusIndex ? "check-circle-2" : index === statusIndex ? "loader-circle" : "circle");
-      const copy = row.createDiv(); copy.createEl("strong", {text: label}); copy.createEl("small", {text: description});
-    });
-    if (run.status === "failed") {
-      const error = parent.createDiv({cls: "la-brain-error"});
-      setIcon(error.createSpan(), "circle-alert");
-      const copy = error.createDiv(); copy.createEl("strong", {text: run.error_message || "主脑执行失败"}); copy.createEl("small", {text: run.error_code || "brain_error"});
-      const actions = parent.createDiv({cls: "la-brain-result-actions"});
-      button(actions, "重试", async () => {
-        const response = await this.client.post<any>(`/brain/runs/${encodeURIComponent(run.id)}/retry`, {});
-        this.assistantRun = response.run; await this.refresh();
-      }, "mod-cta");
-      return;
-    }
-    for (const result of run.result?.results ?? []) await this.renderBrainResult(parent, run, result);
-    if (["running", "planning", "understanding", "verifying"].includes(run.status)) {
-      button(parent, "取消任务", async () => {
-        const response = await this.client.post<any>(`/brain/runs/${encodeURIComponent(run.id)}/cancel`, {});
-        this.assistantRun = response.run; await this.refresh();
-      });
-    }
-    const technical = parent.createEl("details", {cls: "la-technical"});
-    technical.createEl("summary", {text: "执行详情"});
-    technical.createEl("p", {text: `${run.steps?.length ?? 0} 个步骤 · ${run.tool_events?.length ?? 0} 次受限工具调用`});
-    technical.createEl("code", {text: String(run.id ?? "")});
-  }
-
-  private async renderBrainResult(parent: HTMLElement, run: any, result: any): Promise<void> {
-    const card = parent.createDiv({cls: "la-brain-result"});
-    if (result.kind === "tutor") {
-      card.createEl("h3", {text: "学习回答"}); await this.markdown.render(card.createDiv({cls: "la-brain-result__markdown"}), String(result.answer ?? ""));
-      if (result.evidence?.length) card.createEl("small", {text: `依据：${result.evidence.map((item: any) => item.title).join("、")}`});
-    } else if (result.kind === "research-bundle") {
-      card.createEl("h3", {text: result.bundle?.title ?? "Research Bundle"});
-      card.createEl("p", {text: `已找到 ${result.sources?.length ?? 0} 个可追溯来源，预计 ${result.bundle?.estimated_minutes ?? 0} 分钟。`});
-      const list = card.createDiv({cls: "la-brain-source-list"});
-      for (const source of result.sources ?? []) {
-        const row = list.createDiv(); badge(row, source.source_type === "local_vault" ? "review" : "learn", source.source_type); row.createEl("strong", {text: source.title}); row.createEl("small", {text: source.reason});
-      }
-      button(card, "加入计划", async () => {
-        await this.client.post(`/research-bundles/${encodeURIComponent(result.bundle.id)}/add-to-plan`, {});
-        new Notice("阅读任务已作为 proposed 计划加入");
-      }, "mod-cta");
-    } else if (result.kind === "curriculum") {
-      card.createEl("h3", {text: "课程候选池"});
-      card.createEl("p", {text: result.generated ? `新增 ${result.generated} 个基于薄弱点的候选知识；不会自动创建正式笔记。` : "当前没有新的可去重候选。"});
-    } else if (result.kind === "plan-proposal") {
-      card.createEl("h3", {text: result.proposal?.title ?? "学习计划提案"});
-      card.createEl("p", {text: `${result.proposal?.tasks?.length ?? 0} 项任务 · proposed，等待你在计划页调整和确认。`});
-      button(card, "打开计划", () => this.setTab("plan"), "mod-cta");
-    } else if (["capture", "organized-text", "save-proposal"].includes(result.kind)) {
-      card.createEl("h3", {text: result.kind === "capture" ? "保存提案" : "整理提案"});
-      for (const note of result.proposed_notes ?? []) {
-        const noteCard = card.createDiv({cls: "la-brain-note-preview"});
-        noteCard.createEl("strong", {text: note.title}); noteCard.createEl("small", {text: note.path});
-        await this.markdown.render(noteCard.createDiv({cls: "la-brain-note-markdown"}), String(note.content ?? ""), String(note.path ?? ""));
-      }
-    } else {
-      card.createEl("h3", {text: "执行结果"});
-      card.createEl("p", {text: result.message || "任务已完成。"});
-    }
-    const changeSet = result.change_set;
-    if (changeSet?.id) {
-      const proposal = card.createDiv({cls: "la-change-set-proposal"});
-      setIcon(proposal.createSpan(), "file-diff");
-      const copy = proposal.createDiv(); copy.createEl("strong", {text: changeSet.title || "Change Set"}); copy.createEl("small", {text: `${changeSet.writes?.length ?? 0} 个候选写入 · 尚未应用`});
-      const actions = card.createDiv({cls: "la-brain-result-actions"});
-      button(actions, "取消", async () => {
-        const response = await this.client.post<any>(`/brain/runs/${encodeURIComponent(run.id)}/cancel`, {});
-        this.assistantRun = response.run; await this.refresh();
-      });
-      button(actions, "确认并应用", () => new ExplicitConfirmModal(
-        this.app,
-        "确认应用主脑提案",
-        "系统会重新校验路径、基础版本、reviewed/core 权限并通过跨文件事务提交。",
-        async () => {
-          await this.client.post(`/brain-change-sets/${encodeURIComponent(changeSet.id)}/apply`, {confirmed: true});
-          this.assistantRun = (await this.client.get<any>(`/brain/runs/${encodeURIComponent(run.id)}`)).run;
-          await this.refresh(); new Notice("Change Set 已事务应用");
-        },
-      ).open(), "mod-cta");
-    }
-  }
-
-  private brainIntentLabel(intent: string): string {
-    return ({ask_question: "回答问题", learn_topic: "辅导学习", research_topic: "研究资料", capture_text: "保存内容", organize_text: "整理内容", organize_vault: "整理知识库", create_study_plan: "规划学习", generate_recommendations: "生成推荐", generate_quiz: "生成短测", evaluate_explanation: "检查复述"} as Record<string, string>)[intent] ?? "处理任务";
   }
 
   private renderProviderDrawer(root: HTMLElement, profiles: ModelProfile[], routes: any): void {
@@ -2715,8 +3156,59 @@ export class LearningAgentMainView extends ItemView {
     };
     const streaming = capability("支持流式响应");
     const jsonSchema = capability("支持 JSON Schema");
-    const toolCalling = capability("支持工具调用");
+    const toolCalling = capability("原生 Tool Calling（支持工具调用）");
+    const streamedToolCalls = capability("流式 Tool Call 参数");
+    const reasoningContent = capability("支持深度推理协议");
+    const parallelToolCalls = capability("并行 Tool Calls");
+    const reasoningWrap = advanced.createDiv({cls: "la-form-field"});
+    reasoningWrap.createEl("label", {text: "Reasoning Effort"});
+    const reasoningEffort = reasoningWrap.createEl("select", {attr: {"aria-label": "Reasoning Effort"}});
+    for (const value of ["", "none", "minimal", "low", "medium", "high", "xhigh"]) {
+      reasoningEffort.createEl("option", {value, text: value || "Provider 默认"});
+    }
     const headers = advanced.createEl("textarea", {attr: {placeholder: "自定义 Headers JSON（禁止 Authorization / Host / Content-Length）", "aria-label": "自定义 Headers"}});
+
+    const probeCard = form.createDiv({cls: "la-capability-probe"});
+    const probeHead = probeCard.createDiv({cls: "la-capability-probe__head"});
+    probeHead.createEl("strong", {text: "模型能力探测"});
+    const probeButton = button(probeHead, "重新探测", async () => {
+      if (!picker.value) throw new Error("请先保存并选择配置");
+      probeButton.disabled = true;
+      probeButton.setText("探测中…");
+      try {
+        const result = await this.client.probeModelCapabilities(picker.value);
+        renderProbe(result);
+      } finally {
+        probeButton.disabled = false;
+        probeButton.setText("重新探测");
+      }
+    });
+    const probeBody = probeCard.createDiv({cls: "la-capability-probe__body"});
+    const capabilityLabels: Record<string, string> = {
+      basicStreaming: "流式响应", nativeToolCalling: "原生工具调用",
+      streamedToolCalls: "流式工具参数", preservesToolCallId: "Tool Call ID",
+      parallelToolCalls: "并行工具", reasoningContent: "深度推理协议",
+      usageReporting: "Usage", contextWindow: "上下文窗口",
+      maxOutputTokens: "最大输出",
+    };
+    const renderProbe = (payload: any): void => {
+      probeBody.empty();
+      const probe = payload?.probe ?? payload;
+      const values = probe?.capabilities ?? {};
+      if (!Object.keys(values).length) {
+        probeBody.createEl("small", {text: "尚未探测。运行时会采用保守参数，不会把偏好开关当作真实能力。"});
+        return;
+      }
+      for (const [keyName, label] of Object.entries(capabilityLabels)) {
+        const state = values[keyName];
+        if (!state) continue;
+        const row = probeBody.createDiv({cls: "la-capability-probe__row"});
+        row.createSpan({text: label});
+        const status = String(state.status ?? "inconclusive");
+        row.createEl("code", {text: state.value == null ? status : `${status} · ${state.value}`, cls: `is-${status}`});
+      }
+      probeBody.createEl("small", {text: probe.checkedAt ? `最近探测：${new Date(probe.checkedAt).toLocaleString()}` : "结果来自安全能力缓存"});
+    };
 
     const load = (profile?: ModelProfile): void => {
       providerType.value = profile?.providerType ?? "openai-compatible";
@@ -2732,11 +3224,23 @@ export class LearningAgentMainView extends ItemView {
       timeout.value = String(profile?.settings?.timeout ?? 30);
       streaming.checked = profile?.settings?.streaming ?? true;
       jsonSchema.checked = profile?.settings?.jsonSchema ?? true;
-      toolCalling.checked = profile?.settings?.toolCalling ?? false;
+      toolCalling.checked = profile?.settings?.nativeToolCalling ?? profile?.settings?.toolCalling ?? true;
+      streamedToolCalls.checked = profile?.settings?.streamedToolCalls ?? toolCalling.checked;
+      reasoningContent.checked = profile?.settings?.reasoningContent ?? providerType.value === "deepseek";
+      parallelToolCalls.checked = profile?.settings?.parallelToolCalls ?? false;
+      reasoningEffort.value = profile?.settings?.reasoningEffort ?? "";
       headers.value = JSON.stringify(profile?.settings?.customHeaders ?? {}, null, 2);
     };
     load();
-    picker.onchange = () => load(profiles.find(item => item.id === picker.value));
+    picker.onchange = () => {
+      load(profiles.find(item => item.id === picker.value));
+      probeBody.empty();
+      if (!picker.value) return renderProbe(null);
+      void this.client.modelCapabilities(picker.value)
+        .then(renderProbe)
+        .catch(() => renderProbe(null));
+    };
+    renderProbe(null);
 
     const actions = scroll.createDiv({cls: "la-provider-actions"});
     button(actions, "保存", async () => {
@@ -2763,40 +3267,45 @@ export class LearningAgentMainView extends ItemView {
           streaming: streaming.checked,
           jsonSchema: jsonSchema.checked,
           toolCalling: toolCalling.checked,
+          nativeToolCalling: toolCalling.checked,
+          streamedToolCalls: streamedToolCalls.checked,
+          reasoningContent: reasoningContent.checked,
+          thinkingControl: "provider-default",
+          parallelToolCalls: parallelToolCalls.checked,
+          reasoningEffort: reasoningEffort.value,
           customHeaders,
         },
       };
-      if (picker.value) await this.client.patch(`/model-profiles/${picker.value}`, payload);
-      else await this.client.post("/model-profiles", payload);
+      await this.settingsService.saveModelProfile(picker.value, payload);
       new Notice("模型配置已安全保存；Key 未进入插件设置");
       await this.refresh();
     }, "mod-cta");
     button(actions, "测试连接", async () => {
       if (!picker.value) throw new Error("请先保存配置");
-      const result = await this.client.post<any>(`/model-profiles/${picker.value}/test`, {});
+      const result = await this.settingsService.testModelProfile(picker.value);
       new Notice(result.message);
     });
     button(actions, "获取模型", async () => {
       if (!picker.value) throw new Error("请先保存配置");
-      const result = await this.client.post<any>(`/model-profiles/${picker.value}/models`, {});
+      const result = await this.settingsService.listProfileModels(picker.value);
       new Notice(`发现 ${result.models.length} 个模型`);
     });
     button(actions, "删除", () => {
       if (!picker.value) return;
       new ExplicitConfirmModal(this.app, "删除模型配置", "只删除模型 Profile，不删除现有 Keychain 密钥，也不影响知识笔记。", async () => {
-        await this.client.delete(`/model-profiles/${picker.value}`);
+        await this.settingsService.deleteModelProfile(picker.value);
         await this.refresh();
       }).open();
     });
     scroll.createEl("h3", {text: "任务模型路由"});
-    for (const [task, label] of [["brain_orchestrator", "主脑编排"], ["intent_router", "意图识别"], ["curriculum_planner", "课程候选"], ["daily_knowledge_generator", "每日新知识"], ["claim_extractor", "Claim 提取"], ["claim_verifier", "Claim 验证"], ["lesson_generator", "微型课程"], ["research_synthesis", "研究综合"], ["tutor", "学习辅导"], ["quiz", "短测"], ["evaluation", "复述评估"], ["pdf_prepare", "PDF / 教材 Prepare"], ["assistant_chat", "助手对话"]]) {
+    for (const [task, label] of [["agent_runtime", "Pi Agent Runtime"], ["curriculum_planner", "课程候选"], ["daily_knowledge_generator", "每日新知识"], ["claim_extractor", "Claim 提取"], ["claim_verifier", "Claim 验证"], ["lesson_generator", "微型课程"], ["research_synthesis", "研究综合"], ["tutor", "学习辅导"], ["quiz", "短测"], ["evaluation", "复述评估"], ["pdf_prepare", "PDF / 教材 Prepare"], ["assistant_chat", "助手对话"]]) {
       const row = scroll.createDiv({cls: "la-routing-row"});
       row.createEl("span", {text: label});
       const select = row.createEl("select");
       select.createEl("option", {value: "", text: "未配置"});
       for (const profile of profiles.filter(item => item.enabled)) select.createEl("option", {value: profile.id, text: profile.displayName});
       select.value = routes[task]?.profileId ?? "";
-      select.onchange = () => void this.client.patch("/model-routing", {routes: {[task]: {profileId: select.value, modelOverride: ""}}});
+      select.onchange = () => void this.settingsService.updateModelRoute(task, select.value);
     }
   }
 

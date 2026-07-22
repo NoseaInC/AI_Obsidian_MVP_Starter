@@ -94,9 +94,34 @@ class IntakeService:
             return str(row["id"])
         return str(self.create_conversation(title)["id"])
 
+    def ensure_runtime_conversation(self, conversation_id: str, title: str = "新会话") -> str:
+        """Create a missing Pi-owned conversation with its stable identity.
+
+        Normal product callers must still use ``ensure_conversation`` so a
+        stale or forged id is rejected. Pi creates identities before the
+        first persisted message (and when forking), so this narrowly scoped
+        bridge is the only place allowed to insert an externally supplied id.
+        """
+        conversation_id = str(conversation_id or "")
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,160}", conversation_id):
+            raise ValueError("invalid_conversation_id")
+        title = str(title).strip()[:100] or "新会话"
+        now = _now()
+        with self.store.lock:
+            self.store.connection.execute(
+                """INSERT OR IGNORE INTO conversations(
+                     id, title, active_artifact_id, active_task_thread_id, created_at, updated_at,
+                     active_topic, personalization_enabled, retention_policy
+                   ) VALUES (?, ?, NULL, NULL, ?, ?, NULL, 1, 'full')""",
+                (conversation_id, title, now, now),
+            )
+            self.store.connection.commit()
+        return conversation_id
+
     def append_message(
         self, conversation_id: str, role: str, content: str, message_type: str = "text",
         task_thread_id: str | None = None, artifact_group_id: str | None = None,
+        message_id: str | None = None,
     ) -> dict[str, Any]:
         if role not in {"user", "assistant", "system"}:
             raise ValueError("invalid_message_role")
@@ -104,10 +129,28 @@ class IntakeService:
             raise ValueError("invalid_message_content")
         content = redact_secret_text(content)
         self.ensure_conversation(conversation_id)
-        message_id, now = f"msg-{uuid.uuid4().hex}", _now()
+        message_id = str(message_id or f"msg-{uuid.uuid4().hex}")
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,160}", message_id):
+            raise ValueError("invalid_message_id")
+        with self.store.lock:
+            existing = self.store.connection.execute(
+                "SELECT * FROM conversation_messages WHERE id=? AND conversation_id=?",
+                (message_id, conversation_id),
+            ).fetchone()
+        if existing:
+            saved = self._read_message(existing)
+            if saved["role"] != role or saved["content"] != content:
+                raise RuntimeError("conversation_message_id_conflict")
+            return saved
+        now = _now()
         relative = Path("Conversations/messages") / f"{message_id}.json"
         path = self.root / relative
-        _atomic_bytes(path, (_json({"id": message_id, "role": role, "content": content, "created_at": now}) + "\n").encode())
+        _atomic_bytes(path, (_json({
+            "id": message_id,
+            "role": role,
+            "content": content,
+            "created_at": now,
+        }) + "\n").encode())
         with self.store.lock:
             self.store.connection.execute(
                 """INSERT INTO conversation_messages(
@@ -118,7 +161,13 @@ class IntakeService:
             )
             self.store.connection.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now, conversation_id))
             self.store.connection.commit()
-        return {"id": message_id, "role": role, "messageType": message_type, "content": content, "createdAt": now}
+        return {
+            "id": message_id,
+            "role": role,
+            "messageType": message_type,
+            "content": content,
+            "createdAt": now,
+        }
 
     def _read_message(self, row: Any) -> dict[str, Any]:
         relative = Path(str(row["content_reference"]))
@@ -126,7 +175,8 @@ class IntakeService:
         if not path.is_relative_to(self.messages_root.resolve()) or not path.is_file() or path.is_symlink():
             content = "[本地消息内容不可用]"
         else:
-            content = str(_decode(path.read_text(encoding="utf-8", errors="replace"), {}).get("content", ""))
+            payload = _decode(path.read_text(encoding="utf-8", errors="replace"), {})
+            content = str(payload.get("content", ""))
         return {
             "id": row["id"], "role": row["role"], "messageType": row["message_type"],
             "content": content, "taskThreadId": row["task_thread_id"],

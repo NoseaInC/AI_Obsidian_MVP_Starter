@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime
+import hashlib
 import re
 from pathlib import Path
 from threading import RLock
@@ -14,10 +15,13 @@ SCRIPTS = ROOT / "00-System/Scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 import ingest_pdf
+from agent.core.frontmatter_policy import policy_metadata_from_bytes
+from agent.core.hybrid_retrieval import HybridVaultIndex
 
 
 WORD = re.compile(r"[\w\u4e00-\u9fff]+", re.UNICODE)
 WIKI_LINK = re.compile(r"\[\[([^\]|#]+)(?:\|[^\]]+)?\]\]")
+HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*$", re.MULTILINE)
 LATIN_WORD = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.+-]+")
 CJK_SEQUENCE = re.compile(r"[\u4e00-\u9fff]+")
 SAFE_ROOTS = ("00-Inbox", "01-Inbox", "10-Sources", "20-Knowledge", "30-Learning", "40-Projects")
@@ -57,6 +61,20 @@ def safe_read_note(vault: Path, relative: str) -> Path:
     return target
 
 
+def read_model_visible_note(path: Path) -> str:
+    """Read a note only when its protection metadata is unambiguously public.
+
+    Protection fields are a security boundary, so replacement decoding or the
+    permissive general frontmatter parser must not turn malformed/quoted
+    ``agent_access: denied`` metadata into model-visible content.
+    """
+    body = path.read_bytes()
+    policy, valid = policy_metadata_from_bytes(body)
+    if not valid or policy.get("agent_access") == "denied":
+        raise PermissionError("agent_access_denied")
+    return body.decode("utf-8")
+
+
 def _terms(value: str) -> set[str]:
     return {item.casefold() for item in WORD.findall(value) if len(item) > 1}
 
@@ -88,6 +106,7 @@ class VaultReadIndex:
         self.vault = vault.resolve()
         self._cache: dict[str, tuple[int, int, dict[str, Any]]] = {}
         self._lock = RLock()
+        self._hybrid = HybridVaultIndex()
 
     def entries(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -112,13 +131,11 @@ class VaultReadIndex:
                     if cached and cached[0] == stat.st_mtime_ns and cached[1] == stat.st_size:
                         continue
                     try:
-                        text = path.read_text(encoding="utf-8", errors="replace")
-                    except OSError:
-                        continue
-                    meta = ingest_pdf.parse_frontmatter(text)
-                    if str(meta.get("agent_access", "")).strip().casefold() == "denied":
+                        text = read_model_visible_note(path)
+                    except (OSError, PermissionError):
                         self._cache.pop(key, None)
                         continue
+                    meta = ingest_pdf.parse_frontmatter(text)
                     entry = {
                         "title": path.stem,
                         "path": key,
@@ -127,9 +144,14 @@ class VaultReadIndex:
                         "type": str(meta.get("type", "note")),
                         "domain": str(meta.get("domain", "")),
                         "aliases": meta.get("aliases", ""),
+                        "tags": meta.get("tags", ""),
+                        "headings": HEADING.findall(text),
+                        "links": WIKI_LINK.findall(text),
+                        "body": text[:200_000],
                         "excerpt": text[:6_000],
                         "modifiedAt": datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(timespec="seconds"),
                         "mtime": stat.st_mtime,
+                        "sourceHash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
                     }
                     self._cache[key] = (stat.st_mtime_ns, stat.st_size, entry)
             for key in set(self._cache) - present:
@@ -139,24 +161,15 @@ class VaultReadIndex:
     def search(self, payload: dict[str, Any]) -> dict[str, Any]:
         query = str(payload.get("query", "")).strip()
         limit = max(1, min(50, int(payload.get("limit", 10))))
-        terms = _query_terms(query)
-        rows: list[tuple[int, dict[str, Any]]] = []
-        for entry in self.entries():
-            title = str(entry["title"]).casefold()
-            metadata = f"{entry.get('aliases', '')} {entry.get('domain', '')} {entry.get('type', '')}".casefold()
-            excerpt = str(entry.get("excerpt", "")).casefold()
-            score = sum(8 for term in terms if term in title)
-            score += sum(3 for term in terms if term in metadata)
-            score += sum(1 for term in terms if term in excerpt)
-            if query and (not terms or score == 0):
-                continue
-            rows.append((score, {
-                "title": entry["title"], "path": entry["path"],
-                "status": entry["status"], "type": entry["type"],
-                "domain": entry["domain"], "score": score,
-            }))
-        rows.sort(key=lambda row: (-row[0], row[1]["title"].casefold()))
-        return {"query": query, "items": [row[1] for row in rows[:limit]], "total": len(rows)}
+        if not query:
+            return {"query": query, "items": [], "total": 0, "schemaVersion": 1, "semanticState": "disabled"}
+        return self._hybrid.search(
+            query,
+            self.entries(),
+            limit,
+            current_note=str(payload.get("current_note") or payload.get("currentNote") or ""),
+            focus=str(payload.get("focus") or ""),
+        )
 
     def overview(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         limit = max(3, min(20, int((payload or {}).get("recent_limit", 8))))
@@ -185,14 +198,155 @@ def vault_overview(vault: Path, payload: dict[str, Any], index: VaultReadIndex |
     return (index or VaultReadIndex(vault)).overview(payload)
 
 
+def list_vault_folder(
+    vault: Path,
+    payload: dict[str, Any],
+    index: VaultReadIndex | None = None,
+) -> dict[str, Any]:
+    """List one model-visible Vault folder without exposing project/private roots.
+
+    ``/`` and ``.`` are explicit aliases for the model-visible Vault root.  They
+    intentionally return only ``SAFE_ROOTS`` instead of enumerating the real
+    workspace root, which also contains runtime code and local-only state.
+    """
+    vault = vault.resolve()
+    requested = str(payload.get("path", "")).strip().replace("\\", "/")
+    root_alias = requested in {"", ".", "/", "./"}
+    raw = requested.rstrip("/")
+    entries = (index or VaultReadIndex(vault)).entries()
+    limit = max(1, min(100, int(payload.get("limit", 50))))
+    cursor = max(0, int(payload.get("cursor", 0)))
+
+    if root_alias:
+        rows: list[dict[str, Any]] = []
+        for root_name in SAFE_ROOTS:
+            root = vault / root_name
+            if not root.is_dir() or root.is_symlink():
+                continue
+            direct_count = 0
+            total_count = 0
+            for entry in entries:
+                entry_path = Path(str(entry.get("path") or ""))
+                if not entry_path.parts or entry_path.parts[0] != root_name:
+                    continue
+                total_count += 1
+                if entry_path.parent == Path(root_name):
+                    direct_count += 1
+            try:
+                modified_at = datetime.fromtimestamp(
+                    root.stat().st_mtime
+                ).astimezone().isoformat(timespec="seconds")
+            except OSError:
+                modified_at = ""
+            rows.append({
+                "kind": "folder",
+                "title": root_name,
+                "path": root_name,
+                "status": "",
+                "type": "folder",
+                "modifiedAt": modified_at,
+                "directNoteCount": direct_count,
+                "totalNoteCount": total_count,
+            })
+        page = rows[cursor:cursor + limit]
+        next_cursor = cursor + len(page)
+        return {
+            "path": ".",
+            "scope": "model-visible-vault-root",
+            "recursive": False,
+            "items": page,
+            "total": len(rows),
+            "nextCursor": next_cursor if next_cursor < len(rows) else None,
+        }
+
+    relative = Path(raw)
+    if not raw or relative.is_absolute() or ".." in relative.parts or not _safe_relative(relative):
+        raise ValueError("invalid_folder_path")
+    target = (vault / relative).resolve()
+    try:
+        target.relative_to(vault)
+    except ValueError as error:
+        raise ValueError("invalid_folder_path") from error
+    if target.is_symlink() or any(
+        parent.is_symlink() for parent in [target, *target.parents] if parent != vault
+    ):
+        raise ValueError("symlink_path_not_allowed")
+    if not target.is_dir():
+        raise FileNotFoundError("folder_not_found")
+
+    recursive = payload.get("recursive") is True
+    prefix = relative.as_posix()
+    rows: list[dict[str, Any]] = []
+    if not recursive:
+        try:
+            child_directories = sorted(
+                (
+                    child for child in target.iterdir()
+                    if child.is_dir() and not child.is_symlink()
+                ),
+                key=lambda child: (child.name.casefold(), child.name),
+            )
+        except OSError:
+            child_directories = []
+        for child in child_directories:
+            child_relative = child.relative_to(vault)
+            child_prefix = child_relative.as_posix()
+            child_entries = [
+                entry for entry in entries
+                if str(entry.get("path") or "").startswith(f"{child_prefix}/")
+            ]
+            rows.append({
+                "kind": "folder",
+                "title": child.name,
+                "path": child_prefix,
+                "status": "",
+                "type": "folder",
+                "modifiedAt": "",
+                "directNoteCount": sum(
+                    Path(str(entry.get("path") or "")).parent == child_relative
+                    for entry in child_entries
+                ),
+                "totalNoteCount": len(child_entries),
+            })
+
+    for entry in entries:
+        entry_path = str(entry.get("path") or "")
+        parent = str(Path(entry_path).parent.as_posix())
+        if recursive:
+            if parent != prefix and not parent.startswith(f"{prefix}/"):
+                continue
+        elif parent != prefix:
+            continue
+        rows.append({
+            "kind": "note",
+            "title": str(entry.get("title") or ""),
+            "path": entry_path,
+            "status": str(entry.get("status") or ""),
+            "type": str(entry.get("type") or "note"),
+            "modifiedAt": str(entry.get("modifiedAt") or ""),
+        })
+    rows.sort(key=lambda item: (
+        0 if item.get("kind") == "folder" else 1,
+        item["path"].casefold(),
+        item["path"],
+    ))
+    page = rows[cursor:cursor + limit]
+    next_cursor = cursor + len(page)
+    return {
+        "path": prefix,
+        "recursive": recursive,
+        "items": page,
+        "total": len(rows),
+        "nextCursor": next_cursor if next_cursor < len(rows) else None,
+    }
+
+
 def read_note_metadata(vault: Path, payload: dict[str, Any]) -> dict[str, Any]:
     path = safe_read_note(vault, str(payload.get("path", "")))
     if not path.is_file():
         raise FileNotFoundError("note_not_found")
-    text = path.read_text(encoding="utf-8", errors="replace")
+    text = read_model_visible_note(path)
     meta = ingest_pdf.parse_frontmatter(text)
-    if str(meta.get("agent_access", "")).strip().casefold() == "denied":
-        raise PermissionError("agent_access_denied")
     allowed = {key: meta.get(key) for key in (
         "type", "status", "domain", "aliases", "tags", "mastery", "importance",
         "next_review", "weak_points", "artifact_id", "generated_from",
@@ -204,11 +358,23 @@ def read_note_excerpt(vault: Path, payload: dict[str, Any]) -> dict[str, Any]:
     path = safe_read_note(vault, str(payload.get("path", "")))
     if not path.is_file():
         raise FileNotFoundError("note_not_found")
-    max_chars = max(100, min(4000, int(payload.get("max_chars", 1200))))
-    text = path.read_text(encoding="utf-8", errors="replace")
-    if str(ingest_pdf.parse_frontmatter(text).get("agent_access", "")).strip().casefold() == "denied":
-        raise PermissionError("agent_access_denied")
-    return {"title": path.stem, "path": str(path.relative_to(vault)), "excerpt": text[:max_chars], "truncated": len(text) > max_chars}
+    # This is a paged transport boundary, not a model-context limit.  The old
+    # 4,000/8,000 character clamp made complete long-note reads impossible and
+    # encouraged the model to guess from truncated text.  Keep each result
+    # bounded, but let the caller continue deterministically with next_offset.
+    offset = max(0, int(payload.get("offset", 0)))
+    max_chars = max(100, min(50_000, int(payload.get("max_chars", 12_000))))
+    text = read_model_visible_note(path)
+    end = min(len(text), offset + max_chars)
+    return {
+        "title": path.stem,
+        "path": str(path.relative_to(vault)),
+        "content": text[offset:end],
+        "offset": offset,
+        "next_offset": end if end < len(text) else None,
+        "total_chars": len(text),
+        "truncated": end < len(text),
+    }
 
 
 def related_notes(vault: Path, payload: dict[str, Any], index: VaultReadIndex | None = None) -> dict[str, Any]:
@@ -216,9 +382,7 @@ def related_notes(vault: Path, payload: dict[str, Any], index: VaultReadIndex | 
     target = safe_read_note(vault, relative)
     if not target.is_file():
         raise FileNotFoundError("note_not_found")
-    text = target.read_text(encoding="utf-8", errors="replace")
-    if str(ingest_pdf.parse_frontmatter(text).get("agent_access", "")).strip().casefold() == "denied":
-        raise PermissionError("agent_access_denied")
+    text = read_model_visible_note(target)
     outlinks = sorted(dict.fromkeys(item.strip() for item in WIKI_LINK.findall(text) if item.strip()))[:30]
     backlinks: list[dict[str, str]] = []
     title = target.stem

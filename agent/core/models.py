@@ -15,15 +15,49 @@ from urllib.parse import urlparse
 PROVIDER_TYPES = {"deepseek", "openai", "openai-compatible", "custom"}
 PROTECTED_HEADERS = {"authorization", "host", "content-length"}
 ROUTING_TASKS = {
-    # Agent Brain V1 routes.
-    "brain_orchestrator", "orchestrator", "intent_router", "material_analysis",
+    # Pi is the only model/tool loop. The other routes are explicit,
+    # single-purpose workflows and never classify free-form user prose.
+    "agent_runtime", "material_analysis",
     "research_synthesis", "capture_organize", "curriculum_planner", "daily_knowledge_generator",
     "claim_extractor", "claim_verifier", "lesson_generator",
     "tutor", "quiz", "evaluation", "pdf_prepare", "assistant_chat",
-    # Backward-compatible V2 routes retained for existing plugin settings.
+    # Product task aliases retained for existing settings.
     "assistant", "prepare", "review", "weekly-plan", "fast",
 }
 KEY_REFERENCE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+
+
+def normalized_model_settings(profile: dict[str, Any]) -> dict[str, Any]:
+    """Return capability defaults without rewriting an existing profile.
+
+    Early profiles predate the reasoning/tool capability fields.  Treating a
+    missing field as an explicit ``False`` silently disables features after an
+    upgrade, so reads use provider-aware defaults while preserving every
+    explicit user choice.
+    """
+    provider_type = str(profile.get("providerType") or "openai-compatible")
+    settings = dict(profile.get("settings") or {})
+    native_tool_calling = bool(
+        settings.get("nativeToolCalling", settings.get("toolCalling", True))
+    )
+    defaults: dict[str, Any] = {
+        "temperature": 0.3,
+        "maxTokens": 3000,
+        "contextWindow": 128_000,
+        "timeout": 30,
+        "streaming": True,
+        "jsonSchema": True,
+        "toolCalling": native_tool_calling,
+        "nativeToolCalling": native_tool_calling,
+        "streamedToolCalls": native_tool_calling,
+        "reasoningContent": provider_type == "deepseek",
+        "thinkingControl": "provider-default",
+        "parallelToolCalls": False,
+        "reasoningEffort": "",
+        "organizationId": "",
+        "customHeaders": {},
+    }
+    return {**defaults, **settings}
 
 
 class KeyStore(Protocol):
@@ -177,6 +211,82 @@ class OpenAICompatibleProvider:
                 if finish_reason:
                     yield {"type": "finish", "finishReason": str(finish_reason), "usage": item.get("usage") or {}}
 
+    def stream_agent(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        **options: Any,
+    ) -> Iterator[dict[str, Any]]:
+        """Stream the provider protocol needed by the TypeScript Pi runtime.
+
+        This deliberately stays below the Agent Loop: it performs one model
+        request, preserves streamed tool-call argument fragments, and never
+        executes a tool.  API keys remain inside this Python process.
+        """
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            **options,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if tools:
+            payload["tools"] = tools
+        request = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            method="POST",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                **self.headers,
+            },
+        )
+        with self.opener(request, timeout=self.timeout) as response:
+            for raw_line in response:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line or line.startswith(":"):
+                    continue
+                data = line.removeprefix("data:").strip() if line.startswith("data:") else line
+                if data == "[DONE]":
+                    yield {"type": "done"}
+                    return
+                try:
+                    item = json.loads(data)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError("Model stream returned invalid SSE JSON") from exc
+                usage = item.get("usage")
+                if isinstance(usage, dict):
+                    yield {"type": "usage", "usage": usage}
+                choice = (item.get("choices") or [{}])[0]
+                delta = choice.get("delta") or {}
+                content = delta.get("content")
+                if isinstance(content, str) and content:
+                    yield {"type": "text_delta", "delta": content}
+                reasoning = delta.get("reasoning_content")
+                if isinstance(reasoning, str) and reasoning:
+                    # Forwarded only for provider protocol continuity. The Pi
+                    # adapter discards it from user-visible and persisted text.
+                    yield {"type": "thinking_delta", "delta": reasoning}
+                for raw_call in delta.get("tool_calls") or []:
+                    function = raw_call.get("function") or {}
+                    yield {
+                        "type": "tool_call_delta",
+                        "index": int(raw_call.get("index", 0)),
+                        "id": str(raw_call.get("id") or ""),
+                        "name": str(function.get("name") or ""),
+                        "arguments_delta": str(function.get("arguments") or ""),
+                    }
+                finish_reason = choice.get("finish_reason")
+                if finish_reason:
+                    yield {
+                        "type": "finish",
+                        "finish_reason": str(finish_reason),
+                        "usage": usage or {},
+                    }
+
     def structured_output(self, model: str, messages: list[dict[str, str]], schema: dict[str, Any], **options: Any) -> dict[str, Any]:
         if self.provider_type == "deepseek":
             # DeepSeek's OpenAI-compatible Chat Completion API currently
@@ -207,7 +317,12 @@ class ModelProfileService:
 
     def _public(self, profile: dict[str, Any]) -> dict[str, Any]:
         configured = self.key_store.configured(profile["apiKeyReference"])
-        return {**profile, "configured": configured, "keyHint": "••••••••" if configured else "未配置"}
+        return {
+            **profile,
+            "settings": normalized_model_settings(profile),
+            "configured": configured,
+            "keyHint": "••••••••" if configured else "未配置",
+        }
 
     def list(self) -> list[dict[str, Any]]: return [self._public(item) for item in self.store.list_model_profiles()]
 
@@ -221,14 +336,24 @@ class ModelProfileService:
         if not KEY_REFERENCE.fullmatch(reference):
             raise ValueError("API Key Reference may contain only letters, numbers, dot, underscore, colon and hyphen")
         settings = dict(data.get("settings", {})); settings["customHeaders"] = validate_headers(dict(settings.get("customHeaders", {})))
+        native_tool_calling = bool(
+            settings.get("nativeToolCalling", settings.get("toolCalling", True))
+        )
         profile = {
             "id": profile_id, "displayName": str(data.get("displayName", "未命名配置")).strip() or "未命名配置",
             "providerType": provider_type, "baseUrl": validate_base_url(str(data.get("baseUrl", ""))),
             "apiKeyReference": reference, "defaultModel": str(data.get("defaultModel", "")).strip(),
             "availableModels": [str(item) for item in data.get("availableModels", [])], "enabled": bool(data.get("enabled", True)),
             "settings": {"temperature": float(settings.get("temperature", .3)), "maxTokens": int(settings.get("maxTokens", 2000)),
+                         "contextWindow": int(settings.get("contextWindow", 128_000)),
                          "timeout": float(settings.get("timeout", 30)), "streaming": bool(settings.get("streaming", True)),
-                         "jsonSchema": bool(settings.get("jsonSchema", True)), "toolCalling": bool(settings.get("toolCalling", False)),
+                         "jsonSchema": bool(settings.get("jsonSchema", True)), "toolCalling": native_tool_calling,
+                         "nativeToolCalling": native_tool_calling,
+                         "streamedToolCalls": bool(settings.get("streamedToolCalls", native_tool_calling)),
+                         "reasoningContent": bool(settings.get("reasoningContent", provider_type == "deepseek")),
+                         "thinkingControl": str(settings.get("thinkingControl", "provider-default")),
+                         "parallelToolCalls": bool(settings.get("parallelToolCalls", False)),
+                         "reasoningEffort": str(settings.get("reasoningEffort", "")),
                          "organizationId": str(settings.get("organizationId", "")), "customHeaders": settings["customHeaders"]},
         }
         api_key = str(data.get("apiKey", ""))

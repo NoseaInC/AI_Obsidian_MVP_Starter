@@ -1,6 +1,5 @@
-"""Unified, policy-governed Agent Brain."""
+"""Legacy storage schemas shared by explicit non-agent workflows."""
 
-from .orchestrator import BrainOrchestrator
 from .schemas import BrainRequest, BrainStatus, IntentResult
 
-__all__ = ["BrainOrchestrator", "BrainRequest", "BrainStatus", "IntentResult"]
+__all__ = ["BrainRequest", "BrainStatus", "IntentResult"]

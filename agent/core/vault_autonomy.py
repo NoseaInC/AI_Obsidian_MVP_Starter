@@ -7,6 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from agent.core.frontmatter_policy import policy_metadata_from_bytes
 
 AUTONOMY_MODES = {"cautious", "balanced", "high"}
 DENIED_ROOTS = {"Private", "Personal", "Secrets"}
@@ -102,14 +103,14 @@ class VaultAutonomyService:
         managed = any(relative == root or relative.startswith(root + "/") for root in MANAGED_ROOTS)
         if not target.exists():
             return {"path": relative, "scope": "agent-managed" if managed else "ordinary", "protected": not managed, "exists": False}
-        body = target.read_text(encoding="utf-8", errors="replace") if target.suffix.casefold() == ".md" else ""
-        frontmatter = _frontmatter(body).casefold()
-        status_match = re.search(r"(?m)^\s*status\s*:\s*['\"]?([^\n'\"]+)", frontmatter)
-        status = status_match.group(1).strip() if status_match else ""
+        body = target.read_bytes() if target.suffix.casefold() == ".md" else b""
+        metadata, valid_metadata = policy_metadata_from_bytes(body)
+        status = metadata.get("status", "")
         protected = (
-            status in {"reviewed", "core"}
-            or bool(re.search(r"(?m)^\s*agent_access\s*:\s*['\"]?denied", frontmatter))
-            or bool(re.search(r"(?m)^\s*agent_protected\s*:\s*(?:true|yes|1)", frontmatter))
+            not valid_metadata
+            or status in {"reviewed", "core"}
+            or metadata.get("agent_access") == "denied"
+            or metadata.get("agent_protected") in {"true", "yes", "1"}
             or relative.startswith("10-Sources/")
         )
         return {"path": relative, "scope": "protected" if protected else "agent-managed" if managed else "ordinary", "protected": protected, "exists": True, "status": status}

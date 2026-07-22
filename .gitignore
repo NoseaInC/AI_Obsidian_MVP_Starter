@@ -1,6 +1,7 @@
 # Local/private runtime data
 90-Local-Only/
 .obsidian/
+.claudian/
 copilot/copilot-conversations/
 
 # User knowledge and learning records (keep directory placeholders)
@@ -10,8 +11,8 @@ copilot/copilot-conversations/
 20-Knowledge/Topics/*.md
 30-Learning/Daily/*.md
 30-Learning/Weekly/*.md
-/平均处理效应.md
-/潜在结果框架.md
+/99-Archive/Legacy-Root-Placeholders/平均处理效应.md
+/99-Archive/Legacy-Root-Placeholders/潜在结果框架.md
 
 # Secrets and local environments
 .env

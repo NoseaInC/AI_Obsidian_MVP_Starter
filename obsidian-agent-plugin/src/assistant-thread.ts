@@ -154,6 +154,17 @@ export function assistantIntentLabel(intent: string, topic = ""): string {
 
 export function humanizeAssistantError(code = "", message = "", networkAllowed = true): AssistantFailure {
   const normalized = code.toLocaleLowerCase();
+  const diagnostic = `${code} ${message}`.toLocaleLowerCase();
+  if (diagnostic.includes("reviewed_core_read_only")) {
+    return {
+      title: "正式知识受到保护",
+      message: "原笔记没有被覆盖。知序会把这部分改成独立更新建议，并保留同一任务中的其他草稿；重试即可继续。",
+      recoverable: true,
+      partial: true,
+      actions: [{id: "retry", label: "按更新建议重试", primary: true}, {id: "edit-task", label: "修改任务"}],
+      technicalCode: "reviewed_core_read_only",
+    };
+  }
   if (["research_no_results", "research_provider_unavailable"].includes(normalized)) {
     return {
       title: "本地资料中没有找到足够依据",

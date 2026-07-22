@@ -36,7 +36,13 @@ def run(tools: Any, vault: Path, payload: dict[str, Any], context: dict[str, Any
         + "## 相关知识\n\n" + ("\n".join(f"- [[{item['title']}]]" for item in related[:5]) or "- 暂无") + "\n"
     )
     proposed = note_result(title, path, content, "organized-note")
-    change_set = tools.call("create_change_set", {"run_id": run_id, "title": f"整理：{title}", "writes": [proposed]}, run_id=run_id, step_id=step_id)
+    change_set = tools.call(
+        "create_change_set",
+        {"run_id": run_id, "title": f"整理：{title}", "writes": [proposed]},
+        run_id=run_id,
+        step_id=step_id,
+        allowed_permissions=("read_only", "proposal"),
+    )
     return {
         "kind": "organized-text", "original_text": original, "proposed_notes": [proposed],
         "concept_draft_count": 0, "questions": questions, "learning_tasks": tasks,

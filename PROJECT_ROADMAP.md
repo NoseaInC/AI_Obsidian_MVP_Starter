@@ -1,6 +1,6 @@
 # Project Roadmap
 
-Implementation status: Phases 0–10 are complete at the offline/build/install gates. The only knowledge-write gate remains the first real Dragonnet `apply-prepared` after inspection.
+Implementation status: Phases 0–10 are historical foundations. Phase 11 is the active Pi runtime migration. The separate first real Dragonnet `apply-prepared` remains user-gated after inspection.
 
 ## Product outcome
 
@@ -64,6 +64,9 @@ Acceptance: both inputs have offline fake-model tests and traceable source artif
 
 ## Phase 7 — Agent Brain V1
 
+Historical phase, superseded by Phase 11. Its storage, policy and source-integrity
+assets remain; its deterministic intent and Python planning architecture do not.
+
 - One request entry with deterministic intent routing and optional strictly-structured model assistance.
 - Registered Skills and restricted tools only; policy, verification, audit and cancellation are mandatory lifecycle stages.
 - Capture, research, curriculum candidates and learning plans remain proposals until explicit user confirmation.
@@ -95,6 +98,9 @@ Acceptance: offline checks, plugin tests/typecheck/build/install pass; real Obsi
 
 ## Phase 10 — Assistant Runtime V2
 
+Historical phase, superseded by Phase 11. PydanticAI and deterministic fallback
+planning are no longer valid production architecture.
+
 - One canonical interactive Run Coordinator for ordinary assistant turns: Brain Run lifecycle, bounded context, plan, restricted tools, verification, answer and audit.
 - Provider-neutral typed tool contracts with strict payload validation and model-visible read-only subsets only.
 - Optional native OpenAI-compatible tool calling plus a deterministic restricted-tool fallback for providers without function calling.
@@ -103,6 +109,19 @@ Acceptance: offline checks, plugin tests/typecheck/build/install pass; real Obsi
 - Keep the efficient language boundary: Python for policy/model/storage/transactions and TypeScript for Obsidian interaction/rendering.
 
 Acceptance: fake-provider integration proves a registered Vault tool is actually called and observed by the final model; invented mutating tools are blocked; secrets never reach model context or persistence; interrupted runs recover honestly; all backend/plugin/type/build/install gates pass; installed Obsidian health reports Assistant Runtime V2 without a real model call or knowledge write.
+
+## Phase 11 — Pi Agent Runtime
+
+Status: implementation and release gates complete on 2026-07-20; packaging and PR handoff remain.
+
+- Pi Agent Core/AI are the sole production Agent kernel in TypeScript; Python is a secure I/O and execution boundary only.
+- DeepSeek selects stable typed tools and replans from Observations without a keyword or auxiliary Intent Router.
+- Task-scoped reversible Markdown changes apply directly with snapshot, hash verification, Action Result, Diff and conflict-safe Undo.
+- Session Tree, Fork, Steering, Follow-up, cancellation, turn-aware compaction, stall protection and durable reconnect survive restarts.
+- Hybrid Vault retrieval, capability probing and isolated developer workspaces are production tools with conservative policy fallbacks.
+- Provider private reasoning is never a public event, ordinary message, Markdown field or DOM element.
+
+Acceptance: architecture gates prove no PydanticAI/Brain loop or prose router remains; all Python/plugin/type/build/security tests pass; real Keychain-backed DeepSeek scenarios A–H exercise read, retrieval, direct reversible write/undo, plan-only, developer execution, Steering and Follow-up without exposing a key or private reasoning.
 
 ## Deferred backlog
 

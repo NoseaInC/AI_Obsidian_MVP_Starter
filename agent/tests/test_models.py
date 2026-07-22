@@ -10,8 +10,6 @@ from pathlib import Path
 
 from agent.core.models import FakeKeyStore, MacKeychainStore, ModelProfileService, OpenAICompatibleProvider, validate_base_url, validate_headers
 from agent.core.service import AgentService
-from agent.brain.model_gateway import BrainModelGateway, INTENT_SCHEMA, parse_model_json
-from agent.brain.errors import BrainError
 
 
 class _Response:
@@ -69,6 +67,28 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(self.keys.get("deepseek-main"), "existing-secret")
         with self.assertRaises(ValueError):
             self.service.save_model_profile(self.profile(apiKey="", apiKeyReference="bad reference with spaces"))
+
+    def test_legacy_deepseek_profile_receives_reasoning_capability_defaults(self):
+        self.keys.set("legacy-deepseek", "existing-secret")
+        self.service.store.upsert_model_profile({
+            "id": "legacy-deepseek-profile",
+            "displayName": "Legacy DeepSeek",
+            "providerType": "deepseek",
+            "baseUrl": "https://api.deepseek.com",
+            "apiKeyReference": "legacy-deepseek",
+            "defaultModel": "deepseek-chat",
+            "availableModels": ["deepseek-chat"],
+            "enabled": True,
+            "settings": {"maxTokens": 4096},
+        })
+        profile = next(
+            item for item in self.service.list_model_profiles()
+            if item["id"] == "legacy-deepseek-profile"
+        )
+        self.assertTrue(profile["settings"]["reasoningContent"])
+        self.assertTrue(profile["settings"]["nativeToolCalling"])
+        self.assertEqual(profile["settings"]["thinkingControl"], "provider-default")
+        self.assertEqual(profile["settings"]["maxTokens"], 4096)
 
     def test_base_url_and_protected_headers(self):
         self.assertEqual(validate_base_url("https://api.example.com/v1/"), "https://api.example.com/v1")
@@ -172,19 +192,7 @@ class ModelTests(unittest.TestCase):
         self.assertNotIn("解释平衡性", log)
         self.assertNotIn("sk-test-secret", log)
 
-    def test_brain_model_gateway_uses_routed_structured_output_and_strict_json(self):
-        saved = self.service.save_model_profile(self.profile())
-        self.service.set_model_routing({"intent_router": {"profileId": saved["id"], "modelOverride": "test-model"}})
-        class Provider:
-            def structured_output(self, model, messages, schema, **options):
-                return {"choices": [{"message": {"content": '{"primary_intent":"capture_text","secondary_intents":[],"confidence":0.9}'}}]}
-        with patch.object(self.service.models, "provider", return_value=Provider()):
-            result = BrainModelGateway(self.service.models).classify_intent(type("Request", (), {"text": "ambiguous", "mode": "auto"})())
-        self.assertEqual(result["primary_intent"], "capture_text")
-        self.assertIn("enum", json.dumps(INTENT_SCHEMA))
-        with self.assertRaises(BrainError): parse_model_json({"choices": [{"message": {"content": "not json"}}]})
-
-    def test_brain_tutor_uses_assistant_chat_route_and_marks_unverified_answer(self):
+    def test_explicit_tutor_workflow_uses_assistant_chat_route_and_marks_unverified_answer(self):
         saved = self.service.save_model_profile(self.profile())
         self.service.set_model_routing({"assistant_chat": {"profileId": saved["id"], "modelOverride": "test-model"}})
         class Provider:
@@ -193,7 +201,7 @@ class ModelTests(unittest.TestCase):
                 return {"choices": [{"message": {"content": "你好，我是模型生成的学习助手回答。"}}]}
         provider = Provider()
         with patch.object(self.service.models, "provider", return_value=provider):
-            run = self.service.submit_brain({"text": "你好", "mode": "auto"}, "model-tutor-run")
+            run = self.service.submit_workflow({"text": "你好", "mode": "tutor"}, "model-tutor-run")
         self.assertEqual(run["status"], "completed")
         result = run["result"]["results"][0]
         self.assertEqual(result["answer"], "你好，我是模型生成的学习助手回答。")

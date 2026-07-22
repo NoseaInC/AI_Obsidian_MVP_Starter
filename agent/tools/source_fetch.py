@@ -7,7 +7,15 @@ from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 
-ALLOWED_CONTENT_TYPES = {"text/html", "text/plain", "application/json", "application/xml", "text/xml"}
+ALLOWED_CONTENT_TYPES = {
+    "text/html",
+    "text/plain",
+    "application/json",
+    "application/xml",
+    "application/atom+xml",
+    "application/rss+xml",
+    "text/xml",
+}
 
 
 def validate_public_url(url: str, resolver: Callable[[str], list[str]] | None = None) -> str:
@@ -37,7 +45,16 @@ class PublicRedirectHandler(HTTPRedirectHandler):
 def fetch_user_url(payload: dict[str, Any], *, opener: Callable[..., Any] = urlopen) -> dict[str, Any]:
     url = validate_public_url(str(payload.get("url", "")), payload.get("resolver"))
     max_bytes = max(1024, min(2_000_000, int(payload.get("max_bytes", 500_000))))
-    request = Request(url, headers={"User-Agent": "Zhixu-Agent/1.0", "Accept": "text/html,text/plain,application/json"})
+    request = Request(
+        url,
+        headers={
+            "User-Agent": "Zhixu-Agent/1.0 (+local Obsidian research runtime)",
+            "Accept": (
+                "text/html,text/plain,application/json,application/xml,"
+                "application/atom+xml,application/rss+xml"
+            ),
+        },
+    )
     resolver = payload.get("resolver")
     active_opener = build_opener(PublicRedirectHandler(resolver)).open if opener is urlopen else opener
     with active_opener(request, timeout=max(1, min(20, int(payload.get("timeout", 8))))) as response:

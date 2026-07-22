@@ -1,6 +1,6 @@
 # Vault 自动化永久约束
 
-工程阶段、验收标准和当前恢复点见 `PROJECT_ROADMAP.md`、`PROJECT_STATUS.md`；重要取舍见 `DECISIONS.md`。每次实现后运行 `./scripts/check.sh`，修复 P0/P1 后再推进下一阶段。
+工程阶段、验收标准和当前恢复点见 `PROJECT_ROADMAP.md`、`PROJECT_STATUS.md`；重要取舍见 `DECISIONS.md`；专题规范索引见 `docs/README.md`。每次实现后运行 `./scripts/check.sh`，修复 P0/P1 后再推进下一阶段。
 
 - 原始 PDF 只能在本地读取，不得上传；模型 API 只接收带 `PAGE` 标记的本地提取文本。
 - 密钥只从环境变量读取，不得写入仓库、日志、Markdown、缓存或测试夹具。

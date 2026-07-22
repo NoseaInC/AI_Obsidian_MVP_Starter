@@ -9,8 +9,6 @@ import urllib.request
 from pathlib import Path
 
 from agent.api.server import serve
-from agent.brain.intent_router import IntentRouter
-from agent.brain.schemas import BrainRequest
 from agent.core.intake import IntakeService
 from agent.core.models import FakeKeyStore
 from agent.core.service import AgentService
@@ -130,34 +128,31 @@ class IntakeTests(unittest.TestCase):
         saved = self.service.submit_intake({
             "conversation_id": save_conversation["id"], "message": "研究这个网页并保存到 Obsidian",
             "attachments": [{"attachment_id": save_attachment["id"]}],
+            "mode": "save",
         }, "url-save-flow")
         web_change = next(item for item in saved["artifacts"] if item["type"] == "change_set")
         self.assertIn("网页研究包", web_change["payload"]["summary"])
         self.assertEqual(calls, ["https://1.1.1.1/article"])
 
-    def test_capture_produces_versioned_artifacts_and_change_set(self) -> None:
-        result = self.service.submit_intake({"message": "请保存这个灵感：用知识缺口驱动学习任务"}, "intake-artifacts")
+    def test_structured_save_produces_a_reversible_write_result(self) -> None:
+        result = self.service.submit_intake({"message": "用知识缺口驱动学习任务", "mode": "save"}, "intake-artifacts")
         types = {item["type"] for item in result["artifacts"]}
-        self.assertIn("capture_proposal", types)
-        self.assertIn("change_set", types)
-        capture = next(item for item in result["artifacts"] if item["type"] == "capture_proposal")
-        revised = self.service.revise_agent_artifact(capture["id"], {"instruction": "不要拆成多篇，只保留一篇主笔记", "expected_version": 1})
-        self.assertEqual(revised["version"], 2)
-        self.assertEqual(revised["payload"]["splitStrategy"], "single-main-note")
-        self.assertEqual(revised["versions"][0]["parent_version"], 1)
-        with self.assertRaisesRegex(ValueError, "stale_artifact_revision"):
-            self.service.revise_agent_artifact(capture["id"], {"instruction": "继续修改", "expected_version": 1})
+        self.assertIn("write_result", types)
+        self.assertEqual(result["organization"]["status"], "applied")
+        changed = next(item for item in result["organization"]["results"] if item.get("path"))
+        self.assertTrue(changed["undoAvailable"])
+        self.assertTrue((self.vault / changed["path"]).exists())
 
     def test_followup_revises_active_artifact_in_same_conversation(self) -> None:
-        first = self.service.submit_intake({"message": "请整理并保存：Agent 应该先生成提案"}, "intake-first")
+        first = self.service.submit_intake({"message": "Agent 应该先生成提案", "mode": "save"}, "intake-first")
         active = first["conversation"]["activeArtifactId"]
-        second = self.service.submit_intake({"conversation_id": first["conversation"]["id"], "message": "不要拆成三篇，只保留一篇主笔记。"}, "intake-second")
+        second = self.service.submit_intake({"conversation_id": first["conversation"]["id"], "message": "不要拆成三篇，只保留一篇主笔记。", "artifact_revision": True}, "intake-second")
         self.assertEqual(second["artifacts"][0]["id"], active)
         self.assertEqual(second["artifacts"][0]["version"], 2)
         self.assertEqual(second["run"]["primary_intent"], "continue_artifact_revision")
 
     def test_intake_idempotency_does_not_duplicate_artifacts(self) -> None:
-        body = {"message": "请保存：同一个请求只执行一次"}
+        body = {"message": "同一个请求只执行一次", "mode": "save"}
         first = self.service.submit_intake(body, "same-intake-key")
         second = self.service.submit_intake(body, "same-intake-key")
         self.assertTrue(second["idempotent"])
@@ -169,7 +164,7 @@ class IntakeTests(unittest.TestCase):
 
     def test_assistant_task_thread_groups_one_learning_pack_and_one_quiz(self) -> None:
         result = self.service.submit_intake(
-            {"message": "把 PSM 整理成学习包，先讲直觉，暂时不要公式。", "mode": "tutor"},
+            {"message": "把 PSM 整理成学习包，先讲直觉，暂时不要公式。", "mode": "tutor", "requested_output": "learning_pack"},
             "assistant-learning-pack",
         )
         self.assertEqual(result["task_thread"]["status"], "completed")
@@ -310,12 +305,6 @@ class IntakeTests(unittest.TestCase):
         self.assertGreaterEqual(materials[0]["artifactCount"], 1)
         self.assertTrue(any(job["kind"] == "prepare-pdf" for job in self.service.list_jobs()))
 
-    def test_router_supports_material_multi_intent(self) -> None:
-        result = IntentRouter().route(BrainRequest(text="帮我整理这个 PDF，检查知识缺口，并安排后续学习"))
-        self.assertEqual(result.primary_intent, "organize_material")
-        self.assertIn("create_study_plan", result.secondary_intents)
-        self.assertIn("analyze_knowledge_gap", result.secondary_intents)
-
     def test_ssrf_guards_reject_local_private_and_file_urls(self) -> None:
         for url in ("http://localhost/a", "file:///tmp/a", "http://127.0.0.1/a", "http://10.0.0.2/a"):
             with self.subTest(url=url), self.assertRaises(ValueError):
@@ -331,7 +320,7 @@ class IntakeTests(unittest.TestCase):
         base = f"http://127.0.0.1:{server.server_port}/api/v1"
         try:
             request = urllib.request.Request(
-                f"{base}/intake/submit", method="POST", data=json.dumps({"message": "请保存：API Intake"}).encode(),
+                f"{base}/intake/submit", method="POST", data=json.dumps({"message": "API Intake", "mode": "save"}).encode(),
                 headers={"Authorization": "Bearer session", "Content-Type": "application/json", "Idempotency-Key": "api-intake"},
             )
             with urllib.request.urlopen(request) as response:

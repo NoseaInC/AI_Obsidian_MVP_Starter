@@ -25,6 +25,10 @@ test("task thread exposes five human steps and hides technical failures by defau
   assert.equal(failure.title, "本地资料中没有找到足够依据");
   assert.equal(failure.actions.length, 3);
   assert.equal(failure.actions[0].id, "trusted-research");
+  const protectedWrite = mod.humanizeAssistantError("ValueError", "reviewed_core_read_only", true);
+  assert.equal(protectedWrite.title, "正式知识受到保护");
+  assert.equal(protectedWrite.actions[0].id, "retry");
+  assert.equal(protectedWrite.technicalCode, "reviewed_core_read_only");
 });
 
 test("artifact grouping deduplicates results and keeps quiz inside one learning pack", async () => {
@@ -101,7 +105,7 @@ test("assistant visual contract contains the three-column task and result experi
   assert.match(css, /\.la-learning-pack__grid/);
   assert.match(views, /latestMessage\?\.taskThreadId/);
   assert.doesNotMatch(views, /result\.task_thread \?\? taskThreadFromRun/);
-  for (const label of ["当前理解", "Agent 正在做什么", "最近修改", "需要确认一个指代", "最近对话信号", "本会话不用于个性化", "低风险维护可撤销", "打开笔记", "查看变化", "撤销"]) assert.match(views, new RegExp(label));
+  for (const label of ["当前理解", "Agent 正在做什么", "最近修改", "需要确认一个指代", "最近对话信号", "本会话不用于个性化", "Harness 校验并可撤销", "打开笔记", "查看变化", "撤销"]) assert.match(views, new RegExp(label));
   assert.match(views, /本地优先 · 低风险写入可撤销/);
   assert.doesNotMatch(views, /写入先审核/);
   assert.match(views, /\/agent-actions\/\$\{encodeURIComponent\(change\.actionId\)\}\/undo/);

@@ -1,5 +1,31 @@
 # Technical Decisions
 
+## D-048 — Permission is a paused tool call, not a completed conversational turn
+
+- A sensitive operation emits one typed inline permission request and suspends the exact tool Promise inside the active Pi Run.
+- Confirmation expands only that Run's persisted Task Authorization and retries the same `toolCallId`; rejection returns a blocked Observation so the model can continue without pretending the operation occurred.
+- Permission UI must be mounted while consuming the live stream. Rendering it only after the stream ends creates a deadlock because the stream is waiting for the decision.
+- “Allow all” means all otherwise-safe reversible capabilities for the current Run. It never means unrestricted filesystem, secret access, external side effects, or permission to mutate reviewed/core knowledge.
+
+## D-049 — Folder organization is a first-class reversible Vault transaction
+
+- Directory creation and Markdown moves use a dedicated `organize_vault_notes` contract instead of shell commands or asking the user to perform manual file operations.
+- Authorization contains exact directories and source→target pairs. The Harness normalizes paths, rejects traversal/symlinks/collisions/protected content, snapshots sources, atomically writes and verifies targets, removes sources only after verification, and can restore the whole batch.
+- Non-formal source-index drafts under `10-Sources` may be reorganized with explicit permission. reviewed/core and other protected sources remain immutable regardless of permission mode.
+- Developer self-modification remains isolated to a persisted run-owned Git worktree. A permission grant verifies that persisted workspace record and never trusts a client-provided project path.
+
+## D-050 — Developer authority is operation-scoped and server-derived
+
+- Creating an isolated Git worktree establishes only an execution location; it grants no read, write, command, Git, validation, activation or rollback authority by itself.
+- A permission expansion names the persisted workspace and the exact operation. The server reloads the workspace record, ignores client-supplied project paths and grants either that one operation or the fixed reversible developer operation set for the current Run.
+- Developer mode never extends to the real Vault knowledge tree, arbitrary shell access, secrets, external side effects or reviewed/core mutation.
+
+## D-051 — Rollback must preserve later human edits
+
+- A transaction may replace or restore a path only when its current hash still matches the state that transaction created or staged.
+- Apply and organization move old inodes into private transaction staging before publishing new files with exclusive creation. Rollback and Undo use the same exclusive/hash-checked protocol and fail closed rather than deleting or overwriting concurrent human content.
+- Frontmatter protection parsing accepts BOMs, quoted values and inline comments and fails closed on invalid UTF-8 or ambiguous protection metadata.
+
 ## D-001 — Markdown is the knowledge source of truth
 
 SQLite may store jobs, prepared bundle indexes, audit records, mastery history, quizzes and recommendations. Knowledge prose and user edits remain Markdown in the Vault.
@@ -96,9 +122,9 @@ Current-message entities, authorized attachments, active artifacts and recent co
 
 Material Bundles describe what the input contains; Organization Plans decide what Obsidian result should exist. This separation keeps source understanding reusable while filesystem policy remains deterministic.
 
-## D-025 — Explicit save authorizes bounded high-autonomy writes
+## D-025 — Superseded by task-scoped authorization
 
-In high mode, an explicit save/update request may create a marked draft or append a managed block to an ordinary draft without another confirmation. Snapshot, hash verification, audit and Undo are mandatory. Protected/core and large/destructive work still require Change Set confirmation.
+The former autonomy-mode write exception is replaced by D-042. Permission is derived from the current structured Task Authorization, not from prose matching or a global autonomy level.
 
 ## D-026 — Turn bundles store references, not raw prose
 
@@ -136,6 +162,54 @@ Python retains local security, model, PDF, SQLite and transaction authority beca
 
 Provider SSE deltas are cumulative state, not disposable plain text. The Obsidian client renders them at a bounded cadence into a detached staging node and atomically swaps only completed Markdown DOM. `message.completed` supplies the persisted message metadata, so ordinary completion adds actions and timestamps in place and must not clear the node or rebuild the whole workspace.
 
-## D-035 — A write confirmation inherits a proposal, never the command text
+## D-035 — Superseded: prose is never the permission boundary
 
-A terse confirmation such as `写入` has no standalone document meaning. It may inherit only a recent explicit assistant proposal with an allowlisted Markdown target and provenance message. The inherited result is one pending Change Set; reviewed/core becomes an update suggestion, and application still requires explicit Diff confirmation. If no proposal exists the system requests a target. Creation and apply validation both reject command-only note artifacts so stale historical proposals cannot bypass the corrected resolver.
+The runtime no longer interprets terse phrases as approval. Pi decides whether a tool is needed; the Harness validates the concrete operation against the Task Authorization. Ordinary in-scope reversible Markdown writes execute directly and return an Action Result with Diff and Undo.
+
+## D-036 — Agent planning is Observation-driven and authority remains local
+
+Each Assistant Runtime V3 round selects exactly one action: call one currently allowed typed tool, answer, or request one minimal clarification. The resulting Observation returns to the model before the next decision. Native Function Calling and strict JSON Planner mode share the same Tool Registry, permission levels, schemas and resource-scope checks. The model may see `create_change_set` as a proposal capability but can never see or invoke `apply_confirmed_change_set`. Ordered events and checkpoints are runtime metadata; request prose, note excerpts and Change Set bodies remain private files outside SQLite.
+
+## D-037 — Superseded by Pi runtime
+
+The PydanticAI production kernel described here has been retired. D-044 defines the only supported production loop.
+
+## D-038 — Questions and scope expansion stay inside the same Run
+
+Inline interruption is reserved for `ask_user`, scope expansion, irreversible work and external side effects. Ordinary authorized Markdown changes do not pause the Run. Backend hashes, protection policy and transactions remain authoritative and cannot be overridden by confirmation.
+
+## D-039 — Settings persistence has one frontend boundary
+
+Views may read model settings but cannot write provider Profiles or routing endpoints directly. SettingsService is the only frontend persistence boundary; the backend still validates URLs, protected headers, known routes and Keychain references. API keys never enter plugin persistence.
+
+## D-040 — Superseded: Harness validates actions, not intentions
+
+The Harness validates actual tool calls against task scope, safe roots, hashes and protection state. It directly executes authorized reversible work, asks only for a real scope expansion, and denies non-bypassable policy violations. There is no ordinary-write approval inbox.
+
+## D-041 — Main Assistant intent is the model's tool loop, not a classifier
+
+Pi exposes the stable typed tool set on every turn. The same DeepSeek Agent selects a tool, receives its Observation and replans. No production or legacy intake path uses keyword, regex, token or fixed-phrase intent routing; structured intake modes remain explicit API fields.
+
+## D-042 — Explicit task authorization replaces repetitive write approval
+
+Once the user gives an explicit task, that Turn authorizes reversible operations inside its bounded resource and operation scope. The Agent may directly execute controlled Markdown or developer-workspace changes. The first structured plan establishes and freezes the concrete operation/path scope for that Turn; later plans cannot silently add paths, roots or operations. Safety comes from path policy, protected status, snapshots, base hashes, atomic transactions, verification and conflict-safe Undo—not repeated confirmation. Only scope expansion, irreversible operations or external side effects pause the user.
+
+## D-043 — Action Journal is recovery infrastructure, not an approval inbox
+
+Action, Snapshot, Diff, Transaction and Undo records remain private recovery infrastructure. The product does not expose a standalone audit center or pending-approval list. Normal interaction presents only the operation result, View Changes and Undo.
+
+## D-044 — Pi is the sole Agent kernel
+
+Pi Agent Core and Pi AI own the model/tool loop, Session Tree, Steering, Follow-up, Compaction and events in the Obsidian TypeScript process. Python retains the secure model proxy, Keychain, governed tool execution, hybrid index, transactions and persistence. PydanticAI no longer participates in production. Runtime upgrades use a two-phase handshake: Python validates the merged clean commit, while the plugin owns fixed check/build/install/restart/health operations and invokes governed rollback on failure.
+
+## D-045 — Model identity is resolved at the proxy and every stream is terminal
+
+Provider-neutral runtime identifiers such as `configured-assistant-model` never cross the secure model-proxy boundary as provider model names. The proxy resolves them through the selected Profile and emits the protocol's canonical `error` event for provider failures. The TypeScript transport treats timeout and EOF without `done` or `error` as failure, so every started turn reaches exactly one terminal client state. UI setup is single-flight and crash recovery expires orphaned Pi Runs; neither a provider rejection nor a plugin restart may leave a permanently running task.
+
+## D-046 — Provider reasoning is visible only as an authentic protocol block
+
+When a configured provider returns a dedicated `reasoning_content` block, the secure proxy and Pi adapter preserve its ordered start/delta/end events and the Assistant renders that content in a separate collapsible “模型推理” section. The UI must not infer, summarize or fabricate reasoning from final text, tool calls, execution stages, system prompts or runtime internals. Provider reasoning is local Run-event state only: it is not Markdown knowledge, ordinary conversation text or future model context. Providers or models that return no reasoning block produce no reasoning section.
+
+## D-047 — Large content is paged or moved locally, never serialized through the model twice
+
+A model context window, model output budget and tool-result page are distinct limits. The selected Model Profile/capability probe owns context and output limits; the runtime must not impose an undocumented 32K clamp. Long Markdown reads use explicit `offset`, `next_offset` and `truncated` fields. Exact multi-file copy/organization operations use a governed Harness-side batch tool so note bodies travel from local source files into authenticated Change Sets without first being echoed through model function arguments. Provider output ending at `finish_reason=length` or containing malformed function arguments is a typed terminal protocol error and must never reach the plugin as a partial JSON tool call.

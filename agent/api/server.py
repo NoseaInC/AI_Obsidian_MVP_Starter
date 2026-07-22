@@ -54,7 +54,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             safe = redact(str(exc))
             failure = {
-                "schemaVersion": 1, "seq": 1, "type": "run.failed",
+                "schemaVersion": 3, "seq": 1, "type": "run.failed",
                 "runId": "assistant-run-error", "conversationId": "",
                 "code": type(exc).__name__,
                 "message": safe if isinstance(safe, str) else "助手流启动失败",
@@ -129,6 +129,26 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/plans/current": payload = self.service.current_plan()
             elif path == "/model-profiles": payload = {"profiles": self.service.list_model_profiles()}
             elif path == "/model-routing": payload = {"routes": self.service.model_routing()}
+            elif path == "/model/capabilities":
+                payload = self.service.model_capabilities(str(query.get("profile_id", [""])[0]))
+            elif path == "/tools/contracts": payload = self.service.tool_contracts()
+            elif path.startswith("/agent/runs/") and path.endswith("/events"):
+                payload = self.service.pi_run_events(
+                    self._identifier(path.removeprefix("/agent/runs/").removesuffix("/events")),
+                    int(query.get("after", [0])[0]),
+                )
+            elif path.startswith("/agent/sessions/"):
+                payload = self.service.pi_session(
+                    self._identifier(path.removeprefix("/agent/sessions/"))
+                )
+            elif path.startswith("/actions/") and path.endswith("/diff"):
+                payload = self.service.get_agent_action_diff(
+                    self._identifier(path.removeprefix("/actions/").removesuffix("/diff"))
+                )
+            elif path.startswith("/actions/"):
+                payload = self.service.get_agent_action(
+                    self._identifier(path.removeprefix("/actions/"))
+                )
             elif path == "/conversations": payload = self.service.list_conversations(int(query.get("limit", [50])[0]), int(query.get("offset", [0])[0]))
             elif path.startswith("/conversations/"): payload = {"conversation": self.service.get_conversation(self._identifier(path.removeprefix("/conversations/")))}
             elif path.startswith("/conversation-focus/"): payload = {"focus": self.service.conversation_focus(self._identifier(path.removeprefix("/conversation-focus/")))}
@@ -143,23 +163,20 @@ class Handler(BaseHTTPRequestHandler):
             elif path.startswith("/artifacts/"): payload = {"artifact": self.service.get_agent_artifact(self._identifier(path.removeprefix("/artifacts/")))}
             elif path == "/materials": payload = self.service.list_materials(str(query.get("status", [""])[0]), int(query.get("limit", [100])[0]), int(query.get("offset", [0])[0]))
             elif path.startswith("/materials/"): payload = {"material": self.service.get_material(self._identifier(path.removeprefix("/materials/")))}
-            elif path == "/brain/runs":
-                payload = self.service.list_brain_runs(limit=int(query.get("limit", [50])[0]), offset=int(query.get("offset", [0])[0]), status=str(query.get("status", [""])[0]))
-            elif path.startswith("/brain/runs/") and path.endswith("/events"):
-                payload = self.service.brain_events(self._identifier(path.removeprefix("/brain/runs/").removesuffix("/events")))
-            elif path.startswith("/brain/runs/"):
-                payload = {"run": self.service.get_brain_run(self._identifier(path.removeprefix("/brain/runs/")))}
-            elif path == "/brain/capabilities": payload = self.service.brain_capabilities()
-            elif path == "/brain/health": payload = self.service.brain_health()
-            elif path == "/brain/diagnostics": payload = self.service.brain_diagnostics()
+            elif path == "/runtime/capabilities": payload = self.service.brain_capabilities()
+            elif path == "/runtime/diagnostics": payload = self.service.brain_diagnostics()
             elif path == "/research-bundles": payload = self.service.list_research_bundles(int(query.get("limit", [50])[0]), int(query.get("offset", [0])[0]))
             elif path == "/web/sources": payload = {"sources": self.service.store.list_web_sources(int(query.get("limit", [100])[0]))}
+            elif path == "/web/capabilities": payload = self.service.web_capabilities()
             elif path == "/autonomy": payload = self.service.autonomy_status()
             elif path == "/agent-actions": payload = {"actions": self.service.store.list_agent_actions(int(query.get("limit", [100])[0]))}
             elif path.startswith("/agent-actions/"): payload = {"action": self.service.store.get_agent_action(self._identifier(path.removeprefix("/agent-actions/")))}
             elif path.startswith("/research-bundles/"): payload = {"bundle": self.service.get_research_bundle(self._identifier(path.removeprefix("/research-bundles/")))}
             elif path == "/curriculum/candidates": payload = self.service.list_curriculum_candidates(str(query.get("status", ["active"])[0]))
-            elif path.startswith("/brain-change-sets/"): payload = {"change_set": self.service.get_brain_change_set(self._identifier(path.removeprefix("/brain-change-sets/")))}
+            elif path.startswith("/change-sets/") and path.endswith("/diff"):
+                payload = {"diff": self.service.diff_change_set(self._identifier(path.removeprefix("/change-sets/").removesuffix("/diff")))}
+            elif path.startswith("/change-sets/"):
+                payload = {"change_set": self.service.get_change_set(self._identifier(path.removeprefix("/change-sets/")))}
             elif path.startswith("/prepared/"): payload = {"preview": self.service.inspect_prepared(self._identifier(path.removeprefix("/prepared/")))}
             elif path.startswith("/reviews/") and path.endswith("/diff"):
                 payload = {"diff": self.service.diff_review(self._identifier(path.removeprefix("/reviews/").removesuffix("/diff")))}
@@ -190,8 +207,36 @@ class Handler(BaseHTTPRequestHandler):
                     payload = {"attachment": self.service.create_attachment(metadata, raw, content_type)}
                 self._send(200, payload); return
             body = self._body()
-            if path == "/assistant/stream":
-                self._send_ndjson(self.service.assistant_stream(body)); return
+            if path == "/model/stream":
+                self._send_ndjson(self.service.stream_model_proxy(body)); return
+            if path == "/model/capabilities/probe":
+                self._send(200, self.service.probe_model_capabilities(str(body.get("profileId") or body.get("profile_id") or ""))); return
+            if path == "/task-authorizations":
+                self._send(200, self.service.register_task_authorization(body)); return
+            if path.startswith("/task-authorizations/") and path.endswith("/expand"):
+                authorization_id = self._identifier(
+                    path.removeprefix("/task-authorizations/").removesuffix("/expand")
+                )
+                self._send(200, self.service.expand_task_authorization(authorization_id, body)); return
+            if path == "/agent/events":
+                self._send(200, self.service.append_pi_events(body)); return
+            if path.startswith("/agent/runs/") and path.endswith("/control"):
+                run_id = self._identifier(
+                    path.removeprefix("/agent/runs/").removesuffix("/control")
+                )
+                self._send(200, self.service.control_pi_run(run_id, body)); return
+            if path.startswith("/agent/runs/") and path.endswith("/cancel"):
+                run_id = self._identifier(
+                    path.removeprefix("/agent/runs/").removesuffix("/cancel")
+                )
+                self._send(200, self.service.cancel_pi_run(run_id)); return
+            if path == "/tools/call":
+                self._send(200, self.service.call_runtime_tool(body)); return
+            if path.startswith("/actions/") and path.endswith("/undo"):
+                action_id = self._identifier(
+                    path.removeprefix("/actions/").removesuffix("/undo")
+                )
+                self._send(200, self.service.undo_agent_action(action_id)); return
             if path == "/intake/submit":
                 payload = self.service.submit_intake(body, self.headers.get("Idempotency-Key", ""))
             elif path == "/conversations":
@@ -247,21 +292,16 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/chat/stream": payload = self.service.chat(body, stream=True)
             elif path == "/integrations/today/add": payload = self.service.add_artifact_to_today(str(body["artifact_id"]))
             elif path == "/integrations/today/undo": payload = self.service.undo_artifact_today(str(body["artifact_id"]))
-            elif path == "/brain/requests": payload = {"run": self.service.submit_brain(body, self.headers.get("Idempotency-Key", ""))}
-            elif path == "/brain/capture": payload = {"run": self.service.submit_brain(body, self.headers.get("Idempotency-Key", ""), mode="capture")}
-            elif path == "/brain/organize": payload = {"run": self.service.submit_brain(body, self.headers.get("Idempotency-Key", ""), mode="organize")}
-            elif path == "/brain/research": payload = {"run": self.service.submit_brain(body, self.headers.get("Idempotency-Key", ""), mode="research")}
+            elif path.startswith("/workflows/"):
+                workflow = self._identifier(path.removeprefix("/workflows/"))
+                payload = {"run": self.service.submit_workflow(body, self.headers.get("Idempotency-Key", ""), mode=workflow)}
             elif path == "/web/search": payload = self.service.search_public_web(str(body.get("query") or ""), int(body.get("limit", 8)))
+            elif path == "/web/academic": payload = self.service.search_academic_web(str(body.get("query") or ""), int(body.get("limit", 8)))
             elif path == "/web/fetch": payload = {"source": self.service.fetch_public_web(str(body.get("url") or ""))}
             elif path == "/web/research": payload = self.service.research_public_web(str(body.get("query") or ""), list(body.get("urls") or []) or None, int(body.get("limit", 5)))
             elif path == "/vault/changes": payload = self.service.apply_autonomous_vault_change(body)
             elif path.startswith("/agent-actions/") and path.endswith("/undo"):
                 payload = self.service.undo_autonomous_vault_change(self._identifier(path.removeprefix("/agent-actions/").removesuffix("/undo")))
-            elif path == "/brain/tutor": payload = {"run": self.service.submit_brain(body, self.headers.get("Idempotency-Key", ""), mode="tutor")}
-            elif path.startswith("/brain/runs/") and path.endswith("/cancel"):
-                payload = {"run": self.service.cancel_brain_run(self._identifier(path.removeprefix("/brain/runs/").removesuffix("/cancel")))}
-            elif path.startswith("/brain/runs/") and path.endswith("/retry"):
-                payload = {"run": self.service.retry_brain_run(self._identifier(path.removeprefix("/brain/runs/").removesuffix("/retry")))}
             elif path.startswith("/research-bundles/") and path.endswith("/add-to-plan"):
                 payload = {"proposal": self.service.add_research_to_plan(self._identifier(path.removeprefix("/research-bundles/").removesuffix("/add-to-plan")))}
             elif path.startswith("/research-bundles/") and path.endswith("/save"):
@@ -271,8 +311,6 @@ class Handler(BaseHTTPRequestHandler):
                 payload = {"proposal": self.service.confirm_plan_proposal(self._identifier(path.removeprefix("/plans/proposals/").removesuffix("/confirm")))}
             elif path.startswith("/curriculum/candidates/") and path.endswith("/action"):
                 payload = self.service.curriculum_candidate_action(self._identifier(path.removeprefix("/curriculum/candidates/").removesuffix("/action")), str(body.get("action", "")), body.get("cooldown_until"))
-            elif path.startswith("/brain-change-sets/") and path.endswith("/apply"):
-                payload = {"change_set": self.service.apply_brain_change_set(self._identifier(path.removeprefix("/brain-change-sets/").removesuffix("/apply")), bool(body.get("confirmed", False)))}
             elif path.startswith("/artifacts/") and path.endswith("/revise"):
                 payload = {"artifact": self.service.revise_agent_artifact(self._identifier(path.removeprefix("/artifacts/").removesuffix("/revise")), body)}
             elif path.startswith("/artifacts/") and path.endswith("/action"):
