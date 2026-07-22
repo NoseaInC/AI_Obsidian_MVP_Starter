@@ -1,10 +1,10 @@
 {
   "planVersion": 1,
   "branch": "pi-runtime-hardening",
-  "completed": ["T01", "T02", "T03"],
-  "currentTask": "T04",
+  "completed": ["T01", "T02", "T03", "T04"],
+  "currentTask": "T05",
   "status": "running",
   "blockedReason": "",
   "lastCommit": "",
-  "updatedAt": "2026-07-22T01:00:00Z"
+  "updatedAt": "2026-07-22T02:00:00Z"
 }

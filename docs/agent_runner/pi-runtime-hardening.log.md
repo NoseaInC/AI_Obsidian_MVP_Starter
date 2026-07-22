@@ -2,7 +2,7 @@
 
 计划：docs/agent_runner/PI_RUNTIME_HARDENING_AUTORUN.md
 分支：pi-runtime-hardening
-已完成：T01、T02
+已完成：T01、T02、T03、T04
 
 ## 任务记录格式
 
@@ -10,12 +10,17 @@
 
 ## T03 Stall Guard 副作用感知
 
-- 修改文件：
-  - obsidian-agent-plugin/src/core/runtime/pi/PiStallGuard.ts
-  - obsidian-agent-plugin/src/core/runtime/pi/PiToolAdapter.ts
-  - obsidian-agent-plugin/tests/pi-stall-guard.test.mjs（新增）
-- 实现：beforeTool 接收 toolCallId/mutatesState/idempotent/permissionLevel；只读可复用 Observation；有副作用幂等工具始终重执行（后端幂等，含授权恢复）；有副作用非幂等等价重复调用返回 duplicate_non_idempotent_tool_call 且不复用旧结果。新增 consecutiveNoProgress / uniqueObservationCount / uniqueActionIds 进度状态：连续无进展 2 次 no_new_information、4 次 stall_replan_required、6 次安全终止。保留 32 请求 / 96 工具 / 30 分钟硬上限，新 Turn reset() 重置。
-- 目标测试：pi-stall-guard.test.mjs（9 用例）：只读复用、非幂等重复拦截、幂等写重执行、新观察清零、新 Turn 重置、6 次终止、适配器级只读不重调后端、非幂等重复被拦截、幂等写重执行。
-- 完整门禁：python compileall + unittest 195 passed；npm typecheck/build/test 96 passed（含 9 新）；./scripts/check.sh All offline checks passed。
+- 修改文件：PiStallGuard.ts、PiToolAdapter.ts、tests/pi-stall-guard.test.mjs（新增）
 - 提交：fix: make Stall Guard side-effect and idempotency aware
+- 门禁：python 195 passed；npm 96 passed（含 9 新）；check.sh passed。
+
+## T04 模型流三层超时
+
+- 修改文件：
+  - obsidian-agent-plugin/src/core/runtime/pi/PiModelTransport.ts
+  - obsidian-agent-plugin/tests/pi-model-timeout.test.mjs（新增）
+- 实现：用 first/idle/hard 三层定时器替换单一 45s 活动定时器。firstEvent 默认 45s；idle 普通 90s、深度推理 180s，且 start/text/thinking/tool call/usage 均重置 idle；hard 普通 15min、深度推理 30min。错误码区分 model_first_event_timeout / model_idle_timeout / model_request_deadline_exceeded / model_request_aborted。超时即 abort、保留 partial、只发一次 terminal。构造器支持注入毫秒级超时（PiModelTransport(transport, timeouts)），深度推理由 options.reasoning 决定。
+- 目标测试：tests/pi-model-timeout.test.mjs（10 用例）：无首包、首包后停滞、持续 delta、hard deadline、done 后无二次错误、用户 Abort、thinking 停滞、tool delta 重置、深度推理更大 idle 预算、普通模式同等 200ms 间隙超时。
+- 完整门禁：python compileall + unittest 195 passed；npm typecheck/build/test 106 passed（含 10 新）；./scripts/check.sh All offline checks passed。
+- 提交：fix: add rolling inactivity watchdog to model streams
 - 未完成项：无。

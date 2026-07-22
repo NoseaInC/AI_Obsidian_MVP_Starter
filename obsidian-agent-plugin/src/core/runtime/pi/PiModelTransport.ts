@@ -44,9 +44,28 @@ function findLastContentIndex(
   return -1;
 }
 
+type PiModelTimeoutConfig = {
+  firstEventMs: number;
+  idleMs: number;
+  idleDeepMs: number;
+  hardMs: number;
+  hardDeepMs: number;
+};
+
+const DEFAULT_MODEL_TIMEOUTS: PiModelTimeoutConfig = {
+  firstEventMs: 45_000,
+  idleMs: 90_000,
+  idleDeepMs: 180_000,
+  hardMs: 15 * 60_000,
+  hardDeepMs: 30 * 60_000,
+};
+
 /** Secure one-request stream function used by Pi Agent Core. */
 export class PiModelTransport {
-  constructor(private readonly transport: PiRuntimeTransport) {}
+  private readonly timeouts: PiModelTimeoutConfig;
+  constructor(private readonly transport: PiRuntimeTransport, timeouts: Partial<PiModelTimeoutConfig> = {}) {
+    this.timeouts = {...DEFAULT_MODEL_TIMEOUTS, ...timeouts};
+  }
 
   stream(identity: PiRunIdentity, model: Model<any>, context: Context, options: SimpleStreamOptions = {}, stallGuard?: PiStallGuard): AssistantMessageEventStream {
     stallGuard?.beforeModelRequest();
@@ -67,34 +86,82 @@ export class PiModelTransport {
     let started = false;
     let terminal = false;
     let providerActivity = false;
-    let activityTimedOut = false;
     const requestController = new AbortController();
     const forwardAbort = (): void => requestController.abort();
     if (options.signal?.aborted) requestController.abort();
     else options.signal?.addEventListener("abort", forwardAbort, {once: true});
-    const activityTimer = globalThis.setTimeout(() => {
+    const deep = Boolean(options?.reasoning);
+    const to = this.timeouts;
+    let firstTimedOut = false;
+    let idleTimedOut = false;
+    let hardTimedOut = false;
+    const firstTimer = globalThis.setTimeout(() => {
       if (terminal || providerActivity) return;
-      activityTimedOut = true;
+      firstTimedOut = true;
       requestController.abort();
-    }, 45_000);
+    }, to.firstEventMs);
+    let idleTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
+    const resetIdle = (): void => {
+      if (terminal) return;
+      if (idleTimer) globalThis.clearTimeout(idleTimer);
+      idleTimer = globalThis.setTimeout(() => {
+        if (terminal) return;
+        idleTimedOut = true;
+        requestController.abort();
+      }, deep ? to.idleDeepMs : to.idleMs);
+    };
+    const hardTimer = globalThis.setTimeout(() => {
+      if (terminal) return;
+      hardTimedOut = true;
+      requestController.abort();
+    }, deep ? to.hardDeepMs : to.hardMs);
     const markProviderActivity = (): void => {
-      if (providerActivity) return;
       providerActivity = true;
-      globalThis.clearTimeout(activityTimer);
+      globalThis.clearTimeout(firstTimer);
+      resetIdle();
     };
     const pushStart = (): void => {
       if (started) return;
       started = true;
       stream.push({type: "start", partial: {...partial, content: [...partial.content]}});
     };
-    const pushError = (message: string): void => {
+    const pushError = (message: string, code = "model_request_deadline_exceeded"): void => {
       if (terminal) return;
       terminal = true;
-      globalThis.clearTimeout(activityTimer);
+      globalThis.clearTimeout(firstTimer);
+      if (idleTimer) globalThis.clearTimeout(idleTimer);
+      globalThis.clearTimeout(hardTimer);
       pushStart();
       partial.stopReason = options.signal?.aborted ? "aborted" : "error";
-      partial.errorMessage = message;
-      stream.push({type: "error", reason: partial.stopReason, error: {...partial, content: [...partial.content]}});
+      partial.errorMessage = `${code}: ${message}`;
+      stream.push({
+        type: "error",
+        reason: partial.stopReason,
+        error: {...partial, content: [...partial.content]},
+        code,
+      } as unknown as Parameters<typeof stream.push>[0]);
+    };
+
+    const resolveFailure = (error?: unknown): void => {
+      if (terminal) return;
+      let code = "model_request_deadline_exceeded";
+      let message: string;
+      if (options.signal?.aborted && !firstTimedOut && !idleTimedOut && !hardTimedOut) {
+        code = "model_request_aborted";
+        message = "模型请求已被用户中止";
+      } else if (firstTimedOut) {
+        code = "model_first_event_timeout";
+        message = "连接模型超时（45 秒内未收到内容或工具事件）；请重试或切换模型";
+      } else if (idleTimedOut) {
+        code = "model_idle_timeout";
+        message = "模型流空闲超时（未在预算内继续产出内容或工具事件）；请重试";
+      } else if (hardTimedOut) {
+        code = "model_request_deadline_exceeded";
+        message = "模型请求超过总时限；请重试或拆分任务";
+      } else {
+        message = error instanceof Error ? error.message : (error ? String(error) : "模型流意外结束，未收到完成事件；请重试");
+      }
+      pushError(message, code);
     };
 
     void this.transport.streamModelProxy({
@@ -109,11 +176,11 @@ export class PiModelTransport {
       },
     }, event => {
       const type = String(event.type ?? "");
+      markProviderActivity();
       if (type === "start") {
         pushStart();
         return;
       }
-      markProviderActivity();
       pushStart();
       if (type === "text_start") {
         const contentIndex = partial.content.length;
@@ -169,7 +236,8 @@ export class PiModelTransport {
         partial.usage = finalUsage;
       } else if (type === "done") {
         terminal = true;
-        globalThis.clearTimeout(activityTimer);
+        if (idleTimer) globalThis.clearTimeout(idleTimer);
+        globalThis.clearTimeout(hardTimer);
         partial.usage = finalUsage;
         partial.stopReason = String(event.finishReason ?? "stop") as "stop" | "length" | "toolUse";
         stream.push({type: "done", reason: partial.stopReason, message: {...partial, content: [...partial.content]}});
@@ -177,14 +245,13 @@ export class PiModelTransport {
         pushError(String(event.message ?? event.code ?? "Model proxy failed"));
       }
     }, requestController.signal).then(() => {
-      if (!terminal) pushError("模型流意外结束，未收到完成事件；请重试");
+      resolveFailure();
     }).catch(error => {
-      const message = activityTimedOut
-        ? "连接模型超时（45 秒内未收到内容或工具事件）；请重试或切换模型"
-        : error instanceof Error ? error.message : String(error);
-      pushError(message);
+      resolveFailure(error);
     }).finally(() => {
-      globalThis.clearTimeout(activityTimer);
+      globalThis.clearTimeout(firstTimer);
+      if (idleTimer) globalThis.clearTimeout(idleTimer);
+      globalThis.clearTimeout(hardTimer);
       options.signal?.removeEventListener("abort", forwardAbort);
     });
     return stream;
