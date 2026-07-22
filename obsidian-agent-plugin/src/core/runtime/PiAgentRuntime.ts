@@ -403,7 +403,9 @@ export class PiAgentRuntime implements AgentRuntime {
           isError: decision === "deny",
         } as unknown as AgentMessage);
         // Reset stale agent error state from a previously aborted run
-        (session.agent.state as Record<string, unknown>).errorMessage = undefined;
+        const st = session.agent.state as Record<string, unknown>;
+        st.errorMessage = undefined;
+        st.status = "idle";
         return session.agent.continue();
       })()
         .then(async () => {
@@ -429,7 +431,9 @@ export class PiAgentRuntime implements AgentRuntime {
     } else {
       // Reset stale agent error state from a previously aborted run so
       // pi-agent-core does not refuse the new prompt() with a stale error.
-      (session.agent.state as Record<string, unknown>).errorMessage = undefined;
+      const st = session.agent.state as Record<string, unknown>;
+      st.errorMessage = undefined;
+      st.status = "idle";
       running = session.agent
         .prompt(promptWithContext(turn.request, identity))
         .then(async () => {
@@ -824,7 +828,15 @@ export class PiAgentRuntime implements AgentRuntime {
 
   private async session(identity: PiRunIdentity): Promise<PiConversation> {
     const existing = this.conversations.get(identity.conversationId);
-    if (existing) return existing;
+    if (existing) {
+      // If the agent was aborted/errored on a previous run, discard the
+      // stale session so a fresh Agent is created for the next turn.
+      if (existing.agent.state.errorMessage || existing.agent.state.status === "failed") {
+        this.conversations.delete(identity.conversationId);
+      } else {
+        return existing;
+      }
+    }
     const holder: {
       identity: PiRunIdentity;
       stallGuard: PiStallGuard;

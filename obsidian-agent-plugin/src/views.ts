@@ -485,6 +485,8 @@ export class LearningAgentMainView extends ItemView {
   private assistantReasoningMode: "auto" | "deep" = "auto";
   private assistantPermissionMode: "ask" | "allow_all" = "ask";
   private assistantLiveRun: AssistantLiveRun = initialAssistantLiveRun();
+  private assistantLiveRuns = new Map<string, AssistantLiveRun>();
+  private assistantLiveTraceEls = new Map<string, HTMLElement>();
   private assistantVisibleMessageLimit = 160;
   private assistantDraft = "";
   private assistantSubmitInFlight = false;
@@ -603,6 +605,7 @@ export class LearningAgentMainView extends ItemView {
       const create = actions.createEl("button"); setIcon(create.createSpan(), "plus"); create.createSpan({text: "新会话"}); create.createEl("kbd", {text: "⌘K"});
       create.onclick = async () => {
         const response = await this.client.post<any>("/conversations", {title: "新会话"});
+        if (this.conversationId) this.assistantLiveRuns.set(this.conversationId, this.assistantLiveRun);
         this.conversationId = String(response.conversation.id); this.assistantMessages = []; this.assistantArtifacts = [];
         this.pendingAttachments = []; this.assistantDraft = ""; this.assistantRegenerateMessageId = ""; this.assistantLiveRun = initialAssistantLiveRun(); this.assistantVisibleMessageLimit = 160; await this.refresh();
       };
@@ -638,7 +641,8 @@ export class LearningAgentMainView extends ItemView {
               ).open()));
               menu.showAtMouseEvent(event as MouseEvent); return;
             }
-            this.abort?.abort(); this.conversationId = String(conversation.id); this.assistantLiveRun = initialAssistantLiveRun(); this.assistantVisibleMessageLimit = 160; void this.refresh();
+            if (this.conversationId) this.assistantLiveRuns.set(this.conversationId, this.assistantLiveRun);
+            this.conversationId = String(conversation.id); this.assistantLiveRun = this.assistantLiveRuns.get(this.conversationId) ?? initialAssistantLiveRun(); this.assistantVisibleMessageLimit = 160; void this.refresh();
           };
         }
       };
@@ -2033,6 +2037,7 @@ export class LearningAgentMainView extends ItemView {
     };
     const startNewConversation = async (): Promise<void> => {
       const response = await this.client.post<any>("/conversations", {title: "新会话"});
+      if (this.conversationId) this.assistantLiveRuns.set(this.conversationId, this.assistantLiveRun);
       this.conversationId = String(response.conversation.id); this.assistantMessages = []; this.assistantArtifacts = [];
       this.assistantTaskThread = null; this.assistantArtifactGroup = null;
       this.pendingAttachments = []; this.assistantDraft = ""; this.assistantRegenerateMessageId = ""; this.assistantRun = null; this.assistantVisibleMessageLimit = 160; await this.refresh();
@@ -2079,6 +2084,12 @@ export class LearningAgentMainView extends ItemView {
         this.renderConversationMessage(messages, message, previousUserMessage);
         if (message.role === "user") previousUserMessage = message;
       }
+    }
+    // Re-attach live trace if a background run is still active for this conversation
+    const bgTrace = this.assistantLiveTraceEls.get(this.conversationId);
+    if (bgTrace && !bgTrace.isConnected && this.assistantLiveRun.status === "running") {
+      messages.appendChild(bgTrace);
+      this.paintAssistantLiveTrace(bgTrace, this.assistantLiveRun);
     }
     const primaryArtifact = this.assistantArtifactGroup?.artifacts.find(item => item.id === this.assistantArtifactGroup?.primaryArtifactId)
       ?? this.assistantArtifactGroup?.artifacts[0];
@@ -2357,7 +2368,7 @@ export class LearningAgentMainView extends ItemView {
       send.setAttribute("aria-label", running ? "停止生成" : "发送");
       send.title = running ? "停止生成" : "发送";
       if (running) {
-        send.createSpan({cls: "la-composer-submit__stop", attr: {"aria-hidden": "true"}});
+        send.createSpan({cls: "la-composer-submit__spinner", attr: {"aria-hidden": "true"}});
       } else {
         send.createEl("img", {
           cls: "la-composer-submit__arrow",
@@ -2461,6 +2472,7 @@ export class LearningAgentMainView extends ItemView {
           for (const attachment of this.pendingAttachments) userCopy.createSpan({cls: "la-message-attachment", text: attachment.displayName});
         }
         const trace = messages.createEl("section", {cls: "la-live-trace is-running", attr: {"aria-label": "任务执行进度"}});
+        this.assistantLiveTraceEls.set(this.conversationId, trace);
         const assistant = messages.createDiv({cls: "la-message la-message--assistant la-message--streaming"});
         renderAssistantAvatar(assistant, this.app);
         const assistantCopy = assistant.createDiv({cls: "la-message-copy"});
@@ -2471,7 +2483,9 @@ export class LearningAgentMainView extends ItemView {
         let disposeConfirmation: (() => void) | undefined;
         progressiveMarkdown = new ProgressiveAssistantMarkdown(this.markdown, markdown);
         messages.scrollTop = messages.scrollHeight;
-        this.assistantLiveRun = initialAssistantLiveRun();
+        const runConversationId = this.conversationId;
+        let liveRun = initialAssistantLiveRun();
+        this.assistantLiveRun = liveRun;
         this.paintAssistantLiveTrace(trace, this.assistantLiveRun);
         input.value = "";
         this.assistantDraft = "";
@@ -2509,7 +2523,29 @@ export class LearningAgentMainView extends ItemView {
         });
         for await (const chunk of this.agentRuntime.query(turn, this.abort.signal)) {
           const event = agentChunkToAssistantEvent(chunk);
-          this.assistantLiveRun = reduceAssistantStream(this.assistantLiveRun, event);
+          liveRun = reduceAssistantStream(liveRun, event);
+
+          // User switched to a different conversation — keep processing
+          // in the background but skip UI updates for this view.
+          if (this.conversationId !== runConversationId) {
+            this.assistantLiveRuns.set(runConversationId, liveRun);
+            continue;
+          }
+
+          this.assistantLiveRun = liveRun;
+
+          // Re-attach live elements when switching back to this conversation
+          // after they were detached by a refresh() during background processing.
+          if (!trace.isConnected) {
+            const currentMessages = chat.querySelector('.la-message-list.la-chat-stream') as HTMLElement;
+            if (currentMessages) {
+              currentMessages.appendChild(trace);
+              currentMessages.appendChild(assistant);
+              currentMessages.appendChild(confirmationHost);
+              currentMessages.scrollTop = currentMessages.scrollHeight;
+            }
+          }
+
           this.paintAssistantLiveTrace(trace, this.assistantLiveRun);
           if (event.type === "context.resolved") {
             this.assistantContext = {...(this.assistantContext ?? {}), focus: event.focus, currentUnderstanding: event.understanding};
@@ -2556,6 +2592,17 @@ export class LearningAgentMainView extends ItemView {
             input.disabled = false;
           }
         }
+
+        // Store the completed liveRun for this conversation
+        this.assistantLiveRuns.set(runConversationId, liveRun);
+
+        // If user switched away, don't add messages to another conversation
+        if (this.conversationId !== runConversationId) {
+          this.assistantLiveTraceEls.delete(runConversationId);
+          return;
+        }
+
+        this.assistantLiveRun = liveRun;
         if (this.assistantLiveRun.status === "failed") throw new Error(this.assistantLiveRun.error?.code ?? "assistant_stream_failed");
         if (this.assistantLiveRun.content) await progressiveMarkdown.flush(this.assistantLiveRun.content);
         assistant.removeClass("la-message--streaming");
@@ -2576,12 +2623,20 @@ export class LearningAgentMainView extends ItemView {
           this.assistantMessages.push(completedMessage);
         }
         this.pendingAttachments = []; input.value = ""; this.assistantDraft = ""; this.assistantRegenerateMessageId = "";
+        this.assistantLiveTraceEls.delete(runConversationId);
       } catch (error: any) {
         if (error?.name === "AbortError") {
-          this.assistantLiveRun = cancelledAssistantRun(this.assistantLiveRun);
-          new Notice("已停止生成；已返回的内容会保留在本地会话中");
+          liveRun = cancelledAssistantRun(liveRun);
+          this.assistantLiveRuns.set(runConversationId, liveRun);
+          this.assistantLiveTraceEls.delete(runConversationId);
+          if (this.conversationId === runConversationId) this.assistantLiveRun = liveRun;
           return;
         }
+        // Store failure state for this conversation
+        this.assistantLiveRuns.set(runConversationId, liveRun);
+        this.assistantLiveTraceEls.delete(runConversationId);
+        if (this.conversationId !== runConversationId) return;
+        this.assistantLiveRun = liveRun;
         const failure = humanizeAssistantError(String(error.code ?? error.message ?? ""), String(error.message ?? ""), true);
         if (!input.value.trim() && submittedDraft) {
           input.value = submittedDraft;

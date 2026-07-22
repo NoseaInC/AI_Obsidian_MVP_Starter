@@ -6075,6 +6075,16 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   background: white;
 }
 
+.la-assistant-shell-v8 .la-composer-submit__spinner {
+  width: 16px;
+  height: 16px;
+  display: block;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: la-spin 0.8s linear infinite;
+}
+
 .la-assistant-shell-v8 .la-model-picker {
   position: relative;
   flex: 0 1 auto;
