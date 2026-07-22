@@ -267,6 +267,7 @@ export function createPiTools(
               message,
               toolName: contract.name,
               toolCallId,
+              arguments: argumentsRecord,
               writes: organizationWrites.length ? organizationWrites : fallbackWrites,
               organization,
               capability: requestedCapability(code, contract, argumentsRecord, structured),

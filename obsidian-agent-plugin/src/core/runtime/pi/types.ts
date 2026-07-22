@@ -82,13 +82,59 @@ export interface PiRuntimeTransport {
   cancelRuntimeRun(runId: string): Promise<Record<string, unknown>>;
   toolContracts(): Promise<{schemaVersion: number; items: PiToolContract[]}>;
   callRuntimeTool(body: unknown): Promise<Record<string, unknown>>;
+  /**
+   * Persist a tool call that is blocked awaiting a permission decision so that a
+   * plugin restart can rebuild the same confirmation card and continue the run.
+   * Optional so lightweight transports (tests, legacy backends) keep working.
+   */
+  savePendingToolCall?(body: Record<string, unknown>): Promise<Record<string, unknown>>;
+  /** List still-active pending tool calls scoped by run or session. */
+  listPendingToolCalls?(scope: {
+    runId?: string;
+    sessionId?: string;
+  }): Promise<{items: PiPendingToolCallRecord[]}>;
+  /** Move a pending tool call to a terminal (or interrupted) state. */
+  resolvePendingToolCall?(
+    runId: string,
+    toolCallId: string,
+    state: PiPendingToolCallState,
+  ): Promise<Record<string, unknown>>;
 }
+
+export type PiPendingToolCallState =
+  | "pending"
+  | "allowed"
+  | "denied"
+  | "cancelled"
+  | "interrupted"
+  | "completed";
+
+export type PiPendingToolCallInput = {
+  sessionId: string;
+  turnId: string;
+  toolCallId: string;
+  toolName: string;
+  arguments: Record<string, unknown>;
+  permissionRequest: Record<string, unknown>;
+  taskAuthorizationId: string;
+  state?: PiPendingToolCallState;
+};
+
+export type PiPendingToolCallRecord = PiPendingToolCallInput & {
+  runId: string;
+  state: PiPendingToolCallState;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+};
 
 export interface PiPermissionRequest {
   code: string;
   message: string;
   toolName: string;
   toolCallId: string;
+  /** Raw tool arguments, retained so a restart can re-run the exact call. */
+  arguments?: Record<string, unknown>;
   writes: Array<Record<string, unknown>>;
   organization?: {
     directories: string[];

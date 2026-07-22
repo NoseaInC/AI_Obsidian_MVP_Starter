@@ -2126,6 +2126,72 @@ class AgentService:
             "schemaVersion": 2,
         }
 
+    _PENDING_TOOL_CALL_STATES = {
+        "pending",
+        "allowed",
+        "denied",
+        "cancelled",
+        "interrupted",
+        "completed",
+    }
+
+    def save_pending_tool_call(self, run_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        run = self.store.get_pi_run(run_id)
+        if not run:
+            raise ValueError("pi_run_not_found")
+        tool_call_id = str(body.get("toolCallId") or "").strip()
+        tool_name = str(body.get("toolName") or "").strip()
+        turn_id = str(body.get("turnId") or run.get("turn_id") or "").strip()
+        session_id = str(body.get("sessionId") or run.get("session_id") or "").strip()
+        task_authorization_id = str(body.get("taskAuthorizationId") or "").strip()
+        state = str(body.get("state") or "pending").strip() or "pending"
+        if not tool_call_id or not tool_name or not session_id:
+            raise ValueError("pi_pending_tool_call_invalid")
+        if state not in self._PENDING_TOOL_CALL_STATES:
+            raise ValueError("pi_pending_tool_call_state_invalid")
+        arguments = body.get("arguments")
+        if not isinstance(arguments, dict):
+            arguments = {}
+        permission_request = body.get("permissionRequest")
+        if not isinstance(permission_request, dict):
+            permission_request = {}
+        self.store.save_pending_tool_call(
+            run_id=run_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            arguments=arguments,
+            permission_request=permission_request,
+            task_authorization_id=task_authorization_id,
+            state=state,
+        )
+        return {"ok": True, "runId": run_id, "toolCallId": tool_call_id, "state": state}
+
+    def get_pending_tool_calls(
+        self,
+        run_id: str | None = None,
+        session_id: str | None = None,
+        active_only: bool = True,
+    ) -> dict[str, Any]:
+        if run_id is not None:
+            run = self.store.get_pi_run(run_id)
+            if not run:
+                raise ValueError("pi_run_not_found")
+        items = self.store.get_pending_tool_calls(
+            run_id=run_id,
+            session_id=session_id,
+            active_only=active_only,
+        )
+        return {"items": items}
+
+    def resolve_pending_tool_call(self, run_id: str, tool_call_id: str, state: str) -> dict[str, Any]:
+        state = str(state or "").strip()
+        if state not in self._PENDING_TOOL_CALL_STATES:
+            raise ValueError("pi_pending_tool_call_state_invalid")
+        self.store.resolve_pending_tool_call(run_id, tool_call_id, state)
+        return {"ok": True, "runId": run_id, "toolCallId": tool_call_id, "state": state}
+
     def control_pi_run(self, run_id: str, body: dict[str, Any]) -> dict[str, Any]:
         control_type = str(body.get("type") or "")
         text = str(body.get("text") or "").strip()

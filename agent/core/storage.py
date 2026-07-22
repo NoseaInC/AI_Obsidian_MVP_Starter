@@ -460,11 +460,31 @@ CREATE TABLE IF NOT EXISTS pi_session_entries (
 );
 CREATE INDEX IF NOT EXISTS idx_pi_session_entries_session_time
   ON pi_session_entries(session_id, timestamp, id);
+CREATE TABLE IF NOT EXISTS pi_pending_tool_calls (
+  run_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  tool_call_id TEXT NOT NULL,
+  tool_name TEXT NOT NULL,
+  arguments_json TEXT NOT NULL,
+  permission_request_json TEXT NOT NULL,
+  task_authorization_id TEXT NOT NULL,
+  state TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  resolved_at TEXT,
+  PRIMARY KEY(run_id, tool_call_id),
+  FOREIGN KEY(run_id) REFERENCES pi_agent_runs(run_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_pi_pending_tool_calls_run
+  ON pi_pending_tool_calls(run_id, state);
+CREATE INDEX IF NOT EXISTS idx_pi_pending_tool_calls_session
+  ON pi_pending_tool_calls(session_id, state);
 """
 
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 def _now() -> str:
@@ -492,6 +512,10 @@ class StateStore:
         self.connection.executescript(AGENT_RUNTIME_V3_SCHEMA)
 
     def _migrate_pi_runtime(self) -> None:
+        # The short-lived experimental table pi_pending_permissions was never
+        # part of a released schema; drop it so the structured
+        # pi_pending_tool_calls table becomes the single source of truth.
+        self.connection.execute("DROP TABLE IF EXISTS pi_pending_permissions")
         self.connection.executescript(PI_RUNTIME_SCHEMA)
 
     def create_pi_task_authorization(self, authorization: dict[str, Any]) -> dict[str, Any]:
@@ -876,6 +900,120 @@ class StateStore:
         for entry in item["entries"]:
             entry.pop("payload_json", None)
         return item
+
+    _PENDING_ACTIVE_STATES = ("pending", "interrupted")
+
+    def save_pending_tool_call(
+        self,
+        run_id: str,
+        session_id: str,
+        turn_id: str,
+        tool_call_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        permission_request: dict[str, Any],
+        task_authorization_id: str,
+        state: str = "pending",
+    ) -> None:
+        now = _now()
+        with self.lock:
+            existing = self.connection.execute(
+                "SELECT created_at FROM pi_pending_tool_calls WHERE run_id=? AND tool_call_id=?",
+                (run_id, tool_call_id),
+            ).fetchone()
+            self.connection.execute(
+                """INSERT INTO pi_pending_tool_calls(
+                     run_id, session_id, turn_id, tool_call_id, tool_name,
+                     arguments_json, permission_request_json, task_authorization_id,
+                     state, created_at, updated_at, resolved_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                   ON CONFLICT(run_id, tool_call_id) DO UPDATE SET
+                     session_id=excluded.session_id,
+                     turn_id=excluded.turn_id,
+                     tool_name=excluded.tool_name,
+                     arguments_json=excluded.arguments_json,
+                     permission_request_json=excluded.permission_request_json,
+                     task_authorization_id=excluded.task_authorization_id,
+                     state=excluded.state,
+                     updated_at=excluded.updated_at,
+                     resolved_at=NULL""",
+                (
+                    run_id,
+                    session_id,
+                    turn_id,
+                    tool_call_id,
+                    tool_name,
+                    json.dumps(arguments, ensure_ascii=False),
+                    json.dumps(permission_request, ensure_ascii=False),
+                    task_authorization_id,
+                    state,
+                    existing["created_at"] if existing else now,
+                    now,
+                ),
+            )
+            self.connection.commit()
+
+    def get_pending_tool_calls(
+        self,
+        run_id: str | None = None,
+        session_id: str | None = None,
+        states: list[str] | None = None,
+        active_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if run_id is not None:
+            clauses.append("run_id=?")
+            params.append(run_id)
+        if session_id is not None:
+            clauses.append("session_id=?")
+            params.append(session_id)
+        effective_states = states
+        if effective_states is None and active_only:
+            effective_states = list(self._PENDING_ACTIVE_STATES)
+        if effective_states:
+            placeholders = ",".join("?" for _ in effective_states)
+            clauses.append(f"state IN ({placeholders})")
+            params.extend(effective_states)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.lock:
+            rows = self.connection.execute(
+                f"SELECT * FROM pi_pending_tool_calls{where} ORDER BY created_at, tool_call_id",
+                tuple(params),
+            ).fetchall()
+        return [
+            {
+                "runId": row["run_id"],
+                "sessionId": row["session_id"],
+                "turnId": row["turn_id"],
+                "toolCallId": row["tool_call_id"],
+                "toolName": row["tool_name"],
+                "arguments": json.loads(row["arguments_json"]),
+                "permissionRequest": json.loads(row["permission_request_json"]),
+                "taskAuthorizationId": row["task_authorization_id"],
+                "state": row["state"],
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+                "resolvedAt": row["resolved_at"],
+            }
+            for row in rows
+        ]
+
+    def resolve_pending_tool_call(
+        self,
+        run_id: str,
+        tool_call_id: str,
+        state: str,
+    ) -> None:
+        now = _now()
+        with self.lock:
+            self.connection.execute(
+                """UPDATE pi_pending_tool_calls
+                   SET state=?, updated_at=?, resolved_at=?
+                   WHERE run_id=? AND tool_call_id=?""",
+                (state, now, now, run_id, tool_call_id),
+            )
+            self.connection.commit()
 
 
     def append_agent_run_event(

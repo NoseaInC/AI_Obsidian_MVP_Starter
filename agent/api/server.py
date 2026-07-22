@@ -137,6 +137,20 @@ class Handler(BaseHTTPRequestHandler):
                     self._identifier(path.removeprefix("/agent/runs/").removesuffix("/events")),
                     int(query.get("after", [0])[0]),
                 )
+            elif path.startswith("/agent/runs/") and path.endswith("/pending-tool-calls"):
+                payload = self.service.get_pending_tool_calls(
+                    run_id=self._identifier(
+                        path.removeprefix("/agent/runs/").removesuffix("/pending-tool-calls")
+                    ),
+                    active_only=query.get("all", ["0"])[0] not in ("1", "true"),
+                )
+            elif path.startswith("/agent/sessions/") and path.endswith("/pending-tool-calls"):
+                payload = self.service.get_pending_tool_calls(
+                    session_id=self._identifier(
+                        path.removeprefix("/agent/sessions/").removesuffix("/pending-tool-calls")
+                    ),
+                    active_only=query.get("all", ["0"])[0] not in ("1", "true"),
+                )
             elif path.startswith("/agent/sessions/"):
                 payload = self.service.pi_session(
                     self._identifier(path.removeprefix("/agent/sessions/"))
@@ -232,6 +246,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, self.service.cancel_pi_run(run_id)); return
             if path == "/tools/call":
                 self._send(200, self.service.call_runtime_tool(body)); return
+            if path.startswith("/agent/runs/") and path.endswith("/pending-tool-calls/resolve"):
+                run_id = self._identifier(
+                    path.removeprefix("/agent/runs/").removesuffix("/pending-tool-calls/resolve")
+                )
+                tool_call_id = self._identifier(str(body.get("toolCallId") or ""))
+                self._send(200, self.service.resolve_pending_tool_call(
+                    run_id, tool_call_id, str(body.get("state") or ""),
+                )); return
+            if path.startswith("/agent/runs/") and path.endswith("/pending-tool-calls"):
+                run_id = self._identifier(
+                    path.removeprefix("/agent/runs/").removesuffix("/pending-tool-calls")
+                )
+                self._send(200, self.service.save_pending_tool_call(run_id, body)); return
             if path.startswith("/actions/") and path.endswith("/undo"):
                 action_id = self._identifier(
                     path.removeprefix("/actions/").removesuffix("/undo")

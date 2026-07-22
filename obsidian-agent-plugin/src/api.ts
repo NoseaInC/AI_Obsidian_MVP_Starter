@@ -161,6 +161,26 @@ export class AgentClient {
   async cancelRuntimeRun(runId: string): Promise<any> {
     return this.post(`/agent/runs/${encodeURIComponent(runId)}/cancel`, {});
   }
+  async savePendingToolCall(body: Record<string, unknown> & {runId?: string}): Promise<any> {
+    const {runId, ...rest} = body;
+    const id = String(runId ?? "");
+    return this.post(`/agent/runs/${encodeURIComponent(id)}/pending-tool-calls`, rest);
+  }
+  async listPendingToolCalls(scope: {runId?: string; sessionId?: string}): Promise<any> {
+    if (scope.runId) {
+      return this.get(`/agent/runs/${encodeURIComponent(scope.runId)}/pending-tool-calls`);
+    }
+    if (scope.sessionId) {
+      return this.get(`/agent/sessions/${encodeURIComponent(scope.sessionId)}/pending-tool-calls`);
+    }
+    return {items: []};
+  }
+  async resolvePendingToolCall(runId: string, toolCallId: string, state: string): Promise<any> {
+    return this.post(`/agent/runs/${encodeURIComponent(runId)}/pending-tool-calls/resolve`, {
+      toolCallId,
+      state,
+    });
+  }
   async callRuntimeTool(body: unknown): Promise<any> {
     const requestBody = body && typeof body === "object" ? body as Record<string, any> : {};
     const response = await this.post<any>("/tools/call", requestBody);

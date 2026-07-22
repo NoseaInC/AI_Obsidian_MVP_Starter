@@ -14,10 +14,12 @@ import {PiModelTransport} from "./pi/PiModelTransport";
 import {createPiTools} from "./pi/PiToolAdapter";
 import {createTurnIdentity} from "./pi/TaskAuthorization";
 import type {
+  PiPendingToolCallRecord,
   PiPermissionDecision,
   PiPermissionRequest,
   PiRunIdentity,
   PiRuntimeTransport,
+  PiToolContract,
 } from "./pi/types";
 import {compactAgentMessages} from "./pi/PiCompaction";
 import {PiStallGuard} from "./pi/PiStallGuard";
@@ -40,7 +42,12 @@ interface PiConversation {
     emit: (chunk: AgentChunk) => Promise<void>;
     resolve: (decision: PiPermissionDecision) => void;
     reject: (error: unknown) => void;
+    decision: Promise<PiPermissionDecision>;
   };
+  /** True while a persisted pending tool call is being resumed across a restart. */
+  recoveryActive?: boolean;
+  /** toolCallId of the most recently resolved permission, for idempotent re-clicks. */
+  lastResolvedToolCallId?: string;
 }
 
 const CAPABILITIES: Readonly<AgentRuntimeCapabilities> = Object.freeze({
@@ -267,6 +274,11 @@ export class PiAgentRuntime implements AgentRuntime {
         await expandPermission(request, "all");
         return "allow_all";
       }
+      // A persisted pending tool call is being resumed: reuse the decision the
+      // user already made instead of prompting again, and never re-call the model.
+      if (session.recoveryActive && session.pendingPermission) {
+        return await session.pendingPermission.decision;
+      }
       if (session.pendingPermission) throw new Error("pi_permission_request_already_pending");
       const confirmation: AgentInlineConfirmation = {
         run_id: identity.runId,
@@ -289,9 +301,32 @@ export class PiAgentRuntime implements AgentRuntime {
         scope_candidates: ["__all__"],
         actions: ["confirm", "confirm_all", "reject"],
       };
-      const decision = new Promise<PiPermissionDecision>((resolve, reject) => {
-        session.pendingPermission = {request, confirmation, adapter, emit, resolve, reject};
+      // Persist before showing the UI so a restart can rebuild the exact card.
+      await this.transport.savePendingToolCall?.({
+        runId: identity.runId,
+        sessionId: identity.sessionId,
+        turnId: identity.turnId,
+        toolCallId: request.toolCallId,
+        toolName: request.toolName,
+        arguments: (request.arguments ?? {}) as Record<string, unknown>,
+        permissionRequest: {
+          type: request.capability.type,
+          toolName: request.toolName,
+          summary: request.message,
+          organization: request.organization,
+          message: request.message,
+          code: request.code,
+        },
+        taskAuthorizationId: identity.taskAuthorization.id,
+        state: "pending",
       });
+      let resolveDecision!: (decision: PiPermissionDecision) => void;
+      let rejectDecision!: (error: unknown) => void;
+      const decision = new Promise<PiPermissionDecision>((resolve, reject) => {
+        resolveDecision = resolve;
+        rejectDecision = reject;
+      });
+      session.pendingPermission = {request, confirmation, adapter, emit, resolve: resolveDecision, reject: rejectDecision, decision};
       const abortPending = (): void => {
         const pending = session.pendingPermission;
         if (!pending || pending.request.toolCallId !== request.toolCallId) return;
@@ -313,6 +348,17 @@ export class PiAgentRuntime implements AgentRuntime {
       session.stallGuard,
       requestPermission,
     );
+    // Resume a tool call that was blocked on a permission decision before a
+    // plugin restart. We rebuild the assistant tool_call message from the
+    // persisted record (so the model is not re-called) and continue the run
+    // with the original run/turn/authorization identity.
+    let recoveryRecord: PiPendingToolCallRecord | null = null;
+    if (this.transport.listPendingToolCalls) {
+      recoveryRecord = await this.recoverPendingPermission(session, identity, contracts, adapter, emit);
+      // Recovery overrode identity.runId with the original run id; re-register
+      // the session so confirm() can resolve the resumed decision.
+      if (recoveryRecord) this.runIndex.set(identity.runId, session);
+    }
     const unsubscribe = session.agent.subscribe(async event => {
       if (event.type === "agent_end" && cancelled) return;
       for (const chunk of adapter.next(event)) await emit(chunk);
@@ -329,12 +375,61 @@ export class PiAgentRuntime implements AgentRuntime {
       session.agent.abort();
     };
     signal?.addEventListener("abort", onAbort, {once: true});
-    const running = session.agent
-      .prompt(promptWithContext(turn.request, identity))
-      .then(async () => {
-        if (cancelled || signal?.aborted) await emit(adapter.cancelled());
-        else if (session.agent.state.errorMessage) {
-          await emit(adapter.failed(new Error(session.agent.state.errorMessage), session.events.some(item => item.type === "text")));
+    let running: Promise<void>;
+    if (recoveryRecord) {
+      // Resume the blocked call: wait for the permission decision, re-execute the
+      // exact tool, append the tool result, then continue the agent loop without
+      // re-calling the model for the original decision.
+      const decisionPromise = session.pendingPermission!.decision;
+      running = (async () => {
+        const decision = await decisionPromise;
+        const tool = session.agent.state.tools.find(t => t.name === recoveryRecord!.toolName);
+        let content: Array<{type: "text"; text: string}>;
+        if (decision === "deny") {
+          content = [{type: "text", text: JSON.stringify({ok: false, status: "blocked", code: "permission_denied", tool: recoveryRecord!.toolName})}];
+        } else {
+          const result = tool
+            ? await tool.execute(recoveryRecord!.toolCallId, recoveryRecord!.arguments, signal)
+            : {content: [{type: "text", text: JSON.stringify({ok: false, status: "blocked", code: "tool_missing", tool: recoveryRecord!.toolName})}]};
+          const rc = (result as {content?: Array<{type: "text"; text: string}>}).content;
+          content = Array.isArray(rc) && rc.length ? rc : [{type: "text", text: String((result as {content?: unknown}).content ?? "")}];
+        }
+        session.agent.state.messages.push({
+          role: "toolResult",
+          toolCallId: recoveryRecord!.toolCallId,
+          toolName: recoveryRecord!.toolName,
+          content,
+          isError: decision === "deny",
+        } as unknown as AgentMessage);
+        return session.agent.continue();
+      })()
+        .then(async () => {
+          if (cancelled || signal?.aborted) await emit(adapter.cancelled());
+          else if (session.agent.state.errorMessage) {
+            await emit(adapter.failed(new Error(session.agent.state.errorMessage), session.events.some(item => item.type === "text")));
+          } else await emit(adapter.completed());
+        })
+        .catch(async error => {
+          if (cancelled || signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) {
+            await emit(adapter.cancelled());
+          } else {
+            await emit(adapter.failed(error, session.events.some(item => item.runId === identity.runId && item.type === "text")));
+          }
+        })
+        .finally(() => {
+          settled = true;
+          unsubscribe();
+          signal?.removeEventListener("abort", onAbort);
+          wake?.();
+          wake = null;
+        });
+    } else {
+      running = session.agent
+        .prompt(promptWithContext(turn.request, identity))
+        .then(async () => {
+          if (cancelled || signal?.aborted) await emit(adapter.cancelled());
+          else if (session.agent.state.errorMessage) {
+            await emit(adapter.failed(new Error(session.agent.state.errorMessage), session.events.some(item => item.type === "text")));
         } else await emit(adapter.completed());
       })
       .catch(async error => {
@@ -352,6 +447,7 @@ export class PiAgentRuntime implements AgentRuntime {
         wake?.();
         wake = null;
       });
+    }
 
     while (!settled || queue.length) {
       if (!queue.length) await new Promise<void>(resolve => { wake = resolve; });
@@ -359,6 +455,110 @@ export class PiAgentRuntime implements AgentRuntime {
     }
     await running;
     if (failure && !session.events.some(item => item.runId === identity.runId && item.type === "error")) throw failure;
+  }
+
+  /**
+   * Resume a tool call that was blocked on a permission decision when the plugin
+   * restarted. Rebuilds the confirmation card from the persisted record and, on
+   * confirm, re-executes the exact call and continues the run with Pi's
+   * continuation API (no model re-planning, original run/turn/authorization id).
+   * Returns the resumed record, or null when there is nothing to resume.
+   */
+  private async recoverPendingPermission(
+    session: PiConversation,
+    identity: PiRunIdentity,
+    contracts: {items: PiToolContract[]},
+    adapter: PiEventAdapter,
+    emit: (chunk: AgentChunk) => Promise<void>,
+  ): Promise<PiPendingToolCallRecord | null> {
+    let list: {items: PiPendingToolCallRecord[]} = {items: []};
+    try {
+      list = await this.transport.listPendingToolCalls!({sessionId: identity.sessionId});
+    } catch {
+      return null;
+    }
+    const record = list.items.find(item => item.state === "pending");
+    if (!record) return null;
+    const contract = contracts.items.find(c => c.name === record.toolName);
+    // Contract (tool) no longer available: give up, mark the record resolved.
+    if (!contract) {
+      await this.transport.resolvePendingToolCall?.(record.runId, record.toolCallId, "interrupted");
+      return null;
+    }
+    // Authorization expired while the plugin was down: refuse to resume silently.
+    const MAX_PENDING_AGE_MS = 30 * 60 * 1000;
+    const createdAt = Date.parse(record.createdAt);
+    if (!Number.isNaN(createdAt) && Date.now() - createdAt > MAX_PENDING_AGE_MS) {
+      await this.transport.resolvePendingToolCall?.(record.runId, record.toolCallId, "interrupted");
+      return null;
+    }
+    // Resume under the original run/turn/authorization so continuation events
+    // append to the same run and the model is never re-invoked for the decision.
+    identity.runId = record.runId;
+    identity.turnId = record.turnId;
+    identity.taskAuthorization.id = record.taskAuthorizationId;
+    const pr = (record.permissionRequest ?? {}) as Record<string, unknown>;
+    const capability = {
+      type: (pr.type as "vault_writes" | "vault_organization" | "developer_workspace" | "network") ?? "vault_writes",
+      toolName: record.toolName,
+      summary: String(pr.summary ?? ""),
+      organization: pr.organization as PiPermissionRequest["organization"],
+    };
+    const request: PiPermissionRequest = {
+      code: String(pr.code ?? "task_permission_required"),
+      message: String(pr.message ?? `需要授权：${record.toolName}`),
+      toolName: record.toolName,
+      toolCallId: record.toolCallId,
+      arguments: record.arguments,
+      writes: [],
+      organization: pr.organization as PiPermissionRequest["organization"],
+      capability,
+    };
+    const confirmation: AgentInlineConfirmation = {
+      run_id: identity.runId,
+      kind: "permission",
+      proposal_id: `permission-${record.toolCallId}`,
+      title: capability.type === "vault_organization"
+        ? "允许知序整理 Vault 结构？"
+        : capability.type === "developer_workspace"
+          ? "允许知序修改隔离开发工作区？"
+          : capability.type === "network"
+            ? "允许知序访问网络？"
+            : "允许知序写入这些笔记？",
+      summary: request.message,
+      risk_level: capability.type === "developer_workspace" ? "medium" : "low",
+      writes: request.writes,
+      tool_name: record.toolName,
+      question: "",
+      options: [],
+      reason: request.code,
+      scope_candidates: ["__all__"],
+      actions: ["confirm", "confirm_all", "reject"],
+    };
+    // Rebuild the assistant tool_call message the model had emitted before the
+    // restart so agent.continue() can resume exactly where it left off.
+    const toolCallMessage: AgentMessage = {
+      role: "assistant",
+      content: [{type: "text", text: `继续工具调用 ${record.toolName}`}],
+      toolCall: {id: record.toolCallId, name: record.toolName, arguments: record.arguments},
+      api: "zhixu-secure-proxy",
+      provider: "zhixu",
+      model: "restored-session",
+      usage: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0}},
+      stopReason: "toolUse",
+      timestamp: Date.now(),
+    } as AgentMessage;
+    session.agent.state.messages.push(toolCallMessage);
+    let resolveDecision!: (decision: PiPermissionDecision) => void;
+    let rejectDecision!: (error: unknown) => void;
+    const decision = new Promise<PiPermissionDecision>((resolve, reject) => {
+      resolveDecision = resolve;
+      rejectDecision = reject;
+    });
+    session.pendingPermission = {request, confirmation, adapter, emit, resolve: resolveDecision, reject: rejectDecision, decision};
+    session.recoveryActive = true;
+    await emit(adapter.confirmationRequired(confirmation));
+    return record;
   }
 
   async *confirm(
@@ -370,10 +570,18 @@ export class PiAgentRuntime implements AgentRuntime {
   ): AsyncGenerator<AgentChunk> {
     const session = this.runIndex.get(runId);
     const pending = session?.pendingPermission;
-    if (!session || !pending) throw new Error("pi_inline_confirmation_not_pending");
+    if (!session || !pending) {
+      // Idempotent re-click: a prior confirm already resolved this run.
+      if (session && (session.recoveryActive || session.lastResolvedToolCallId)) return;
+      throw new Error("pi_inline_confirmation_not_pending");
+    }
+    const toolCallId = pending.request.toolCallId;
     if (!confirmed) {
       session.pendingPermission = undefined;
+      session.recoveryActive = false;
+      session.lastResolvedToolCallId = toolCallId;
       await pending.emit(pending.adapter.confirmationResolved("cancelled"));
+      await this.transport.resolvePendingToolCall?.(runId, toolCallId, "denied");
       pending.resolve("deny");
       return;
     }
@@ -397,7 +605,10 @@ export class PiAgentRuntime implements AgentRuntime {
       session.identity.taskAuthorization.resourceScope.allowAllRunCapabilities = true;
     }
     session.pendingPermission = undefined;
+    session.recoveryActive = false;
+    session.lastResolvedToolCallId = toolCallId;
     await pending.emit(pending.adapter.confirmationResolved(mode));
+    await this.transport.resolvePendingToolCall?.(runId, toolCallId, "allowed");
     pending.resolve(mode === "all" ? "allow_all" : "allow_once");
   }
 
