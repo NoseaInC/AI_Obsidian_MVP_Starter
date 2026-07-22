@@ -11,6 +11,7 @@ import type {
 } from "./types";
 import {PiEventAdapter} from "./pi/PiEventAdapter";
 import {PiModelTransport} from "./pi/PiModelTransport";
+import {projectForkMessages} from "./pi/PiSessionProjector";
 import {createPiTools} from "./pi/PiToolAdapter";
 import {createTurnIdentity} from "./pi/TaskAuthorization";
 import type {
@@ -666,9 +667,16 @@ export class PiAgentRuntime implements AgentRuntime {
     return chunk;
   }
 
-  async fork(runId: string, sequence?: number): Promise<AgentConversationState> {
+  async fork(runId: string, sequence?: number, mode: "fork" | "regenerate" = "fork"): Promise<AgentConversationState> {
     const source = this.runIndex.get(runId);
     if (!source) throw new Error("pi_run_not_found");
+    // Project the branch context from the chosen point; never copy the full
+    // transcript and never leak messages after the fork point.
+    const projected = projectForkMessages(
+      source.agent.state.messages as unknown as Array<{role: string; toolCall?: unknown}>,
+      sequence,
+      mode,
+    ) as unknown as AgentMessage[];
     const conversationId = `conversation-${crypto.randomUUID()}`;
     const runIdValue = `pi-run-${crypto.randomUUID()}`;
     const turnId = `turn-${crypto.randomUUID()}`;
@@ -698,15 +706,19 @@ export class PiAgentRuntime implements AgentRuntime {
           createRoots: [],
           workspaceId: "",
           projectPaths: [],
+          // A fork never inherits the source's blanket capability grant.
+          allowAllRunCapabilities: false,
           writeScopeState: "unbound",
           initialWriteToolCallId: null,
           initialWriteBoundAt: null,
         },
         operationScope: [],
+        // Network is never inherited across a fork: the new branch must earn it.
+        networkPolicy: "deny",
       },
     };
     const target = await this.session(identity);
-    target.agent.state.messages = [...source.agent.state.messages] as AgentMessage[];
+    target.agent.state.messages = projected;
     target.state = {
       conversationId,
       runId: identity.runId,
