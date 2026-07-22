@@ -213,7 +213,14 @@ export function createPiTools(
       execute: async (toolCallId, params, signal) => {
         if (signal?.aborted) throw new DOMException("Tool call aborted", "AbortError");
         const argumentsRecord = params as Record<string, unknown>;
-        const check = stallGuard.beforeTool(contract.name, argumentsRecord);
+        const check = stallGuard.beforeTool({
+          toolCallId,
+          name: contract.name,
+          args: argumentsRecord,
+          mutatesState: contract.mutates_state === true,
+          idempotent: contract.idempotent === true,
+          permissionLevel: contract.permission_level ?? "read",
+        });
         const call = () => withTimeout(
           transport.callRuntimeTool({
             runId: identity.runId,
@@ -228,9 +235,14 @@ export function createPiTools(
           Math.max(1, contract.timeout_seconds) * 1000,
           signal,
         );
-        let response = check.cached
-          ? {ok: true, content: stallGuard.repeated(check.cached)}
-          : await call();
+        let response: Record<string, unknown>;
+        if (check.cached) {
+          response = {ok: true, content: stallGuard.repeated(check.cached)};
+        } else if (check.duplicate) {
+          response = {ok: true, content: stallGuard.duplicateObservation(contract.name)};
+        } else {
+          response = (await call()) as Record<string, unknown>;
+        }
         if (signal?.aborted) throw new DOMException("Tool call aborted", "AbortError");
         if (response.ok !== true || response.isError === true) {
           const error = response.error as Record<string, unknown> | undefined;
@@ -294,7 +306,7 @@ export function createPiTools(
         const content = response.content && typeof response.content === "object"
           ? response.content as Record<string, unknown>
           : {value: response.content};
-        if (!check.cached) stallGuard.remember(check.key, content);
+        if (!check.cached && !check.duplicate) stallGuard.remember(check.key, content);
         return {
           content: [{type: "text", text: serializeToolObservation(contract, {content})}],
           details: {

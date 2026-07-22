@@ -1,43 +1,54 @@
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
+import {createHash} from "node:crypto";
 
-function hash(value: unknown): string {
-  const text = canonical(value);
-  let result = 2166136261;
-  for (let index = 0; index < text.length; index += 1) {
-    result ^= text.charCodeAt(index);
-    result = Math.imul(result, 16777619);
-  }
-  return (result >>> 0).toString(16).padStart(8, "0");
-}
+export type StallGuardDescriptor = {
+  toolCallId: string;
+  name: string;
+  args: Record<string, unknown>;
+  mutatesState: boolean;
+  idempotent: boolean;
+  permissionLevel: string;
+};
 
-interface SeenObservation {
+export type SeenObservation = {
   result: Record<string, unknown>;
   observationHash: string;
   repeats: number;
+};
+
+const NO_PROGRESS_NO_INFO = 2;
+const NO_PROGRESS_REPLAN = 4;
+const NO_PROGRESS_TERMINATE = 6;
+
+function hash(value: unknown): string {
+  try {
+    return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+  } catch {
+    return String(value);
+  }
 }
 
-/** Execution-fact loop guard. Natural-language intent is never inspected. */
 export class PiStallGuard {
-  private startedAt = Date.now();
-  private readonly seen = new Map<string, SeenObservation>();
-  private toolCalls = 0;
   private modelRequests = 0;
+  private toolCalls = 0;
+  private startedAt = Date.now();
+  private seen = new Map<string, SeenObservation>();
+  private consecutiveNoProgress = 0;
+  private uniqueObservationCount = 0;
+  private uniqueActionIds = new Set<string>();
 
-  /** Budgets and repeated-observation detection belong to one run, not the
-   * long-lived conversation. A resumed conversation may remain open for days. */
+  readonly maxModelRequests = 32;
+  readonly maxToolCalls = 96;
+  readonly maxWindowMs = 30 * 60 * 1000;
+
+  /** New Turn resets every budget and progress counter. */
   reset(): void {
+    this.modelRequests = 0;
+    this.toolCalls = 0;
     this.startedAt = Date.now();
     this.seen.clear();
-    this.toolCalls = 0;
-    this.modelRequests = 0;
+    this.consecutiveNoProgress = 0;
+    this.uniqueObservationCount = 0;
+    this.uniqueActionIds.clear();
   }
 
   beforeModelRequest(): void {
@@ -45,32 +56,107 @@ export class PiStallGuard {
     this.assertBudget();
   }
 
-  beforeTool(name: string, args: Record<string, unknown>): {key: string; cached?: SeenObservation} {
+  /**
+   * Decide how a tool call is handled before execution.
+   * - Read-only tools may reuse a previously observed result (no side effects).
+   * - Side-effecting but idempotent tools are never cached by the frontend; the
+   *   backend re-executes them idempotently (including authorization recovery
+   *   under the same toolCallId).
+   * - Side-effecting, non-idempotent tools that repeat an equivalent call are
+   *   intercepted and must not reuse the previous result.
+   */
+  beforeTool(descriptor: StallGuardDescriptor): {key: string; cached?: SeenObservation; duplicate?: boolean} {
     this.toolCalls += 1;
     this.assertBudget();
-    const key = `${name}:${hash(args)}`;
-    return {key, cached: this.seen.get(key)};
+    const key = `${descriptor.name}:${hash(descriptor.args)}`;
+    const seen = this.seen.get(key);
+    if (!descriptor.mutatesState) {
+      if (seen) return {key, cached: seen};
+      return {key};
+    }
+    if (descriptor.idempotent) {
+      return {key};
+    }
+    if (seen) return {key, duplicate: true};
+    return {key};
   }
 
-  remember(key: string, result: Record<string, unknown>): void {
-    const observationHash = hash(result);
-    const existing = this.seen.get(key);
-    this.seen.set(key, {result, observationHash, repeats: existing?.observationHash === observationHash ? existing.repeats + 1 : 0});
-  }
-
+  /** Reuse a cached read-only observation, tracking consecutive no-progress. */
   repeated(existing: SeenObservation): Record<string, unknown> {
-    if (existing.repeats >= 2) throw new Error("stall_detected: repeated tool call produced no new information");
-    existing.repeats += 1;
+    const stallGuard = this.bumpNoProgress();
     return {
       ...existing.result,
-      stallGuard: existing.repeats === 1 ? "reused_existing_observation" : "no_new_information",
+      stallGuard,
       observationHash: existing.observationHash,
     };
   }
 
+  /** Intercept an equivalent repeat of a non-idempotent mutating tool call. */
+  duplicateObservation(name: string): Record<string, unknown> {
+    const stallGuard = this.bumpNoProgress();
+    return {
+      ok: false,
+      status: "blocked",
+      code: "duplicate_non_idempotent_tool_call",
+      message: "该非幂等工具已被相同参数调用过，重复调用已被拦截。请复用已有结果或改用不同参数。",
+      tool: name,
+      stallGuard,
+    };
+  }
+
+  /** Record a freshly executed observation. A new observation resets no-progress. */
+  remember(key: string, result: Record<string, unknown>): void {
+    const observationHash = hash(result);
+    const existing = this.seen.get(key);
+    if (!existing || existing.observationHash !== observationHash) {
+      this.noteProgress();
+    } else {
+      existing.repeats += 1;
+    }
+    this.seen.set(key, {
+      result,
+      observationHash,
+      repeats: existing && existing.observationHash === observationHash ? existing.repeats + 1 : 0,
+    });
+    const actionId = result && typeof result === "object" ? (result as Record<string, unknown>).actionId : undefined;
+    if (typeof actionId === "string") this.uniqueActionIds.add(actionId);
+  }
+
+  get progress(): {
+    consecutiveNoProgress: number;
+    uniqueObservationCount: number;
+    uniqueActionIds: string[];
+    modelRequests: number;
+    toolCalls: number;
+  } {
+    return {
+      consecutiveNoProgress: this.consecutiveNoProgress,
+      uniqueObservationCount: this.uniqueObservationCount,
+      uniqueActionIds: [...this.uniqueActionIds],
+      modelRequests: this.modelRequests,
+      toolCalls: this.toolCalls,
+    };
+  }
+
+  private noteProgress(): void {
+    this.consecutiveNoProgress = 0;
+    this.uniqueObservationCount += 1;
+  }
+
+  private bumpNoProgress(): string {
+    this.consecutiveNoProgress += 1;
+    if (this.consecutiveNoProgress >= NO_PROGRESS_TERMINATE) {
+      throw new Error("stall_guard_safe_termination");
+    }
+    if (this.consecutiveNoProgress >= NO_PROGRESS_REPLAN) return "stall_replan_required";
+    if (this.consecutiveNoProgress >= NO_PROGRESS_NO_INFO) return "no_new_information";
+    return "reused_existing_observation";
+  }
+
   private assertBudget(): void {
-    if (this.modelRequests > 32) throw new Error("stall_guard_model_request_limit");
-    if (this.toolCalls > 96) throw new Error("stall_guard_tool_call_limit");
-    if (Date.now() - this.startedAt > 30 * 60_000) throw new Error("stall_guard_elapsed_time_limit");
+    const now = Date.now();
+    if (this.modelRequests > this.maxModelRequests) throw new Error("stall_guard_model_requests_exceeded");
+    if (this.toolCalls > this.maxToolCalls) throw new Error("stall_guard_tool_calls_exceeded");
+    if (now - this.startedAt > this.maxWindowMs) throw new Error("stall_guard_window_exceeded");
   }
 }
