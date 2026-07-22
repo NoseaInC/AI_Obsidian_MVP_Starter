@@ -83,5 +83,22 @@ class PiSessionTreeTests(unittest.TestCase):
         self.assertEqual(history[1]["content"], "第一段。第二段。")
 
 
+    def test_partial_run_includes_assistant_content_in_tree(self):
+        # Reuse the session/run created in setUp (no explicit session creation needed).
+        self.service.append_pi_events(
+            {"runId": "run-tree-1", "events": [
+                {"type": "text", "sequence": 1, "content": "部分产出内容"},
+            ]}
+        )
+        session = self.service.pi_session("session-tree-1")["session"]
+        entries = session["entries"]
+        message_entry = next(
+            (item for item in entries if item["entry_type"] == "message" and "部分产出内容" in str(item["payload"].get("content", ""))),
+            None,
+        )
+        self.assertIsNotNone(message_entry, "partial run assistant content must appear in the session tree")
+        self.assertEqual(str(session["state"]["currentLeafId"]), str(message_entry["id"]))
+
+
 if __name__ == "__main__":
     unittest.main()

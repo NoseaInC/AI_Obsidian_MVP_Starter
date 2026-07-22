@@ -2,25 +2,23 @@
 
 计划：docs/agent_runner/PI_RUNTIME_HARDENING_AUTORUN.md
 分支：pi-runtime-hardening
-已完成：T01、T02、T03、T04
-
-## 任务记录格式
-
-每个任务：修改文件、目标测试、完整门禁、提交 SHA、未完成项。
+已完成：T01、T02、T03、T04、T05
 
 ## T03 Stall Guard 副作用感知
-
-- 修改文件：PiStallGuard.ts、PiToolAdapter.ts、tests/pi-stall-guard.test.mjs（新增）
 - 提交：fix: make Stall Guard side-effect and idempotency aware
-- 门禁：python 195 passed；npm 96 passed（含 9 新）；check.sh passed。
 
 ## T04 模型流三层超时
+- 提交：fix: add rolling inactivity watchdog to model streams
+
+## T05 Session Tree 完整投影
 
 - 修改文件：
-  - obsidian-agent-plugin/src/core/runtime/pi/PiModelTransport.ts
-  - obsidian-agent-plugin/tests/pi-model-timeout.test.mjs（新增）
-- 实现：用 first/idle/hard 三层定时器替换单一 45s 活动定时器。firstEvent 默认 45s；idle 普通 90s、深度推理 180s，且 start/text/thinking/tool call/usage 均重置 idle；hard 普通 15min、深度推理 30min。错误码区分 model_first_event_timeout / model_idle_timeout / model_request_deadline_exceeded / model_request_aborted。超时即 abort、保留 partial、只发一次 terminal。构造器支持注入毫秒级超时（PiModelTransport(transport, timeouts)），深度推理由 options.reasoning 决定。
-- 目标测试：tests/pi-model-timeout.test.mjs（10 用例）：无首包、首包后停滞、持续 delta、hard deadline、done 后无二次错误、用户 Abort、thinking 停滞、tool delta 重置、深度推理更大 idle 预算、普通模式同等 200ms 间隙超时。
-- 完整门禁：python compileall + unittest 195 passed；npm typecheck/build/test 106 passed（含 10 新）；./scripts/check.sh All offline checks passed。
-- 提交：fix: add rolling inactivity watchdog to model streams
+  - obsidian-agent-plugin/src/core/runtime/pi/PiSessionTree.ts（新增）
+  - obsidian-agent-plugin/tests/pi-session-tree.test.mjs（新增）
+  - agent/tests/test_pi_session_tree.py（新增 1 个后端用例）
+- 现状：后端 `pi_session()` 已返回含 `entries` 的完整树（所有事件含 partial/aborted/error 回合的 text/thinking 等），`test_pi_session_tree.py` 3 用例已通过。缺失的是前端的 `PiSessionTree.ts` 投影器。
+- 实现：新增 `projectSessionTree(events)` 纯函数投影器——只投影真实事件，不合成 reasoning/工具；输出可序列化树：每 Turn（含 partial/aborted/error Assistant）、工具调用（blocked/running/failed）、工具结果（error/partial）、reasoning 块、usage 累计、stopReason；partial 回合（无 done/error）标记为 "partial"；可 JSON 序列化且无 undefined 泄漏。
+- 目标测试：pi-session-tree.test.mjs（6 用例）：partial Turn 显示 assistant 文本、blocked 工具调用可见、aborted Turn 保留内容、reasoning 投影、usage 累计、可序列化无 undefined。后端新增 test_partial_run_includes_assistant_content_in_tree 锁定 partial 内容进入 tree。
+- 完整门禁：python compileall + unittest 196 passed（含 1 新）；npm typecheck/build/test 112 passed（含 6 新）；./scripts/check.sh All offline checks passed。
+- 提交：fix: project full session tree including partial assistant turns
 - 未完成项：无。
