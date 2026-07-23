@@ -158,6 +158,17 @@ export class AgentClient {
   async runtimeSession(sessionId: string): Promise<any> {
     return this.get(`/agent/sessions/${encodeURIComponent(sessionId)}`);
   }
+  async runtimeSessionProjection(
+    sessionId: string,
+    options: {leafId?: string; runId?: string; uptoSequence?: number} = {},
+  ): Promise<any> {
+    const params = new URLSearchParams();
+    if (options.leafId) params.set("leafId", options.leafId);
+    if (options.runId) params.set("runId", options.runId);
+    if (options.uptoSequence != null) params.set("uptoSequence", String(Math.max(0, options.uptoSequence)));
+    const query = params.toString();
+    return this.get(`/agent/sessions/${encodeURIComponent(sessionId)}/projection${query ? `?${query}` : ""}`);
+  }
   async controlRuntimeRun(runId: string, type: "steering" | "follow_up", text: string): Promise<any> {
     return this.post(`/agent/runs/${encodeURIComponent(runId)}/control`, {type, text});
   }

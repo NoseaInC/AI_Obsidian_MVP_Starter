@@ -177,6 +177,11 @@ class IntakeService:
         self, conversation_id: str, message_id: str, metadata: dict[str, Any],
     ) -> dict[str, Any]:
         self.ensure_conversation(conversation_id)
+        if not isinstance(metadata, dict):
+            raise ValueError("invalid_message_metadata")
+        encoded_metadata = _json(metadata).encode("utf-8")
+        if len(encoded_metadata) > 1_000_000:
+            raise ValueError("message_metadata_too_large")
         if not re.fullmatch(r"[A-Za-z0-9._-]{1,160}", message_id):
             raise ValueError("invalid_message_id")
         with self.store.lock:
@@ -191,6 +196,8 @@ class IntakeService:
         if not path.is_relative_to(self.messages_root.resolve()) or not path.is_file() or path.is_symlink():
             raise RuntimeError("conversation_message_content_unavailable")
         payload = _decode(path.read_text(encoding="utf-8", errors="replace"), {})
+        if not isinstance(payload, dict):
+            raise RuntimeError("conversation_message_content_invalid")
         payload["metadata"] = metadata
         _atomic_bytes(path, (_json(payload) + "\n").encode())
         return self._read_message(row)

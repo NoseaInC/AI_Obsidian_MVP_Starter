@@ -64,6 +64,32 @@ export interface PiRunIdentity {
   forkedFromSequence?: number;
 }
 
+export type PiSessionProjectionEntry = {
+  id: string;
+  parentId: string | null;
+  timestamp: string;
+  entryType: string;
+  sessionId: string;
+  runId: string;
+  turnId: string;
+  sequence: number;
+  payload: Record<string, unknown>;
+};
+
+export type PiSessionProjection = {
+  sessionId: string;
+  leafId: string | null;
+  branchId: string;
+  entries: PiSessionProjectionEntry[];
+  messages: Array<Record<string, unknown>>;
+  focus: Record<string, unknown>;
+  attachments: Array<Record<string, unknown>>;
+  activeActions: Array<Record<string, unknown>>;
+  pending: Record<string, unknown> | null;
+  compaction: Record<string, unknown> | null;
+  schemaVersion: number;
+};
+
 export type PiRuntimeTool = AgentTool<any, Record<string, unknown>>;
 export type PiCoreEvent = AgentEvent;
 
@@ -79,6 +105,10 @@ export interface PiRuntimeTransport {
   appendRuntimeEvents(body: unknown): Promise<Record<string, unknown>>;
   runtimeEvents(runId: string, afterSequence?: number): Promise<Record<string, unknown>>;
   runtimeSession(sessionId: string): Promise<Record<string, unknown>>;
+  runtimeSessionProjection(
+    sessionId: string,
+    options?: {leafId?: string; runId?: string; uptoSequence?: number},
+  ): Promise<PiSessionProjection>;
   controlRuntimeRun(runId: string, type: "steering" | "follow_up", text: string): Promise<Record<string, unknown>>;
   cancelRuntimeRun(runId: string): Promise<Record<string, unknown>>;
   toolContracts(): Promise<{schemaVersion: number; items: PiToolContract[]}>;

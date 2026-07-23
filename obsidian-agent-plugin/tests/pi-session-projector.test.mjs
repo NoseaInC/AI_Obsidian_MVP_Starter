@@ -20,16 +20,88 @@ async function loadProjector() {
   });
   const require = createRequire(import.meta.url);
   const mod = require(outfile);
-  return {projectForkMessages: mod.projectForkMessages, dispose: () => rm(directory, {recursive: true, force: true})};
+  return {
+    projectForkMessages: mod.projectForkMessages,
+    projectPiSessionMessages: mod.projectPiSessionMessages,
+    dispose: () => rm(directory, {recursive: true, force: true}),
+  };
 }
 
 const loaded = await loadProjector();
-const {projectForkMessages} = loaded;
+const {projectForkMessages, projectPiSessionMessages} = loaded;
 const dispose = loaded.dispose;
 
 function msg(role, extra = {}) {
   return {role, content: role === "toolResult" ? [{type: "text", text: "r"}] : "x", ...extra};
 }
+
+function projection(messages, extra = {}) {
+  return {
+    sessionId: "s1", leafId: "e9", branchId: "r1", entries: [], messages,
+    focus: {}, attachments: [], activeActions: [], pending: null, compaction: null,
+    schemaVersion: 1, ...extra,
+  };
+}
+
+test("persisted User → Tool Call → Tool Result → Assistant restores exact Pi shapes", () => {
+  const restored = projectPiSessionMessages(projection([
+    {role: "user", content: "查找笔记", timestamp: "2026-07-23T00:00:00Z"},
+    {role: "assistant", content: [
+      {type: "text", text: "先搜索。"},
+      {type: "toolCall", id: "call-1", name: "search_vault", arguments: {query: "因果"}},
+    ], timestamp: "2026-07-23T00:00:01Z"},
+    {role: "toolResult", toolCallId: "call-1", toolName: "search_vault", content: [{type: "text", text: "{\"ok\":true}"}], details: {status: "completed", actionId: "a1"}, isError: false, timestamp: "2026-07-23T00:00:02Z"},
+    {role: "assistant", content: [{type: "text", text: "完整回答"}], timestamp: "2026-07-23T00:00:03Z"},
+  ]));
+  assert.deepEqual(restored.map(item => item.role), ["user", "assistant", "toolResult", "assistant"]);
+  assert.deepEqual(restored[1].content[1], {type: "toolCall", id: "call-1", name: "search_vault", arguments: {query: "因果"}});
+  assert.equal(restored[2].toolCallId, restored[1].content[1].id);
+  assert.equal(restored[2].toolName, restored[1].content[1].name);
+  assert.equal(restored[2].details.actionId, "a1");
+  assert.equal(restored[3].content[0].text, "完整回答");
+});
+
+test("blocked and failed results survive with their typed status", () => {
+  const restored = projectPiSessionMessages(projection([
+    {role: "assistant", content: [
+      {type: "toolCall", id: "blocked", name: "write_note", arguments: {}},
+      {type: "toolCall", id: "failed", name: "search_vault", arguments: {}},
+    ]},
+    {role: "toolResult", toolCallId: "blocked", toolName: "write_note", content: [{type: "text", text: "blocked"}], details: {status: "blocked", code: "user_denied_permission"}, isError: false},
+    {role: "toolResult", toolCallId: "failed", toolName: "search_vault", content: [{type: "text", text: "failed"}], details: {status: "failed", code: "search_failed"}, isError: true},
+  ]));
+  assert.equal(restored[1].details.status, "blocked");
+  assert.equal(restored[1].isError, false);
+  assert.equal(restored[2].details.status, "failed");
+  assert.equal(restored[2].isError, true);
+});
+
+test("orphaned calls become interrupted results and orphaned results are dropped", () => {
+  const restored = projectPiSessionMessages(projection([
+    {role: "toolResult", toolCallId: "no-call", toolName: "x", content: [{type: "text", text: "unsafe"}]},
+    {role: "assistant", content: [{type: "toolCall", id: "orphan", name: "search_vault", arguments: {query: "x"}}]},
+  ]));
+  assert.deepEqual(restored.map(item => item.role), ["assistant", "toolResult"]);
+  assert.equal(restored[1].toolCallId, "orphan");
+  assert.equal(restored[1].details.code, "tool_call_interrupted_by_restart");
+});
+
+test("reasoning blocks never enter restored context; controls and checkpoints do", () => {
+  const restored = projectPiSessionMessages(projection([
+    {role: "assistant", content: [
+      {type: "thinking", thinking: "private chain"},
+      {type: "text", text: "public answer"},
+    ]},
+    {role: "custom", customType: "steering", content: "只看主线", display: true},
+  ], {
+    compaction: {tokensBefore: 100, structuredState: {goal: "continue"}, createdAt: "2026-07-23T00:00:00Z"},
+  }));
+  assert.doesNotMatch(JSON.stringify(restored), /private chain/);
+  assert.equal(restored[0].content[0].text, "public answer");
+  assert.equal(restored[1].customType, "steering");
+  assert.equal(restored[2].role, "compactionSummary");
+  assert.match(restored[2].summary, /continue/);
+});
 
 test("fork without sequence keeps the entire transcript", () => {
   const messages = [msg("user"), msg("assistant"), msg("user"), msg("assistant")];

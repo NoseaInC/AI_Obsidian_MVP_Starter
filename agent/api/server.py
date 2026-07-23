@@ -144,6 +144,16 @@ class Handler(BaseHTTPRequestHandler):
                     ),
                     active_only=query.get("all", ["0"])[0] not in ("1", "true"),
                 )
+            elif path.startswith("/agent/sessions/") and path.endswith("/projection"):
+                raw_sequence = str(query.get("uptoSequence", [""])[0]).strip()
+                payload = self.service.pi_session_projection(
+                    self._identifier(
+                        path.removeprefix("/agent/sessions/").removesuffix("/projection")
+                    ),
+                    leaf_id=str(query.get("leafId", [""])[0]).strip() or None,
+                    run_id=str(query.get("runId", [""])[0]).strip() or None,
+                    upto_sequence=max(0, int(raw_sequence)) if raw_sequence else None,
+                )
             elif path.startswith("/agent/sessions/") and path.endswith("/pending-tool-calls"):
                 payload = self.service.get_pending_tool_calls(
                     session_id=self._identifier(

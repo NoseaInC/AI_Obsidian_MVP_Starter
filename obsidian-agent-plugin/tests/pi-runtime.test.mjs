@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {mkdtemp, rm} from "node:fs/promises";
+import {mkdtemp, readFile, rm} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {createRequire} from "node:module";
@@ -21,6 +21,13 @@ async function loadRuntime() {
   const require = createRequire(import.meta.url);
   return {module: require(outfile), dispose: () => rm(directory, {recursive: true, force: true})};
 }
+
+test("runtime restores only through the persisted session-lineage projector", async () => {
+  const source = await readFile("src/core/runtime/PiAgentRuntime.ts", "utf8");
+  assert.doesNotMatch(source, /function\s+restoredMessages|restoredMessages\s*\(/);
+  assert.match(source, /runtimeSessionProjection\(identity\.sessionId\)/);
+  assert.match(source, /projectPiSessionMessages\(projection\)/);
+});
 
 test("Pi owns an observation-driven multi-turn tool loop", async () => {
   const {module, dispose} = await loadRuntime();
@@ -102,12 +109,16 @@ test("Pi restores durable history and exposes only provider-returned thinking as
   let restoredContext = "";
   const persisted = [];
   const transport = {
-    async runtimeSession() {
+    async runtimeSessionProjection() {
       return {
-        schemaVersion: 2,
-        history: [
-          {id: "old-user", role: "user", content: "旧问题", createdAt: "2026-07-20T08:00:00Z"},
-          {id: "old-assistant", role: "assistant", content: "旧回答", createdAt: "2026-07-20T08:00:01Z"},
+        schemaVersion: 1,
+        sessionId: "conversation-restored",
+        leafId: "entry-2",
+        branchId: "old-run",
+        entries: [], focus: {}, attachments: [], activeActions: [], pending: null, compaction: null,
+        messages: [
+          {role: "user", content: "旧问题", timestamp: "2026-07-20T08:00:00Z"},
+          {role: "assistant", content: [{type: "text", text: "旧回答"}], timestamp: "2026-07-20T08:00:01Z"},
         ],
       };
     },

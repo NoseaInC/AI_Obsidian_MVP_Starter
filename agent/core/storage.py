@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from agent.core.redaction import SENSITIVE_KEY, redact_secret_text
+
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -454,6 +456,7 @@ CREATE TABLE IF NOT EXISTS pi_session_entries (
   session_id TEXT NOT NULL,
   run_id TEXT NOT NULL,
   turn_id TEXT NOT NULL,
+  sequence INTEGER NOT NULL DEFAULT 0,
   payload_json TEXT NOT NULL,
   FOREIGN KEY(session_id) REFERENCES pi_agent_sessions(session_id) ON DELETE CASCADE,
   FOREIGN KEY(run_id) REFERENCES pi_agent_runs(run_id) ON DELETE CASCADE
@@ -500,11 +503,50 @@ CREATE INDEX IF NOT EXISTS idx_pi_compaction_checkpoints_branch
 
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 
 def _now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+_PROJECTION_SECRET_KEYS = {
+    "apikey", "api_key", "authorization", "bearer", "credential",
+    "credentials", "environment", "env", "password", "secret", "token",
+}
+
+
+def _projection_safe(value: Any, *, depth: int = 0) -> Any:
+    """Bound and redact persisted context before it can reach a model request."""
+    if depth > 8:
+        return "[nested value omitted]"
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        cleaned = redact_secret_text(value)
+        encoded = cleaned.encode("utf-8", errors="replace")
+        if len(encoded) <= 4096:
+            return cleaned
+        digest = hashlib.sha256(encoded).hexdigest()
+        return f"{encoded[:4096].decode('utf-8', errors='ignore')}\n[truncated sha256={digest}]"
+    if isinstance(value, list):
+        return [_projection_safe(item, depth=depth + 1) for item in value[:100]]
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        for raw_key, item in list(value.items())[:100]:
+            key = str(raw_key)
+            normalized = key.lower().replace("-", "_")
+            compact = normalized.replace("_", "")
+            if (
+                normalized in _PROJECTION_SECRET_KEYS
+                or compact in _PROJECTION_SECRET_KEYS
+                or SENSITIVE_KEY.search(key)
+            ):
+                result[key] = "[redacted]"
+            else:
+                result[key] = _projection_safe(item, depth=depth + 1)
+        return result
+    return str(value)[:1000]
 
 
 class StateStore:
@@ -533,6 +575,31 @@ class StateStore:
         # pi_pending_tool_calls table becomes the single source of truth.
         self.connection.execute("DROP TABLE IF EXISTS pi_pending_permissions")
         self.connection.executescript(PI_RUNTIME_SCHEMA)
+        columns = {
+            row["name"]
+            for row in self.connection.execute("PRAGMA table_info(pi_session_entries)")
+        }
+        if "sequence" not in columns:
+            self.connection.execute(
+                "ALTER TABLE pi_session_entries ADD COLUMN sequence INTEGER NOT NULL DEFAULT 0"
+            )
+            rows = self.connection.execute(
+                "SELECT id, payload_json FROM pi_session_entries"
+            ).fetchall()
+            for row in rows:
+                try:
+                    payload = json.loads(row["payload_json"] or "{}")
+                    sequence = int(payload.get("sequence") or payload.get("seq") or 0)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    sequence = 0
+                self.connection.execute(
+                    "UPDATE pi_session_entries SET sequence=? WHERE id=?",
+                    (max(0, sequence), row["id"]),
+                )
+        self.connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_pi_session_entries_run_sequence "
+            "ON pi_session_entries(session_id, run_id, sequence)"
+        )
 
     def create_pi_task_authorization(self, authorization: dict[str, Any]) -> dict[str, Any]:
         required = (
@@ -749,6 +816,14 @@ class StateStore:
             result = event.get("result") if isinstance(event.get("result"), dict) else {}
             nested = result.get("result") if isinstance(result.get("result"), dict) else {}
             action_id = str(nested.get("actionId") or "")
+            continuation = nested.get("continuation")
+            code = str(nested.get("code") or result.get("code") or event.get("code") or "")
+            observation_reference = str(
+                nested.get("observationReference")
+                or nested.get("observation_reference")
+                or result.get("observationReference")
+                or ""
+            )
             return {
                 "sequence": int(event.get("sequence") or 0),
                 "callId": str(event.get("id") or ""),
@@ -759,6 +834,9 @@ class StateStore:
                     json.dumps(result, ensure_ascii=False, sort_keys=True).encode()
                 ).hexdigest(),
                 **({"actionId": action_id} if action_id else {}),
+                **({"code": code} if code else {}),
+                **({"observationReference": observation_reference} if observation_reference else {}),
+                **({"continuation": continuation} if isinstance(continuation, dict) else {}),
             }
         if event_type == "action_result":
             return {
@@ -787,8 +865,8 @@ class StateStore:
         inserted = self.connection.execute(
             """INSERT OR IGNORE INTO pi_session_entries(
                  id, parent_id, timestamp, entry_type, session_id, run_id,
-                 turn_id, payload_json
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                 turn_id, sequence, payload_json
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 entry_id,
                 parent_id,
@@ -797,6 +875,7 @@ class StateStore:
                 run["session_id"],
                 run["run_id"],
                 run["turn_id"],
+                max(0, int(payload.get("sequence") or payload.get("seq") or 0)),
                 json.dumps(payload, ensure_ascii=False),
             ),
         )
@@ -916,6 +995,398 @@ class StateStore:
         for entry in item["entries"]:
             entry.pop("payload_json", None)
         return item
+
+    @staticmethod
+    def _project_pi_messages(
+        entries: list[dict[str, Any]],
+        branch_id: str,
+        branch_run: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        """Build a privacy-bounded Pi transcript without orphaned tool results."""
+        messages: list[dict[str, Any]] = []
+        assistant_content: list[dict[str, Any]] = []
+        assistant_timestamp = ""
+        assistant_run_id = ""
+        assistant_turn_id = ""
+        pending: dict[str, dict[str, Any]] = {}
+        pending_order: list[str] = []
+
+        if branch_run and branch_run.get("parent_run_id"):
+            messages.append({
+                "role": "branchSummary",
+                "summary": (
+                    f"Restored branch {branch_id} from parent run "
+                    f"{branch_run['parent_run_id']} at persisted event boundary "
+                    f"{branch_run.get('forked_from_sequence') or 0}."
+                ),
+                "fromId": str(branch_run["parent_run_id"]),
+                "timestamp": str(branch_run.get("created_at") or _now()),
+                "metadata": {"branchId": branch_id},
+            })
+
+        def flush_assistant() -> None:
+            nonlocal assistant_content, assistant_timestamp, assistant_run_id, assistant_turn_id
+            if not assistant_content:
+                return
+            messages.append({
+                "role": "assistant",
+                "content": assistant_content,
+                "timestamp": assistant_timestamp or _now(),
+                "stopReason": (
+                    "toolUse" if any(item.get("type") == "toolCall" for item in assistant_content)
+                    else "stop"
+                ),
+                "metadata": {
+                    "branchId": branch_id,
+                    "runId": assistant_run_id,
+                    "turnId": assistant_turn_id,
+                },
+            })
+            assistant_content = []
+            assistant_timestamp = ""
+            assistant_run_id = ""
+            assistant_turn_id = ""
+
+        def append_tool_result(
+            call_id: str,
+            tool_name: str,
+            payload: dict[str, Any],
+            timestamp: str,
+            *,
+            interrupted: bool = False,
+        ) -> None:
+            status = "interrupted" if interrupted else str(payload.get("status") or "completed")
+            observation = {
+                "ok": status == "completed",
+                "status": status,
+                "summary": str(payload.get("summary") or "")[:1000],
+                "observationReference": str(
+                    payload.get("observationReference")
+                    or f"pi-observation:{payload.get('observationHash') or call_id}"
+                ),
+                "observationHash": str(payload.get("observationHash") or ""),
+                **({"actionId": str(payload["actionId"])} if payload.get("actionId") else {}),
+                **({"continuation": _projection_safe(payload["continuation"])} if isinstance(payload.get("continuation"), dict) else {}),
+            }
+            code = str(payload.get("code") or "")
+            if interrupted:
+                code = "tool_call_interrupted_by_restart"
+                observation["summary"] = "工具调用在结果持久化前中断，恢复时不会自动重复执行。"
+            elif not code and status in {"failed", "blocked", "interrupted"}:
+                code = f"tool_result_{status}"
+            if code:
+                observation["code"] = code
+            messages.append({
+                "role": "toolResult",
+                "toolCallId": call_id,
+                "toolName": tool_name,
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps(observation, ensure_ascii=False, sort_keys=True),
+                }],
+                "details": observation,
+                "isError": status in {"failed", "interrupted"},
+                "timestamp": timestamp or _now(),
+                "metadata": {"branchId": branch_id},
+            })
+
+        def interrupt_pending() -> None:
+            flush_assistant()
+            for call_id in list(pending_order):
+                call = pending.pop(call_id, None)
+                if not call:
+                    continue
+                append_tool_result(
+                    call_id,
+                    str(call["tool"]),
+                    {},
+                    str(call["timestamp"]),
+                    interrupted=True,
+                )
+            pending_order.clear()
+
+        for entry in entries:
+            entry_type = str(entry.get("entryType") or "")
+            payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+            timestamp = str(entry.get("timestamp") or _now())
+            run_id = str(entry.get("runId") or "")
+            turn_id = str(entry.get("turnId") or "")
+
+            if entry_type == "task_authorization":
+                interrupt_pending()
+                objective = str(payload.get("objective") or "").strip()
+                if objective:
+                    messages.append({
+                        "role": "user",
+                        "content": objective,
+                        "timestamp": timestamp,
+                        "metadata": {"branchId": branch_id, "runId": run_id, "turnId": turn_id},
+                    })
+                continue
+
+            if entry_type == "message":
+                text = str(payload.get("content") or "")
+                if not text:
+                    continue
+                if pending:
+                    interrupt_pending()
+                if not assistant_content:
+                    assistant_timestamp = timestamp
+                    assistant_run_id = run_id
+                    assistant_turn_id = turn_id
+                if assistant_content and assistant_content[-1].get("type") == "text":
+                    assistant_content[-1]["text"] = str(assistant_content[-1].get("text") or "") + text
+                else:
+                    assistant_content.append({"type": "text", "text": text})
+                continue
+
+            if entry_type == "tool_call":
+                call_id = str(payload.get("callId") or payload.get("id") or "")
+                tool_name = str(payload.get("tool") or payload.get("name") or "")
+                if not call_id or not tool_name:
+                    continue
+                if not assistant_content:
+                    assistant_timestamp = timestamp
+                    assistant_run_id = run_id
+                    assistant_turn_id = turn_id
+                arguments = payload.get("arguments")
+                if not isinstance(arguments, dict):
+                    arguments = payload.get("input") if isinstance(payload.get("input"), dict) else {}
+                assistant_content.append({
+                    "type": "toolCall",
+                    "id": call_id,
+                    "name": tool_name,
+                    "arguments": _projection_safe(arguments),
+                })
+                pending[call_id] = {"tool": tool_name, "timestamp": timestamp}
+                pending_order.append(call_id)
+                continue
+
+            if entry_type == "tool_result":
+                call_id = str(payload.get("callId") or payload.get("id") or "")
+                call = pending.get(call_id)
+                tool_name = str(payload.get("tool") or payload.get("name") or "")
+                if not call or not call_id or tool_name != str(call.get("tool") or ""):
+                    # A result without the exact persisted call is unsafe context.
+                    continue
+                flush_assistant()
+                append_tool_result(call_id, tool_name, payload, timestamp)
+                pending.pop(call_id, None)
+                pending_order = [item for item in pending_order if item != call_id]
+                continue
+
+            if entry_type in {"steering", "follow_up"}:
+                interrupt_pending()
+                text = str(payload.get("text") or "").strip()
+                if text:
+                    messages.append({
+                        "role": "custom",
+                        "customType": entry_type,
+                        "content": text,
+                        "display": True,
+                        "details": {"runId": run_id, "turnId": turn_id, "branchId": branch_id},
+                        "timestamp": timestamp,
+                    })
+                continue
+
+            if entry_type == "action":
+                interrupt_pending()
+                action_ref = {
+                    "actionId": str(payload.get("actionId") or ""),
+                    "state": str(payload.get("state") or ""),
+                }
+                if action_ref["actionId"]:
+                    messages.append({
+                        "role": "custom",
+                        "customType": "persistedActionResult",
+                        "content": json.dumps(action_ref, ensure_ascii=False, sort_keys=True),
+                        "display": False,
+                        "details": action_ref,
+                        "timestamp": timestamp,
+                    })
+                continue
+
+            if entry_type == "compaction" and payload.get("summary"):
+                interrupt_pending()
+                messages.append({
+                    "role": "compactionSummary",
+                    "summary": str(payload.get("summary") or "")[:20_000],
+                    "tokensBefore": int(payload.get("tokensBefore") or 0),
+                    "timestamp": timestamp,
+                })
+
+        interrupt_pending()
+        return messages
+
+    def project_pi_session_context(
+        self,
+        session_id: str,
+        leaf_id: str | None = None,
+        upto_run_id: str | None = None,
+        upto_sequence: int | None = None,
+    ) -> dict[str, Any]:
+        """Project one parent-linked lineage; sibling branches never enter context."""
+        with self.lock:
+            session_row = self.connection.execute(
+                "SELECT * FROM pi_agent_sessions WHERE session_id=?", (session_id,),
+            ).fetchone()
+            if not session_row:
+                raise ValueError("pi_session_not_found")
+            rows = self.connection.execute(
+                "SELECT * FROM pi_session_entries WHERE session_id=? ORDER BY timestamp, id",
+                (session_id,),
+            ).fetchall()
+            session_state = json.loads(session_row["state_json"] or "{}")
+            by_id = {str(row["id"]): row for row in rows}
+            order = {str(row["id"]): index for index, row in enumerate(rows)}
+
+            selected_leaf = str(leaf_id or "")
+            if selected_leaf and selected_leaf not in by_id:
+                raise ValueError("pi_session_leaf_not_found")
+            target_run_id = str(upto_run_id or "")
+            state_leaf = str(session_state.get("currentLeafId") or "")
+            if not target_run_id and upto_sequence is not None and state_leaf in by_id:
+                target_run_id = str(by_id[state_leaf]["run_id"])
+            if not selected_leaf and target_run_id:
+                candidates = [
+                    row for row in rows
+                    if str(row["run_id"]) == target_run_id
+                    and (
+                        upto_sequence is None
+                        or int(row["sequence"] or 0) == 0
+                        or int(row["sequence"] or 0) <= max(0, int(upto_sequence))
+                    )
+                ]
+                if candidates:
+                    selected_leaf = str(max(candidates, key=lambda row: order[str(row["id"])])["id"])
+            if not selected_leaf:
+                selected_leaf = state_leaf
+            if not selected_leaf and rows:
+                selected_leaf = str(rows[-1]["id"])
+
+            lineage_rows: list[sqlite3.Row] = []
+            visited: set[str] = set()
+            cursor = selected_leaf
+            while cursor:
+                if cursor in visited:
+                    raise RuntimeError("pi_session_lineage_cycle")
+                visited.add(cursor)
+                row = by_id.get(cursor)
+                if row is None:
+                    raise RuntimeError("pi_session_lineage_broken")
+                lineage_rows.append(row)
+                cursor = str(row["parent_id"] or "")
+            lineage_rows.reverse()
+
+            branch_id = str(target_run_id or (lineage_rows[-1]["run_id"] if lineage_rows else ""))
+            branch_row = self.connection.execute(
+                "SELECT * FROM pi_agent_runs WHERE run_id=?", (branch_id,),
+            ).fetchone() if branch_id else None
+
+            projected_entries: list[dict[str, Any]] = []
+            for row in lineage_rows:
+                try:
+                    payload = json.loads(row["payload_json"] or "{}")
+                except json.JSONDecodeError:
+                    payload = {}
+                if str(payload.get("type") or "") in {
+                    "reasoning", "thinking", "thinking_start", "thinking_delta", "thinking_end",
+                }:
+                    # Provider reasoning is local UI trace only, never model context.
+                    continue
+                projected_entries.append({
+                    "id": str(row["id"]),
+                    "parentId": str(row["parent_id"] or "") or None,
+                    "timestamp": str(row["timestamp"]),
+                    "entryType": str(row["entry_type"]),
+                    "sessionId": str(row["session_id"]),
+                    "runId": str(row["run_id"]),
+                    "turnId": str(row["turn_id"]),
+                    "sequence": int(row["sequence"] or payload.get("sequence") or 0),
+                    "payload": _projection_safe(payload),
+                })
+
+            conversation_id = str(session_row["conversation_id"] or session_id)
+            attachment_rows = self.connection.execute(
+                """SELECT id, kind, display_name, mime_type, size_bytes, sha256, status, created_at
+                   FROM attachments WHERE conversation_id=? ORDER BY created_at, id LIMIT 100""",
+                (conversation_id,),
+            ).fetchall()
+            run_ids = list(dict.fromkeys(str(row["run_id"]) for row in lineage_rows))
+            compaction_row = None
+            if run_ids:
+                placeholders = ",".join("?" for _ in run_ids)
+                compaction_row = self.connection.execute(
+                    f"SELECT * FROM pi_compaction_checkpoints WHERE run_id IN ({placeholders}) "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    tuple(run_ids),
+                ).fetchone()
+
+        focus = _projection_safe(self.get_conversation_focus(conversation_id) or {})
+        pending_items = self.get_pending_tool_calls(session_id=session_id, active_only=True)
+        pending = _projection_safe(pending_items[0]) if pending_items else None
+        action_ids = list(dict.fromkeys(
+            str(entry["payload"].get("actionId") or "")
+            for entry in projected_entries
+            if entry["entryType"] in {"tool_result", "action"}
+            and isinstance(entry.get("payload"), dict)
+            and entry["payload"].get("actionId")
+        ))
+        active_actions: list[dict[str, Any]] = []
+        for action_id in action_ids:
+            try:
+                action = self.get_agent_action(action_id)
+            except ValueError:
+                active_actions.append({"id": action_id, "status": "referenced"})
+            else:
+                active_actions.append({
+                    "id": action_id,
+                    "actionType": str(action.get("action_type") or ""),
+                    "target": str(action.get("target") or "")[:1000],
+                    "status": str(action.get("status") or ""),
+                    "completedAt": action.get("completed_at"),
+                })
+
+        compaction = None
+        if compaction_row:
+            compaction = {
+                "runId": compaction_row["run_id"],
+                "sessionId": compaction_row["session_id"],
+                "branchId": compaction_row["branch_id"],
+                "cutEntryId": compaction_row["cut_entry_id"],
+                "keptFromEntryId": compaction_row["kept_from_entry_id"],
+                "summaryVersion": compaction_row["summary_version"],
+                "tokensBefore": compaction_row["tokens_before"],
+                "tokensAfter": compaction_row["tokens_after"],
+                "structuredState": _projection_safe(json.loads(compaction_row["state_json"] or "{}")),
+                "createdAt": compaction_row["created_at"],
+            }
+        branch_run = dict(branch_row) if branch_row else None
+        return {
+            "sessionId": session_id,
+            "leafId": selected_leaf or None,
+            "branchId": branch_id,
+            "entries": projected_entries,
+            "messages": self._project_pi_messages(projected_entries, branch_id, branch_run),
+            "focus": focus,
+            "attachments": [
+                {
+                    "id": row["id"],
+                    "kind": row["kind"],
+                    "displayName": row["display_name"],
+                    "mimeType": row["mime_type"],
+                    "sizeBytes": row["size_bytes"],
+                    "sha256": row["sha256"],
+                    "status": row["status"],
+                    "createdAt": row["created_at"],
+                }
+                for row in attachment_rows
+            ],
+            "activeActions": active_actions,
+            "pending": pending,
+            "compaction": compaction,
+            "schemaVersion": 1,
+        }
 
     _PENDING_ACTIVE_STATES = ("pending", "interrupted")
 

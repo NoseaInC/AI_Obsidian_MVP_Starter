@@ -1717,6 +1717,21 @@ class AgentService:
             "schemaVersion": 2,
         }
 
+    def pi_session_projection(
+        self,
+        session_id: str,
+        *,
+        leaf_id: str | None = None,
+        run_id: str | None = None,
+        upto_sequence: int | None = None,
+    ) -> dict[str, Any]:
+        return self.store.project_pi_session_context(
+            session_id,
+            leaf_id=leaf_id or None,
+            upto_run_id=run_id or None,
+            upto_sequence=upto_sequence,
+        )
+
     _PENDING_TOOL_CALL_STATES = {
         "pending",
         "allowed",

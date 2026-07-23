@@ -18,4 +18,14 @@
 
 ## R02 — Provider Abort 无关的模型流终止
 
+状态：已完成
+
+- 真实行为：first/idle/hard timer 只 abort 内部 signal，终态依赖 Provider Promise 随后 resolve/reject；忽略 AbortSignal 的 Provider 会令流永久悬挂。
+- 实现：统一 `terminate` 先锁定唯一终态、清理 timer、保留 partial assistant、立即 push error，再 best-effort abort；Provider 回调和 Promise 的迟到结果均受 terminal guard 约束。
+- 目标测试：`node --test tests/pi-model-timeout.test.mjs tests/pi-runtime.test.mjs`，16/16 通过；覆盖永不 resolve Provider、partial abort、迟到事件和唯一终态。
+- 完整门禁：Python compileall 与 214/214 tests、plugin 144/144 tests、typecheck、build、`./scripts/check.sh` 全部通过。
+- 提交：`29e2cd1 fix: terminate stalled model streams independently of provider abort`
+
+## R03 — Session Tree 到 Pi AgentMessage 投影
+
 状态：进行中

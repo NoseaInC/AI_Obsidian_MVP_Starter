@@ -11,7 +11,7 @@ import type {
 } from "./types";
 import {PiEventAdapter} from "./pi/PiEventAdapter";
 import {PiModelTransport} from "./pi/PiModelTransport";
-import {projectForkMessages} from "./pi/PiSessionProjector";
+import {projectForkMessages, projectPiSessionMessages} from "./pi/PiSessionProjector";
 import {createPiTools} from "./pi/PiToolAdapter";
 import {createTurnIdentity} from "./pi/TaskAuthorization";
 import type {
@@ -129,32 +129,6 @@ function promptWithContext(request: AgentTurnRequest, identity: PiRunIdentity): 
     networkAuthorized: identity.taskAuthorization.networkPolicy === "allow",
   };
   return `${request.message}\n\n<zhixu_turn_context>\n${JSON.stringify(context)}\n</zhixu_turn_context>`;
-}
-
-function restoredMessages(payload: Record<string, unknown>): AgentMessage[] {
-  const rows = Array.isArray(payload.history) ? payload.history : [];
-  return rows.flatMap(raw => {
-    if (!raw || typeof raw !== "object") return [];
-    const row = raw as Record<string, unknown>;
-    const role = String(row.role ?? "");
-    const content = String(row.content ?? "").trim();
-    if (!content) return [];
-    const timestamp = Date.parse(String(row.createdAt ?? "")) || Date.now();
-    if (role === "user") return [{role: "user", content, timestamp} as AgentMessage];
-    if (role === "assistant") {
-      return [{
-        role: "assistant",
-        content: [{type: "text", text: content}],
-        api: "zhixu-secure-proxy",
-        provider: "zhixu",
-        model: "restored-session",
-        usage: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0}},
-        stopReason: "stop",
-        timestamp,
-      } as AgentMessage];
-    }
-    return [];
-  });
 }
 
 /** Production Agent runtime. Pi owns planning and the tool loop; Python is an I/O boundary only. */
@@ -895,8 +869,8 @@ export class PiAgentRuntime implements AgentRuntime {
       sessionId: identity.sessionId,
     });
     try {
-      const persisted = await this.transport.runtimeSession(identity.sessionId);
-      agent.state.messages = restoredMessages(persisted);
+      const projection = await this.transport.runtimeSessionProjection(identity.sessionId);
+      agent.state.messages = projectPiSessionMessages(projection);
     } catch {
       // A new conversation has no persisted Pi session yet.
     }

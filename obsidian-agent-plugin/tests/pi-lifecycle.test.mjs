@@ -23,6 +23,7 @@ function baseTransport(overrides = {}) {
     async appendRuntimeEvents(body) { await new Promise(resolve => setTimeout(resolve, 2)); persisted.push(...body.events); return {lastEventSequence: body.events.at(-1)?.sequence ?? 0}; },
     async runtimeEvents(_run, after) { return {items: persisted.filter(item => item.sequence > after)}; },
     async runtimeSession() { return {session: {entries: []}}; },
+    async runtimeSessionProjection() { throw new Error("pi_session_not_found"); },
     async controlRuntimeRun(_run, type, text) { controls.push({type, text}); return {control: {type}}; },
     async cancelRuntimeRun(runId) { controls.push({type: "cancel", runId}); return {status: "cancelled"}; },
     async toolContracts() { return {schemaVersion: 1, items: []}; },
