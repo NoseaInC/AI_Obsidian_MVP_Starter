@@ -2559,7 +2559,6 @@ export class LearningAgentMainView extends ItemView {
           ...completedMessageBase,
           metadata: messageMetadata,
           reasoningBlocks: this.assistantLiveRun.reasoningBlocks
-            .filter(block => block.content.trim())
             .map(block => ({...block, status: "completed"})),
           _traceSteps: liveRun.steps.map(step => ({...step, status: step.status === "running" ? "completed" : step.status})),
           _traceToolCalls: liveRun.toolCalls.map(call => ({...call})),
@@ -2673,7 +2672,7 @@ export class LearningAgentMainView extends ItemView {
     details.createEl("summary", {text: "推理与执行过程"});
     details.createDiv({
       cls: "la-live-trace__disclaimer",
-      text: "模型推理仅在供应商真实返回独立 reasoning block 时出现；工具状态来自实际运行事件。",
+      text: "供应商推理原文不会发送到 UI 或持久化；这里只显示阶段与 Token 计数。",
     });
     this.renderProviderReasoning(details, run.reasoningBlocks, providerReasoningOpen);
     const thinking = details.createDiv({cls: "la-live-trace__thinking"});
@@ -2996,23 +2995,20 @@ export class LearningAgentMainView extends ItemView {
 
   private renderProviderReasoning(
     parent: HTMLElement,
-    blocks: Array<{id?: string; provider?: string; content?: string; status?: string}>,
+    blocks: Array<{id?: string; provider?: string; tokenCount?: number; status?: string}>,
     open: boolean,
   ): void {
-    const visible = blocks.filter(block => String(block.content ?? "").trim());
+    const visible = blocks.filter(block => block && typeof block === "object");
     if (!visible.length) return;
     const details = parent.createEl("details", {cls: "la-provider-reasoning"});
     details.open = open;
     const summary = details.createEl("summary");
     setIcon(summary.createSpan({cls: "la-provider-reasoning__icon"}), "brain-circuit");
-    summary.createSpan({text: "模型推理"});
-    const providers = [...new Set(visible.map(block => String(block.provider ?? "provider")).filter(Boolean))];
+    summary.createSpan({text: "思考状态"});
     const streaming = visible.some(block => block.status === "streaming");
     summary.createEl("small", {
-      text: `供应商原始返回${providers.length ? ` · ${providers.join(" / ")}` : ""}${streaming ? " · 接收中" : ""}`,
+      text: streaming ? "正在思考" : "思考已完成",
     });
-    const body = details.createDiv({cls: "la-provider-reasoning__body"});
-    for (const block of visible) body.createEl("pre", {text: String(block.content ?? "")});
   }
 
   private renderAssistantMessageActions(copy: HTMLElement, message: any, previousUserMessage: any = null): void {

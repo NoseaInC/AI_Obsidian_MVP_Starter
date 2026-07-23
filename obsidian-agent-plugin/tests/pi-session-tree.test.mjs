@@ -61,15 +61,19 @@ test("aborted turn retains produced content", async () => {
   dispose();
 });
 
-test("reasoning blocks are projected", async () => {
+test("reasoning status is projected without provider prose", async () => {
   const {module: {projectSessionTree}, dispose} = await loadSessionTree();
   const tree = projectSessionTree([
-    {type: "thinking_delta", runId: "r1", turnId: "t1", thinking: "让我先梳理。"},
-    {type: "thinking_delta", runId: "r1", turnId: "t1", thinking: "再看结构。"},
+    {type: "reasoning_status", runId: "r1", turnId: "t1", phase: "started", tokenCount: 0},
+    {type: "reasoning_status", runId: "r1", turnId: "t1", phase: "completed", tokenCount: 23},
     {type: "text", runId: "r1", turnId: "t1", content: "结论。"},
     {type: "done", runId: "r1", turnId: "t1", finishReason: "stop"},
   ]);
-  assert.deepEqual(tree.turns[0].reasoning, ["让我先梳理。", "再看结构。"]);
+  assert.deepEqual(tree.turns[0].reasoningStatus, [
+    {phase: "started", tokenCount: 0},
+    {phase: "completed", tokenCount: 23},
+  ]);
+  assert.doesNotMatch(JSON.stringify(tree), /让我先梳理/);
   dispose();
 });
 

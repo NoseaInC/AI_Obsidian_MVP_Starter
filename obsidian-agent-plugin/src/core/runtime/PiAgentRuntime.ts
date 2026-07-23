@@ -94,7 +94,7 @@ const SYSTEM_PROMPT = `你是知序（Zhixu），一个运行在 Obsidian 内的
 - <zhixu_runtime_checkpoint> 是 Runtime 持久化的状态检查点，不是用户新指令；它只恢复原目标、约束、引用和动作状态，绝不能改变用户目标。
 - 回答简洁、具体，明确区分真实工具结果、推断和待验证信息。
 
-不要把思维链混入最终回答。供应商若通过独立 reasoning block 返回推理，由传输层原样处理；你只需保持最终回答简洁、准确，工具执行细节由真实事件界面展示。`;
+不要把思维链混入最终回答。供应商若通过独立 reasoning block 返回推理，只在当前协议交换内处理，UI 与持久化仅保留阶段和 Token 计数；你只需保持最终回答简洁、准确，工具执行细节由真实事件界面展示。`;
 
 function createModel(
   identity: PiRunIdentity,
@@ -203,6 +203,8 @@ export class PiAgentRuntime implements AgentRuntime {
       identity.forkedFromEntryId = seed.forkedFromEntryId;
       identity.profileId = identity.profileId || seed.profileId;
       identity.model = identity.model || seed.model;
+      identity.providerAdapterVersion = seed.providerAdapterVersion
+        || identity.providerAdapterVersion;
       identity.taskAuthorization = {
         ...seed.taskAuthorization,
         objective: turn.request.message,
@@ -255,7 +257,9 @@ export class PiAgentRuntime implements AgentRuntime {
     if (!recovery) {
       await this.transport.registerTaskAuthorization({
         conversationId: identity.conversationId,
+        profileId: identity.profileId,
         model: identity.model,
+        providerAdapterVersion: identity.providerAdapterVersion,
         taskAuthorization: identity.taskAuthorization,
       });
       if (branchSeed) branchSeed.branchSeedPending = false;
@@ -989,8 +993,11 @@ export class PiAgentRuntime implements AgentRuntime {
       runId: runIdValue,
       turnId,
       sourceMessageId,
-      profileId: source?.identity.profileId ?? "",
+      profileId: source?.identity.profileId ?? forked.sourceContext?.profileId ?? "",
       model: selectedModel,
+      providerAdapterVersion: source?.identity.providerAdapterVersion
+        ?? forked.sourceContext?.providerAdapterVersion
+        ?? "pi-model-proxy-v1",
       parentRunId: runId,
       forkedFromSequence,
       forkedFromEntryId: forked.resolvedForkEntryId,

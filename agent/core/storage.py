@@ -406,6 +406,9 @@ CREATE TABLE IF NOT EXISTS pi_agent_runs (
   turn_id TEXT NOT NULL,
   source_message_id TEXT NOT NULL,
   status TEXT NOT NULL,
+  profile_id TEXT,
+  selected_model TEXT,
+  provider_adapter_version TEXT,
   parent_run_id TEXT,
   forked_from_sequence INTEGER,
   forked_from_entry_id TEXT,
@@ -508,7 +511,7 @@ CREATE INDEX IF NOT EXISTS idx_pi_compaction_checkpoints_branch
 
 
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 
 def _now() -> str:
@@ -561,6 +564,207 @@ def _projection_safe(value: Any, *, depth: int = 0) -> Any:
                 result[key] = _projection_safe(item, depth=depth + 1)
         return result
     return str(value)[:1000]
+
+
+_MODEL_OBSERVATION_MAX_BYTES = 12 * 1024
+_COMMAND_OUTPUT_KEYS = {
+    "stdout", "stderr", "output", "log", "logs", "diff", "patch", "testoutput",
+}
+_REASONING_EVENT_TYPES = {
+    "reasoning", "reasoning_status", "thinking", "thinking_start",
+    "thinking_delta", "thinking_end",
+}
+
+
+def _model_observation_safe(
+    value: Any,
+    *,
+    tool_name: str,
+    max_string_bytes: int,
+    max_items: int,
+    depth: int = 0,
+    field_name: str = "",
+) -> Any:
+    """Keep useful Tool semantics while enforcing a small, secret-free envelope."""
+    if depth > 6:
+        return "[nested value omitted]"
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        cleaned = redact_secret_text(value)
+        normalized_field = field_name.lower().replace("-", "").replace("_", "")
+        command_like = tool_name in {"run_command", "run_bash", "git_diff", "git_status"}
+        limit = min(max_string_bytes, 2048) if (
+            command_like or normalized_field in _COMMAND_OUTPUT_KEYS
+        ) else max_string_bytes
+        encoded = cleaned.encode("utf-8", errors="replace")
+        if len(encoded) <= limit:
+            return cleaned
+        digest = hashlib.sha256(encoded).hexdigest()
+        prefix = encoded[:limit].decode("utf-8", errors="ignore")
+        return f"{prefix}\n[truncated sha256={digest}]"
+    if isinstance(value, (list, tuple, set)):
+        items = list(value)
+        safe = [
+            _model_observation_safe(
+                item,
+                tool_name=tool_name,
+                max_string_bytes=max_string_bytes,
+                max_items=max_items,
+                depth=depth + 1,
+            )
+            for item in items[:max_items]
+        ]
+        if len(items) > max_items:
+            safe.append({"truncatedItems": len(items) - max_items})
+        return safe
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        pairs = list(value.items())
+        for raw_key, item in pairs[:max_items]:
+            key = str(raw_key)
+            normalized = key.lower().replace("-", "_")
+            compact = normalized.replace("_", "")
+            if (
+                normalized in _PROJECTION_SECRET_KEYS
+                or compact in _PROJECTION_SECRET_KEYS
+                or SENSITIVE_KEY.search(key)
+            ):
+                result[key] = "[redacted]"
+            else:
+                result[key] = _model_observation_safe(
+                    item,
+                    tool_name=tool_name,
+                    max_string_bytes=max_string_bytes,
+                    max_items=max_items,
+                    depth=depth + 1,
+                    field_name=key,
+                )
+        if len(pairs) > max_items:
+            result["_truncatedFields"] = len(pairs) - max_items
+        return result
+    return _model_observation_safe(
+        str(value),
+        tool_name=tool_name,
+        max_string_bytes=max_string_bytes,
+        max_items=max_items,
+        depth=depth,
+        field_name=field_name,
+    )
+
+
+def _bounded_model_observation(tool_name: str, value: Any) -> dict[str, Any]:
+    """Return a model-usable Tool Result that never exceeds the durable budget."""
+    raw_value = value if isinstance(value, dict) else {"value": value}
+    for max_string_bytes, max_items in (
+        (4096, 24),
+        (2048, 16),
+        (1024, 8),
+        (512, 4),
+    ):
+        safe = _model_observation_safe(
+            raw_value,
+            tool_name=tool_name,
+            max_string_bytes=max_string_bytes,
+            max_items=max_items,
+        )
+        assert isinstance(safe, dict)
+        encoded = json.dumps(safe, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        if len(encoded) <= _MODEL_OBSERVATION_MAX_BYTES:
+            return safe
+
+    # The final preview is derived from an already-redacted representation.
+    compact = _model_observation_safe(
+        raw_value,
+        tool_name=tool_name,
+        max_string_bytes=256,
+        max_items=2,
+    )
+    preview = json.dumps(compact, ensure_ascii=False, sort_keys=True)
+    return {
+        "truncated": True,
+        "excerpt": preview.encode("utf-8")[:8000].decode("utf-8", errors="ignore"),
+    }
+
+
+def _reasoning_status_event(event: dict[str, Any]) -> dict[str, Any]:
+    """Strip provider reasoning text before any durable event boundary."""
+    event_type = str(event.get("type") or "")
+    if event_type not in _REASONING_EVENT_TYPES and not event_type.startswith("reasoning."):
+        return dict(event)
+    raw_phase = str(event.get("phase") or "")
+    phase = (
+        "completed"
+        if event_type in {"thinking_end"} or event_type.endswith(".completed") or raw_phase == "completed"
+        else "started"
+    )
+    raw_text = str(
+        event.get("content")
+        or event.get("delta")
+        or event.get("thinking")
+        or ""
+    )
+    explicit_tokens = event.get("tokenCount")
+    try:
+        token_count = max(0, int(explicit_tokens or 0))
+    except (TypeError, ValueError):
+        token_count = 0
+    if not token_count and raw_text:
+        token_count = max(1, (len(raw_text) + 3) // 4)
+    return {
+        **({"schemaVersion": event["schemaVersion"]} if "schemaVersion" in event else {}),
+        **({"runId": event["runId"]} if "runId" in event else {}),
+        **({"conversationId": event["conversationId"]} if "conversationId" in event else {}),
+        **({"sequence": event["sequence"]} if "sequence" in event else {}),
+        **({"seq": event["seq"]} if "seq" in event else {}),
+        "type": "reasoning_status",
+        "blockId": str(event.get("blockId") or "provider-reasoning"),
+        "provider": str(event.get("provider") or "provider"),
+        "phase": phase,
+        "tokenCount": token_count,
+    }
+
+
+def _durable_pi_event(event: dict[str, Any]) -> dict[str, Any]:
+    """Normalize every privacy-sensitive payload before SQLite/reconnect."""
+    normalized = _reasoning_status_event(event)
+    event_type = str(normalized.get("type") or "")
+    if event_type == "tool_use":
+        tool_name = str(normalized.get("name") or "")
+        return {
+            **normalized,
+            **({
+                "input": _bounded_model_observation(tool_name, normalized["input"]),
+            } if isinstance(normalized.get("input"), dict) else {}),
+            **({
+                "arguments": _bounded_model_observation(tool_name, normalized["arguments"]),
+            } if isinstance(normalized.get("arguments"), dict) else {}),
+        }
+    if event_type == "notice" and isinstance(normalized.get("data"), dict):
+        data = normalized["data"]
+        tool_name = str(data.get("tool") or normalized.get("name") or "")
+        return {**normalized, "data": _bounded_model_observation(tool_name, data)}
+    if event_type != "tool_result":
+        return normalized
+    raw_result = normalized.get("result") if isinstance(normalized.get("result"), dict) else {}
+    nested = raw_result.get("result") if isinstance(raw_result.get("result"), dict) else raw_result
+    observation_hash = str(normalized.get("observationHash") or hashlib.sha256(
+        json.dumps(raw_result, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest())
+    safe_result = _bounded_model_observation(
+        str(normalized.get("name") or ""),
+        nested,
+    )
+    safe_envelope = {
+        key: _projection_safe(raw_result[key])
+        for key in ("tool", "permissionLevel", "idempotent", "blocked", "status")
+        if key in raw_result
+    }
+    return {
+        **normalized,
+        "result": {**safe_envelope, "result": safe_result},
+        "observationHash": observation_hash,
+    }
 
 
 class StateStore:
@@ -635,6 +839,11 @@ class StateStore:
             self.connection.execute(
                 "ALTER TABLE pi_agent_runs ADD COLUMN current_leaf_id TEXT"
             )
+        for name in ("profile_id", "selected_model", "provider_adapter_version"):
+            if name not in run_columns:
+                self.connection.execute(
+                    f"ALTER TABLE pi_agent_runs ADD COLUMN {name} TEXT"
+                )
         runs = self.connection.execute(
             "SELECT run_id FROM pi_agent_runs WHERE current_leaf_id IS NULL"
         ).fetchall()
@@ -660,6 +869,59 @@ class StateStore:
             self.connection.execute(
                 "ALTER TABLE pi_compaction_checkpoints ADD COLUMN summary TEXT NOT NULL DEFAULT ''"
             )
+        # Older builds durably stored provider reasoning deltas. Rewrite those
+        # rows in place so reconnect cannot retrieve the original text.
+        event_rows = self.connection.execute(
+            "SELECT id, run_id, sequence, payload_json FROM pi_agent_events"
+        ).fetchall()
+        migrated_tool_events: dict[tuple[str, int], dict[str, Any]] = {}
+        for row in event_rows:
+            try:
+                payload = json.loads(row["payload_json"] or "{}")
+            except json.JSONDecodeError:
+                continue
+            normalized = _durable_pi_event(payload)
+            if str(normalized.get("type") or "") == "tool_result":
+                migrated_tool_events[(str(row["run_id"]), int(row["sequence"]))] = normalized
+            if normalized != payload:
+                self.connection.execute(
+                    "UPDATE pi_agent_events SET event_type=?, payload_json=? WHERE id=?",
+                    (
+                        str(normalized.get("type") or "notice"),
+                        json.dumps(normalized, ensure_ascii=False),
+                        row["id"],
+                    ),
+                )
+        entry_rows = self.connection.execute(
+            "SELECT id, run_id, sequence, entry_type, payload_json FROM pi_session_entries"
+        ).fetchall()
+        for row in entry_rows:
+            try:
+                payload = json.loads(row["payload_json"] or "{}")
+            except json.JSONDecodeError:
+                continue
+            normalized = _reasoning_status_event(payload)
+            if str(row["entry_type"]) == "tool_result" and not isinstance(
+                normalized.get("modelObservation"), dict,
+            ):
+                source_event = migrated_tool_events.get((
+                    str(row["run_id"]), int(row["sequence"] or 0),
+                ))
+                if source_event:
+                    restored = self._pi_session_payload(source_event)
+                    normalized = {
+                        **normalized,
+                        "modelObservation": restored.get("modelObservation", {}),
+                        "observationHash": restored.get(
+                            "observationHash",
+                            normalized.get("observationHash", ""),
+                        ),
+                    }
+            if normalized != payload:
+                self.connection.execute(
+                    "UPDATE pi_session_entries SET payload_json=? WHERE id=?",
+                    (json.dumps(normalized, ensure_ascii=False), row["id"]),
+                )
 
     def create_pi_task_authorization(self, authorization: dict[str, Any]) -> dict[str, Any]:
         required = (
@@ -688,14 +950,18 @@ class StateStore:
             self.connection.execute(
                 """INSERT OR IGNORE INTO pi_agent_runs(
                      run_id, session_id, turn_id, source_message_id, status,
+                     profile_id, selected_model, provider_adapter_version,
                      parent_run_id, forked_from_sequence, forked_from_entry_id,
                      current_leaf_id, created_at, updated_at
-                   ) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)""",
+                   ) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     run_id,
                     session_id,
                     str(authorization["turnId"]),
                     str(authorization["sourceMessageId"]),
+                    str(authorization.get("profileId") or ""),
+                    str(authorization.get("model") or ""),
+                    str(authorization.get("providerAdapterVersion") or ""),
                     authorization.get("parentRunId"),
                     authorization.get("forkedFromSequence"),
                     authorization.get("forkedFromEntryId"),
@@ -898,6 +1164,10 @@ class StateStore:
         if event_type == "tool_result":
             result = event.get("result") if isinstance(event.get("result"), dict) else {}
             nested = result.get("result") if isinstance(result.get("result"), dict) else {}
+            model_observation = _bounded_model_observation(
+                str(event.get("name") or ""),
+                nested if nested else result,
+            )
             action_id = str(nested.get("actionId") or "")
             continuation = nested.get("continuation")
             code = str(nested.get("code") or result.get("code") or event.get("code") or "")
@@ -913,9 +1183,10 @@ class StateStore:
                 "tool": str(event.get("name") or ""),
                 "status": str(event.get("status") or ""),
                 "summary": str(event.get("summary") or "")[:1000],
-                "observationHash": hashlib.sha256(
+                "observationHash": str(event.get("observationHash") or hashlib.sha256(
                     json.dumps(result, ensure_ascii=False, sort_keys=True).encode()
-                ).hexdigest(),
+                ).hexdigest()),
+                "modelObservation": model_observation,
                 **({"actionId": action_id} if action_id else {}),
                 **({"code": code} if code else {}),
                 **({"observationReference": observation_reference} if observation_reference else {}),
@@ -986,7 +1257,8 @@ class StateStore:
             if not run:
                 raise ValueError("pi_run_not_found")
             last = 0
-            for event in events:
+            for raw_event in events:
+                event = _durable_pi_event(raw_event)
                 event_now = datetime.now().astimezone().isoformat(timespec="microseconds")
                 sequence = int(event.get("sequence") or event.get("seq") or 0)
                 if sequence < 1:
@@ -1065,7 +1337,10 @@ class StateStore:
                    WHERE run_id=? AND sequence>? ORDER BY sequence LIMIT ?""",
                 (run_id, max(0, int(after_sequence)), max(1, min(5000, int(limit)))),
             ).fetchall()
-        return [json.loads(row["payload_json"]) for row in rows]
+        return [
+            _durable_pi_event(json.loads(row["payload_json"]))
+            for row in rows
+        ]
 
     def has_pi_tool_result(self, run_id: str, tool_call_id: str, tool_name: str) -> bool:
         """Check the exact durable Tool Result boundary without JSON SQL extensions."""
@@ -1188,6 +1463,9 @@ class StateStore:
                 "observationHash": str(payload.get("observationHash") or ""),
                 **({"actionId": str(payload["actionId"])} if payload.get("actionId") else {}),
                 **({"continuation": _projection_safe(payload["continuation"])} if isinstance(payload.get("continuation"), dict) else {}),
+                **({
+                    "modelObservation": _projection_safe(payload["modelObservation"]),
+                } if isinstance(payload.get("modelObservation"), dict) else {}),
             }
             code = str(payload.get("code") or "")
             if interrupted:
@@ -1440,9 +1718,10 @@ class StateStore:
                 except json.JSONDecodeError:
                     payload = {}
                 if str(payload.get("type") or "") in {
-                    "reasoning", "thinking", "thinking_start", "thinking_delta", "thinking_end",
+                    "reasoning", "reasoning_status", "thinking", "thinking_start",
+                    "thinking_delta", "thinking_end",
                 }:
-                    # Provider reasoning is local UI trace only, never model context.
+                    # Provider reasoning status is UI-only and never model context.
                     continue
                 projected_entries.append({
                     "id": str(row["id"]),
@@ -1812,8 +2091,13 @@ class StateStore:
             "sourceContext": {
                 "conversationId": str(session_row["conversation_id"] or session_id)
                 if session_row else session_id,
-                "selectedModel": str(session_row["selected_model"] or "")
-                if session_row else "",
+                "profileId": str(run.get("profile_id") or ""),
+                "selectedModel": str(
+                    run.get("selected_model")
+                    or (session_row["selected_model"] if session_row else "")
+                    or ""
+                ),
+                "providerAdapterVersion": str(run.get("provider_adapter_version") or ""),
                 "activeNote": {"path": source_active_note} if source_active_note else None,
             },
             "projection": projection,

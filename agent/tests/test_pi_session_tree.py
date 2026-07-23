@@ -30,7 +30,13 @@ class PiSessionTreeTests(unittest.TestCase):
             "externalSideEffects": False,
             "expiresAtRunEnd": True,
         }
-        self.service.register_task_authorization({"conversationId": "conversation-tree", "model": "fake", "taskAuthorization": self.authorization})
+        self.service.register_task_authorization({
+            "conversationId": "conversation-tree",
+            "profileId": "profile-primary",
+            "model": "fake",
+            "providerAdapterVersion": "pi-model-proxy-v1",
+            "taskAuthorization": self.authorization,
+        })
 
     def tearDown(self) -> None:
         self.store.close()
@@ -52,6 +58,14 @@ class PiSessionTreeTests(unittest.TestCase):
         self.assertEqual(session["entries"][-1]["id"], session["state"]["currentLeafId"])
         tool_result = next(item for item in session["entries"] if item["entry_type"] == "tool_result")
         self.assertNotIn("items", tool_result["payload"])
+        self.assertEqual(
+            tool_result["payload"]["modelObservation"]["items"],
+            [{"path": "20-Knowledge/x.md"}],
+        )
+        self.assertLessEqual(
+            len(json.dumps(tool_result["payload"]["modelObservation"], ensure_ascii=False).encode()),
+            12 * 1024,
+        )
         self.assertEqual(tool_result["payload"]["callId"], "call-1")
 
     def test_steering_follow_up_and_cancel_are_durable(self) -> None:
@@ -96,10 +110,16 @@ class PiSessionTreeTests(unittest.TestCase):
         updated = self.service.update_message_metadata(
             "conversation-tree", "pi-assistant-run-tree-1", metadata,
         )
-        self.assertEqual(updated["metadata"], metadata)
+        self.assertNotIn("本地推理", json.dumps(updated["metadata"], ensure_ascii=False))
+        self.assertEqual(updated["metadata"]["piTrace"]["reasoningBlocks"], [{
+            "id": "provider-reasoning-0",
+            "provider": "provider",
+            "tokenCount": 1,
+            "status": "completed",
+        }])
         restored = self.service.intake.get_conversation("conversation-tree")["messages"][-1]
         self.assertEqual(restored["content"], "第一段。第二段。")
-        self.assertEqual(restored["metadata"], metadata)
+        self.assertEqual(restored["metadata"], updated["metadata"])
 
     def test_message_metadata_is_conversation_scoped_and_bounded(self) -> None:
         self.service.append_pi_events({"runId": "run-tree-1", "events": [
@@ -151,6 +171,7 @@ class PiSessionTreeTests(unittest.TestCase):
         self.assertEqual(call, {"type": "toolCall", "id": "call-1", "name": "search_vault", "arguments": {"query": "因果"}})
         self.assertEqual(result["toolCallId"], call["id"])
         self.assertEqual(result["toolName"], call["name"])
+        self.assertEqual(result["details"]["modelObservation"], {"next_cursor": "c2"})
         self.assertEqual(projected["messages"][-1]["content"], [{"type": "text", "text": "第一段。第二段。"}])
         bounded = self.service.pi_session_projection("session-tree-1", upto_sequence=3)
         self.assertEqual(bounded["leafId"], "pi-entry-run-tree-1-000000000003")
@@ -247,6 +268,10 @@ class PiSessionTreeTests(unittest.TestCase):
         encoded = json.dumps(projected, ensure_ascii=False)
         self.assertNotIn(secret, encoded)
         self.assertNotIn("private reasoning", encoded)
+        replay = json.dumps(self.service.pi_run_events("run-tree-1", 0), ensure_ascii=False)
+        self.assertNotIn(secret, replay)
+        self.assertNotIn("private reasoning", replay)
+        self.assertIn("reasoning_status", replay)
         assistant = next(item for item in projected["messages"] if item["role"] == "assistant")
         self.assertEqual(assistant["content"][0]["arguments"]["apiKey"], "[redacted]")
         self.assertEqual(assistant["content"][0]["arguments"]["accessToken"], "[redacted]")
@@ -269,9 +294,169 @@ class PiSessionTreeTests(unittest.TestCase):
         self.assertEqual(after_result["completedActionIds"], ["action-fork"])
         self.assertEqual(after_result["sourceContext"], {
             "conversationId": "conversation-tree",
+            "profileId": "profile-primary",
             "selectedModel": "fake",
+            "providerAdapterVersion": "pi-model-proxy-v1",
             "activeNote": {"path": "20-Knowledge/Drafts/current.md"},
         })
+
+    def test_tool_observation_is_secret_free_and_command_output_is_bounded(self) -> None:
+        secret = "sk-supersecret123456"
+        self.service.append_pi_events({"runId": "run-tree-1", "events": [
+            {"sequence": 1, "type": "tool_use", "id": "command-1", "name": "run_bash", "input": {"script": "pytest"}},
+            {
+                "sequence": 2,
+                "type": "tool_result",
+                "id": "command-1",
+                "name": "run_bash",
+                "result": {"result": {
+                    "cwd": "task-worktree",
+                    "exitCode": 0,
+                    "stdout": f"tests passed {secret}\n" + ("line\n" * 10_000),
+                    "apiKey": secret,
+                }},
+                "summary": "tests passed",
+                "status": "completed",
+            },
+        ]})
+        projected = self.service.pi_session_projection("session-tree-1")
+        observation = next(
+            item["details"]["modelObservation"]
+            for item in projected["messages"]
+            if item["role"] == "toolResult"
+        )
+        encoded = json.dumps(observation, ensure_ascii=False)
+        self.assertNotIn(secret, encoded)
+        self.assertEqual(observation["apiKey"], "[redacted]")
+        self.assertIn("[truncated sha256=", observation["stdout"])
+        self.assertLessEqual(len(encoded.encode()), 12 * 1024)
+        replay = json.dumps(self.service.pi_run_events("run-tree-1", 0), ensure_ascii=False)
+        self.assertNotIn(secret, replay)
+        self.assertLess(len(replay.encode()), 16 * 1024)
+
+    def test_cold_restart_fork_preserves_run_profile_identity(self) -> None:
+        self.service.append_pi_events({"runId": "run-tree-1", "events": [
+            {"sequence": 1, "type": "text", "content": "persisted source"},
+        ]})
+        database = self.store.path
+        self.store.close()
+        self.store = StateStore(database)
+        self.service = AgentService(self.vault, store=self.store)
+        forked = self.service.pi_fork_projection("run-tree-1")
+        self.assertEqual(forked["sourceContext"]["profileId"], "profile-primary")
+        self.assertEqual(forked["sourceContext"]["selectedModel"], "fake")
+        self.assertEqual(
+            forked["sourceContext"]["providerAdapterVersion"],
+            "pi-model-proxy-v1",
+        )
+
+    def test_startup_migration_erases_historical_reasoning_payloads(self) -> None:
+        secret_reasoning = "historical private chain"
+        with self.store.lock:
+            self.store.connection.execute(
+                """INSERT INTO pi_agent_events(
+                     id, run_id, sequence, event_type, payload_json, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    "legacy-reasoning-event",
+                    "run-tree-1",
+                    77,
+                    "reasoning",
+                    json.dumps({
+                        "runId": "run-tree-1",
+                        "conversationId": "conversation-tree",
+                        "sequence": 77,
+                        "type": "reasoning",
+                        "phase": "delta",
+                        "content": secret_reasoning,
+                    }),
+                    "2026-07-23T00:00:00+08:00",
+                ),
+            )
+            self.store.connection.execute(
+                """INSERT INTO pi_session_entries(
+                     id, parent_id, timestamp, entry_type, session_id, run_id,
+                     turn_id, sequence, payload_json
+                   ) VALUES (?, NULL, ?, 'custom', ?, ?, ?, ?, ?)""",
+                (
+                    "legacy-reasoning-entry",
+                    "2026-07-23T00:00:00+08:00",
+                    "session-tree-1",
+                    "run-tree-1",
+                    "turn-tree-1",
+                    77,
+                    json.dumps({"type": "thinking_delta", "thinking": secret_reasoning}),
+                ),
+            )
+            self.store.connection.execute(
+                """INSERT INTO pi_agent_events(
+                     id, run_id, sequence, event_type, payload_json, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    "legacy-tool-event",
+                    "run-tree-1",
+                    78,
+                    "tool_result",
+                    json.dumps({
+                        "runId": "run-tree-1",
+                        "sequence": 78,
+                        "type": "tool_result",
+                        "id": "legacy-call",
+                        "name": "search_vault",
+                        "status": "completed",
+                        "summary": "工具已完成",
+                        "result": {"result": {
+                            "items": [{"path": "20-Knowledge/legacy.md", "excerpt": "legacy observation"}],
+                        }},
+                    }),
+                    "2026-07-23T00:00:01+08:00",
+                ),
+            )
+            self.store.connection.execute(
+                """INSERT INTO pi_session_entries(
+                     id, parent_id, timestamp, entry_type, session_id, run_id,
+                     turn_id, sequence, payload_json
+                   ) VALUES (?, NULL, ?, 'tool_result', ?, ?, ?, ?, ?)""",
+                (
+                    "legacy-tool-entry",
+                    "2026-07-23T00:00:01+08:00",
+                    "session-tree-1",
+                    "run-tree-1",
+                    "turn-tree-1",
+                    78,
+                    json.dumps({
+                        "sequence": 78,
+                        "callId": "legacy-call",
+                        "tool": "search_vault",
+                        "status": "completed",
+                        "summary": "工具已完成",
+                    }),
+                ),
+            )
+            self.store.connection.commit()
+        database = self.store.path
+        self.store.close()
+        self.store = StateStore(database)
+        self.service = AgentService(self.vault, store=self.store)
+        with self.store.lock:
+            raw = "\n".join(
+                str(row[0])
+                for row in self.store.connection.execute(
+                    "SELECT payload_json FROM pi_agent_events "
+                    "UNION ALL SELECT payload_json FROM pi_session_entries"
+                ).fetchall()
+            )
+        self.assertNotIn(secret_reasoning, raw)
+        self.assertIn("reasoning_status", raw)
+        with self.store.lock:
+            migrated = self.store.connection.execute(
+                "SELECT payload_json FROM pi_session_entries WHERE id='legacy-tool-entry'"
+            ).fetchone()
+        payload = json.loads(migrated["payload_json"])
+        self.assertEqual(
+            payload["modelObservation"]["items"][0]["path"],
+            "20-Knowledge/legacy.md",
+        )
 
     def test_regenerate_drops_old_answer_and_future_pending_but_keeps_completed_fact(self) -> None:
         self.service.append_pi_events({"runId": "run-tree-1", "events": [

@@ -320,7 +320,9 @@ test("fork restores a persisted source after the renderer runtime was recreated"
         completedActionIds: ["persisted-action"],
         sourceContext: {
           conversationId: "visible-conversation",
+          profileId: "persisted-profile",
           selectedModel: "persisted-model",
+          providerAdapterVersion: "pi-model-proxy-v1",
           activeNote: {path: "20-Knowledge/Drafts/persisted.md"},
         },
         projection: {
@@ -358,6 +360,9 @@ test("fork restores a persisted source after the renderer runtime was recreated"
     assert.deepEqual(authorizations[0].resourceScope.explicitVaultPaths, []);
     assert.equal(authorizations[0].networkPolicy, "deny");
     assert.equal(registrationBodies[0].conversationId, "visible-conversation");
+    assert.equal(registrationBodies[0].profileId, "persisted-profile");
+    assert.equal(registrationBodies[0].model, "persisted-model");
+    assert.equal(registrationBodies[0].providerAdapterVersion, "pi-model-proxy-v1");
     assert.notEqual(forked.conversationId, registrationBodies[0].conversationId);
     runtime.cleanup();
   } finally {

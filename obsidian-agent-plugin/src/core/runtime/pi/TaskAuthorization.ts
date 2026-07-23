@@ -2,6 +2,7 @@ import type {AgentTurnRequest} from "../types";
 import type {PiRunIdentity, PiTaskAuthorization} from "./types";
 
 const newId = (prefix: string): string => `${prefix}-${crypto.randomUUID()}`;
+export const PI_PROVIDER_ADAPTER_VERSION = "pi-model-proxy-v1";
 
 /**
  * Creates the turn envelope without classifying natural-language intent.
@@ -54,6 +55,7 @@ export function createTurnIdentity(request: AgentTurnRequest): PiRunIdentity {
     sourceMessageId,
     profileId: request.profileId || "",
     model: request.model || "",
+    providerAdapterVersion: PI_PROVIDER_ADAPTER_VERSION,
     taskAuthorization,
     parentRunId: request.parentRunId,
     forkedFromSequence: request.forkedFromSequence,

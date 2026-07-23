@@ -1274,7 +1274,11 @@ class AgentService:
         authorization["conversationId"] = str(
             body.get("conversationId") or authorization.get("sessionId") or ""
         )
+        authorization["profileId"] = str(body.get("profileId") or "")
         authorization["model"] = str(body.get("model") or "")
+        authorization["providerAdapterVersion"] = str(
+            body.get("providerAdapterVersion") or self.model_proxy.version
+        )
         created = self.task_authorizations.create(authorization)
         conversation_id = str(authorization.get("conversationId") or "")
         objective = str(authorization.get("objective") or "").strip()

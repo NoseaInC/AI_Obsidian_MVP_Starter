@@ -95,7 +95,10 @@ operation.
 
 The append-only Session Tree stores message, tool, authorization, action,
 compaction, steering and follow-up references. It does not store secrets or
-knowledge-file bodies. The persisted Session Projection is the only restart
+knowledge-file bodies. A completed Tool Result retains a secret-free
+`modelObservation` capped at 12 KiB so structured hits, paths, necessary
+excerpts and pagination survive restart without retaining a full long note or
+command log. The persisted Session Projection is the only restart
 recovery source for Pi context; renderer memory and conversation-message
 shortcuts are not authoritative. Projection follows one `parent_id` lineage,
 restores standard Pi user/assistant/Tool Call/Tool Result shapes, and excludes
@@ -110,6 +113,17 @@ future history and pending authority; the new branch starts with fresh
 Run-scoped authorization. Steering is injected at a safe tool boundary;
 Follow-up begins a new Turn after the current one. Cancel propagates an
 AbortSignal to Pi, model transport and tools.
+
+Each Run also persists the selected Profile ID, model and provider-adapter
+version. Fork uses that Run-specific identity after a cold start. Provider
+errors preserve authentication, rate-limit, model-not-found, context-limit,
+provider and stream-protocol categories; only the actual hard timer is a request
+deadline.
+
+Provider reasoning prose is ephemeral. It may exist in memory while Pi consumes
+the current provider stream, but the durable/UI event is only
+`reasoning_status(started|completed, tokenCount)`. Reconnect, Session Projection,
+conversation metadata and DOM never receive the original delta text.
 
 ## Compaction
 

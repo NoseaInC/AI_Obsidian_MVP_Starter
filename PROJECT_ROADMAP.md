@@ -112,7 +112,8 @@ Acceptance: fake-provider integration proves a registered Vault tool is actually
 
 ## Phase 11 — Pi Agent Runtime
 
-Status: implementation and release gates complete on 2026-07-20; packaging and PR handoff remain.
+Status: implementation and deterministic release gates complete; current-build
+real DeepSeek plus Obsidian reload smoke remains before mainline recommendation.
 
 - Pi Agent Core/AI are the sole production Agent kernel in TypeScript; Python is a secure I/O and execution boundary only.
 - DeepSeek selects stable typed tools and replans from Observations without a keyword or auxiliary Intent Router.

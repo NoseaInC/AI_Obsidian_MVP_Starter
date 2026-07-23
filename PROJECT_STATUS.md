@@ -4,8 +4,10 @@ Last updated: 2026-07-23
 
 ## Current phase
 
-The `pi-runtime-hardening-repair` audit has completed R01–R08. Its
-temporary-environment A–S production-code acceptance and final full-suite gate
+The `pi-runtime-hardening-repair` audit has completed R01–R08 plus the
+post-audit production-semantic closure for durable Tool Observations, reasoning
+privacy, cold-start Fork identity and provider error categories. Its
+temporary-environment A–S production-code acceptance and latest full-suite gate
 both passed. Pi
 Agent Core and Pi AI own the only production model–tool loop for Main Assistant,
 contextual learning assistance and study-note generation. Python is limited to
@@ -16,7 +18,33 @@ compatibility workflows such as Prepared PDF handling. Ordinary in-scope
 reversible Markdown work executes through snapshot → atomic apply → verify →
 Action Result and conflict-safe Undo, while scope expansion, irreversible work
 and external side effects remain interruptible. The first real Dragonnet
-`apply-prepared` gate is unchanged.
+`apply-prepared` gate is unchanged. The current repair build has not yet been
+validated by a real DeepSeek turn plus an actual Obsidian reload.
+
+## Pi runtime production-semantic closure
+
+- Completed Tool Results now persist a secret-free `modelObservation` capped at
+  12 KiB. Paths, titles, structured hits, excerpts, pagination and action
+  references survive restart; complete long notes and command output do not.
+  The same bound applies to reconnect events, and schema 16 backfills old
+  Session shells from historical local Tool Result events before scrubbing
+  those events.
+- Provider reasoning deltas remain only in the current provider/Pi protocol
+  exchange. SQLite, reconnect, conversation metadata and UI receive only
+  `reasoning_status` phase/token records. Startup migration irreversibly removes
+  reasoning prose written by earlier builds.
+- `pi_agent_runs` now stores `profile_id`, `selected_model` and
+  `provider_adapter_version`; a cold-start Fork reconstructs all three instead
+  of falling back to an empty Profile.
+- Provider authentication, rate limit, missing model, context limit, provider
+  and stream-protocol failures retain distinct terminal codes. Only the hard
+  request timer emits `model_request_deadline_exceeded`.
+- Latest offline gates passed: 40/40 ingestion/review tests, 240/240 Python
+  tests, 165/165 plugin tests, strict TypeScript typecheck, production build and
+  `./scripts/check.sh`.
+- These are code/transaction/deterministic Runtime results. No real key was
+  read, no real provider was called and no running Obsidian process was
+  restarted for this follow-up.
 
 ## Pi runtime hardening repair — R01–R08
 
@@ -55,7 +83,10 @@ and external side effects remain interruptible. The first real Dragonnet
 - Capability probes cache facts without keys and conservatively resolve Tool Calling, streaming, parallelism, strict schema, usage and reasoning options.
 - Developer workspaces use isolated Git worktrees, structured commands, a minimal environment and a deny-by-default network/shell policy.
 - Conversation turns and final answers use stable message IDs, are persisted idempotently and hydrate Pi after a plugin/runtime restart.
-- Provider-returned thinking blocks now cross the Pi boundary as typed, ordered `reasoning` events and appear in a separate collapsible “模型推理” block. The UI never synthesizes reasoning from tool traces or execution summaries. Reasoning remains local Run-event state: it is excluded from Markdown, ordinary conversation text and future model context.
+- Provider-returned thinking text stays inside the live provider/Pi exchange.
+  Durable/UI boundaries expose only ordered `reasoning_status` phase and Token
+  counts; no original reasoning prose enters SQLite, conversation metadata,
+  Markdown, reconnect payloads or DOM.
 - Pi stall budgets now reset at the start of every Run instead of inheriting the age of a long-lived conversation. This closes the real `stall_guard_elapsed_time_limit` failure that previously rejected the first model request after a conversation had remained open for more than 30 minutes.
 - Pi model dispatch now resolves the provider-neutral `configured-assistant-model` placeholder to the selected Profile's real `defaultModel`. Provider rejections, premature NDJSON EOF and 45-second no-activity stalls always terminate the Run with a recoverable error instead of leaving “正在连接已选模型…” spinning forever. Assistant submit setup is single-flight, clears the submitted composer immediately and keeps the in-flight Stop control usable; Runtime restart also fails and releases orphaned Pi Runs.
 - Assistant Auto mode now resolves an enabled configured Profile before constructing the Pi Turn, and the model proxy has a single-configured-Profile fallback when routing is temporarily empty. Startup validation/profile failures stay inside the versioned model stream, legacy `run.failed` is terminal, and `agent_end` no longer emits a false success before an error. The installed Obsidian build was restarted and a real Keychain-backed UI turn completed with the exact answer “知序实时链路正常”; full offline checks passed (40 ingestion/review tests, 155 Agent tests and 76 plugin tests, plus typecheck/build).

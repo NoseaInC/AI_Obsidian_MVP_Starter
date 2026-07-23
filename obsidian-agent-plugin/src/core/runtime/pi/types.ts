@@ -60,6 +60,7 @@ export interface PiRunIdentity {
   sourceMessageId: string;
   profileId: string;
   model: string;
+  providerAdapterVersion: string;
   taskAuthorization: PiTaskAuthorization;
   parentRunId?: string;
   forkedFromSequence?: number;
@@ -104,7 +105,9 @@ export type PiForkProjection = {
   completedActionIds: string[];
   sourceContext?: {
     conversationId?: string;
+    profileId?: string;
     selectedModel?: string;
+    providerAdapterVersion?: string;
     activeNote?: {path?: string; selection?: string} | null;
   };
   projection: PiSessionProjection;

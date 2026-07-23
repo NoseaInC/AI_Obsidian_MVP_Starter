@@ -103,32 +103,32 @@ test("real ordered tool events become visible execution steps", async () => {
   assert.equal(state.steps.find(item => item.id === "tool:call-1").status, "completed");
 });
 
-test("provider reasoning blocks remain separate, ordered and collapsible from final text", async () => {
+test("provider reasoning exposes status and token counts but never raw text", async () => {
   const mod = await moduleUnderTest();
   let state = mod.initialAssistantLiveRun();
   state = mod.reduceAssistantStream(state, event(1, "run.started", {model: "deepseek-reasoner"}));
   state = mod.reduceAssistantStream(state, event(2, "reasoning.started", {blockId: "provider-reasoning-0", provider: "deepseek-reasoner"}));
-  state = mod.reduceAssistantStream(state, event(3, "reasoning.delta", {blockId: "provider-reasoning-0", provider: "deepseek-reasoner", delta: "先核对上下文，"}));
-  state = mod.reduceAssistantStream(state, event(4, "reasoning.delta", {blockId: "provider-reasoning-0", provider: "deepseek-reasoner", delta: "再形成答案。"}));
-  state = mod.reduceAssistantStream(state, event(5, "reasoning.completed", {blockId: "provider-reasoning-0", provider: "deepseek-reasoner"}));
-  state = mod.reduceAssistantStream(state, event(6, "message.delta", {delta: "这是最终回答。"}));
-  state = mod.reduceAssistantStream(state, event(7, "run.completed"));
+  state = mod.reduceAssistantStream(state, event(3, "reasoning.completed", {
+    blockId: "provider-reasoning-0", provider: "deepseek-reasoner", tokenCount: 37,
+  }));
+  state = mod.reduceAssistantStream(state, event(4, "message.delta", {delta: "这是最终回答。"}));
+  state = mod.reduceAssistantStream(state, event(5, "run.completed"));
   assert.deepEqual(state.reasoningBlocks, [{
     id: "provider-reasoning-0",
     provider: "deepseek-reasoner",
-    content: "先核对上下文，再形成答案。",
+    tokenCount: 37,
     status: "completed",
   }]);
   assert.equal(state.content, "这是最终回答。");
-  assert.doesNotMatch(state.content, /先核对上下文/);
+  assert.doesNotMatch(JSON.stringify(state), /先核对上下文/);
 });
 
-test("completed trace metadata round-trips reasoning without duplicating tool payloads", async () => {
+test("completed trace metadata round-trips reasoning status without duplicating prose or tool payloads", async () => {
   const mod = await moduleUnderTest();
   let state = mod.initialAssistantLiveRun();
   state = mod.reduceAssistantStream(state, event(1, "run.started", {model: "deepseek-reasoner"}));
-  state = mod.reduceAssistantStream(state, event(2, "reasoning.delta", {
-    blockId: "provider-reasoning-0", provider: "deepseek-reasoner", delta: "只保存在本地轨迹。",
+  state = mod.reduceAssistantStream(state, event(2, "reasoning.completed", {
+    blockId: "provider-reasoning-0", provider: "deepseek-reasoner", tokenCount: 19,
   }));
   state = mod.reduceAssistantStream(state, event(3, "tool.completed", {
     callId: "call-1", tool: "read_note_excerpt", status: "completed", summary: "读取完成",
@@ -140,7 +140,9 @@ test("completed trace metadata round-trips reasoning without duplicating tool pa
   const trace = mod.persistedAssistantTrace({metadata});
   assert.equal(trace.runId, "run-1");
   assert.equal(trace.status, "completed");
-  assert.equal(trace.reasoningBlocks[0].content, "只保存在本地轨迹。");
+  assert.equal(trace.reasoningBlocks[0].tokenCount, 19);
+  assert.equal("content" in trace.reasoningBlocks[0], false);
+  assert.doesNotMatch(JSON.stringify(metadata), /只保存在本地轨迹/);
   assert.deepEqual(trace.vaultAction, {actionId: "action-1"});
   assert.equal(trace.toolCalls[0].tool, "read_note_excerpt");
   assert.equal("result" in trace.toolCalls[0], false);
@@ -314,14 +316,14 @@ test("assistant production surface uses Pi model proxy, stop and three inspector
   assert.match(css, /aspect-ratio:\s*1 \/ 1/);
   assert.match(css, /\.la-composer-submit\.is-running/);
   assert.match(views, /推理与执行过程/);
-  assert.match(views, /供应商真实返回独立 reasoning block/);
+  assert.match(views, /供应商推理原文不会发送到 UI 或持久化/);
   assert.match(views, /previousDetails\?\.open/);
   assert.match(views, /previousProviderReasoning\?\.open/);
   assert.match(views, /fallbackStatus = run\.status === "completed"/);
   assert.match(css, /\.la-live-trace__thinking/);
   assert.match(css, /\.la-provider-reasoning/);
   assert.match(views, /renderProviderReasoning/);
-  assert.match(views, /供应商原始返回/);
+  assert.doesNotMatch(views, /供应商原始返回/);
   assert.match(views, /支持深度推理协议/);
   assert.match(views, /assistantReasoningMode:\s*"auto"\s*\|\s*"deep"/);
   assert.match(views, /reasoning_mode:\s*this\.assistantReasoningMode/);

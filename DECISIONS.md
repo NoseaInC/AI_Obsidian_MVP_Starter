@@ -206,9 +206,17 @@ Pi Agent Core and Pi AI own the model/tool loop, Session Tree, Steering, Follow-
 
 Provider-neutral runtime identifiers such as `configured-assistant-model` never cross the secure model-proxy boundary as provider model names. The proxy resolves them through the selected Profile and emits the protocol's canonical `error` event for provider failures. The TypeScript transport treats timeout and EOF without `done` or `error` as failure, so every started turn reaches exactly one terminal client state. UI setup is single-flight and crash recovery expires orphaned Pi Runs; neither a provider rejection nor a plugin restart may leave a permanently running task.
 
-## D-046 — Provider reasoning is visible only as an authentic protocol block
+## D-046 — Provider reasoning prose never crosses a durable or UI boundary
 
-When a configured provider returns a dedicated `reasoning_content` block, the secure proxy and Pi adapter preserve its ordered start/delta/end events and the Assistant renders that content in a separate collapsible “模型推理” section. The UI must not infer, summarize or fabricate reasoning from final text, tool calls, execution stages, system prompts or runtime internals. Provider reasoning is local Run-event state only: it is not Markdown knowledge, ordinary conversation text or future model context. Providers or models that return no reasoning block produce no reasoning section.
+When a configured provider returns a dedicated `reasoning_content` block, the
+secure proxy and Pi transport may use its ordered start/delta/end events only
+inside the current protocol exchange. The Agent event boundary converts that
+stream to `reasoning_status` with `started|completed` and a bounded Token count.
+Reasoning prose is never written to SQLite or conversation metadata, returned
+by reconnect, rendered in the DOM, copied into Markdown or restored to future
+model context. Startup migration removes prose stored by older builds. The UI
+may show only neutral status such as “正在思考” or “思考已完成”; it must not infer,
+summarize or fabricate reasoning from final text, tools or runtime stages.
 
 ## D-047 — Large content is paged or moved locally, never serialized through the model twice
 

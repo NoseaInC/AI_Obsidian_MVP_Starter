@@ -7,6 +7,30 @@ Branch: `pi-runtime-hardening-repair`
 Current repair gate: deterministic provider; no real model, Keychain reference,
 user Vault or running Obsidian process was used.
 
+## Post-R08 production-semantic closure
+
+The latest follow-up closes four restart/privacy/error gaps:
+
+- completed Tool Results recover a secret-free, model-usable Observation capped
+  at 12 KiB, including migration/backfill for pre-fix Session shells;
+- provider reasoning prose is absent from SQLite, reconnect events,
+  conversation metadata and UI; only phase/Token status survives;
+- cold-start Fork restores Profile, model and adapter identity from the source
+  Run;
+- provider/auth/rate-limit/model/context/protocol errors remain classified, and
+  only the hard timer reports a request deadline.
+
+Latest `./scripts/check.sh` result:
+
+- 40/40 ingestion/review tests;
+- 240/240 Python Agent/Runtime/security tests;
+- 165/165 plugin tests;
+- strict TypeScript typecheck and production build passed.
+
+This is still code-level, transaction-level and deterministic Runtime
+acceptance. A real DeepSeek request and actual Obsidian reload of this build
+remain a separate smoke test.
+
 ## R08 temporary-environment A–S acceptance
 
 Command:
@@ -122,7 +146,10 @@ process is outside a temporary-Vault acceptance run.
   boundary; it does not select the next tool.
 - PydanticAI and the old Python Brain planner are absent from production.
 - No keyword, regex, token or fixed-phrase Intent Router exists.
-- Dedicated provider reasoning is preserved as typed Pi Run events and rendered in a separate collapsible block. It is never synthesized and is excluded from Markdown, ordinary conversation text and future model context.
+- Dedicated provider reasoning prose remains ephemeral inside the current
+  protocol exchange. Durable Pi events and UI retain only phase/Token status;
+  reconnect, Markdown, ordinary conversation metadata and future model context
+  contain no reasoning prose.
 - Stall limits are scoped to one Run and reset on every new Turn, so a long-lived conversation cannot fail its next request merely because the conversation itself is older than thirty minutes.
 - Ordinary in-scope reversible Markdown changes apply without a second approval
   and always produce snapshot, hashes, verification, Diff and conflict-safe Undo.

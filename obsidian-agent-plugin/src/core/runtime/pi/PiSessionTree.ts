@@ -6,7 +6,7 @@
  * rebuilds a complete, serializable session tree: every turn (including
  * partial / aborted / error assistant turns), each turn's tool calls
  * (blocked / running / failed), each tool's result (error / partial), the
- * reasoning blocks, accumulated usage, and the stop reason.
+ * reasoning status (never provider prose), accumulated usage, and stop reason.
  */
 
 export type SessionTreeEvent = {
@@ -15,7 +15,8 @@ export type SessionTreeEvent = {
   turnId?: string;
   sequence?: number;
   content?: unknown;
-  thinking?: unknown;
+  phase?: unknown;
+  tokenCount?: unknown;
   id?: string;
   name?: string;
   args?: unknown;
@@ -48,7 +49,7 @@ export type SessionTreeTurn = {
   turnId?: string;
   status: "running" | "completed" | "failed" | "cancelled" | "partial";
   assistant: string;
-  reasoning: string[];
+  reasoningStatus: Array<{phase: "started" | "completed"; tokenCount: number}>;
   toolCalls: SessionTreeToolCall[];
   toolResults: SessionTreeToolResult[];
   usage: {promptTokens: number; completionTokens: number; totalTokens: number};
@@ -84,7 +85,7 @@ export function projectSessionTree(events: Array<SessionTreeEvent>): SessionTree
         turnId,
         status: "running",
         assistant: "",
-        reasoning: [],
+        reasoningStatus: [],
         toolCalls: [],
         toolResults: [],
         usage: {promptTokens: 0, completionTokens: 0, totalTokens: 0},
@@ -98,9 +99,11 @@ export function projectSessionTree(events: Array<SessionTreeEvent>): SessionTree
     const type = String(event.type || "");
     if (type === "text") {
       turn.assistant += safeString(event.content);
-    } else if (type === "thinking" || type === "thinking_delta") {
-      const text = safeString(event.thinking);
-      if (text) turn.reasoning.push(text);
+    } else if (type === "reasoning_status") {
+      turn.reasoningStatus.push({
+        phase: event.phase === "completed" ? "completed" : "started",
+        tokenCount: Math.max(0, Number(event.tokenCount) || 0),
+      });
     } else if (type === "tool_call_start" || type === "tool_call") {
       turn.toolCalls.push({
         id: String(event.id || ""),
@@ -136,7 +139,7 @@ export function projectSessionTree(events: Array<SessionTreeEvent>): SessionTree
   for (const turn of turns.values()) {
     if (turn.status === "running") {
       turn.status =
-        turn.assistant || turn.toolCalls.length || turn.reasoning.length ? "partial" : "running";
+        turn.assistant || turn.toolCalls.length || turn.reasoningStatus.length ? "partial" : "running";
     }
   }
 

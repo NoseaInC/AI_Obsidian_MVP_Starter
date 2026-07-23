@@ -48,7 +48,10 @@ class RuntimeArchitectureBoundaryTests(unittest.TestCase):
     def test_provider_reasoning_is_not_persisted_as_conversation_content(self) -> None:
         source = (ROOT / "agent" / "core" / "intake.py").read_text(encoding="utf-8")
         self.assertNotIn("reasoning_blocks", source)
-        self.assertNotIn("reasoningBlocks", source)
+        self.assertIn("_reasoning_safe_metadata", source)
+        self.assertIn('"tokenCount"', source)
+        self.assertNotIn('"thinking": raw_content', source)
+        self.assertNotIn('"content": raw_content', source)
 
     def test_legacy_change_set_tool_has_no_apply_entrypoint(self) -> None:
         source = (ROOT / "agent" / "tools" / "change_set.py").read_text(encoding="utf-8")

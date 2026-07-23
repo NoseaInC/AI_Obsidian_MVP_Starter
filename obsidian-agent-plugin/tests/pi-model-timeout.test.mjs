@@ -164,6 +164,54 @@ test("done emits exactly one terminal and no secondary error", async () => {
   dispose();
 });
 
+test("provider terminal errors preserve their category instead of becoming deadlines", async () => {
+  const {module: {PiModelTransport}, dispose} = await loadTransport();
+  for (const code of [
+    "model_authentication_failed",
+    "model_rate_limited",
+    "model_not_found",
+    "model_context_length_exceeded",
+    "model_provider_error",
+    "model_stream_protocol_error",
+  ]) {
+    const transport = {
+      streamModelProxy: async (_req, emit) => {
+        emit({type: "start"});
+        emit({type: "error", code, message: `classified ${code}`});
+      },
+    };
+    const events = await collect(new PiModelTransport(transport, TEST_TIMEOUTS)
+      .stream(identity, model, context, {}, undefined));
+    assert.equal(terminalCode(events), code);
+    assert.notEqual(terminalCode(events), "model_request_deadline_exceeded");
+  }
+  const forgedDeadline = await collect(new PiModelTransport({
+    streamModelProxy: async (_req, emit) => {
+      emit({type: "error", code: "model_request_deadline_exceeded", message: "upstream label"});
+    },
+  }, TEST_TIMEOUTS).stream(identity, model, context, {}, undefined));
+  assert.equal(
+    terminalCode(forgedDeadline),
+    "model_provider_error",
+    "only the local hard timer may emit the deadline category",
+  );
+  dispose();
+});
+
+test("unexpected EOF and ordinary promise rejection are protocol/provider errors", async () => {
+  const {module: {PiModelTransport}, dispose} = await loadTransport();
+  const eofEvents = await collect(new PiModelTransport({
+    streamModelProxy: async (_req, emit) => emit({type: "start"}),
+  }, TEST_TIMEOUTS).stream(identity, model, context, {}, undefined));
+  assert.equal(terminalCode(eofEvents), "model_stream_protocol_error");
+
+  const rejectionEvents = await collect(new PiModelTransport({
+    streamModelProxy: async () => { throw new Error("upstream socket closed"); },
+  }, TEST_TIMEOUTS).stream(identity, model, context, {}, undefined));
+  assert.equal(terminalCode(rejectionEvents), "model_provider_error");
+  dispose();
+});
+
 test("user abort triggers model_request_aborted and one terminal", async () => {
   const {module: {PiModelTransport}, dispose} = await loadTransport();
   const transport = {streamModelProxy: async (_req, emit) => {

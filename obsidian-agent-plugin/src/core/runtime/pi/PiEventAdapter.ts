@@ -4,12 +4,12 @@ import type {PiRunIdentity} from "./types";
 
 /**
  * Projects Pi lifecycle events into the UI protocol in their real order.
- * Provider thinking is exposed only when the provider emitted a dedicated
- * thinking event. The adapter never synthesizes reasoning from text, tools, or
- * internal runtime state.
+ * Provider thinking text remains inside the current Pi protocol exchange.
+ * Only phase/token status crosses the durable/UI AgentChunk boundary.
  */
 export class PiEventAdapter {
   private sequence = 0;
+  private readonly reasoningChars = new Map<number, number>();
 
   constructor(private readonly identity: PiRunIdentity, initialSequence = 0) {
     this.sequence = initialSequence;
@@ -31,18 +31,27 @@ export class PiEventAdapter {
         update.type === "thinking_delta" ||
         update.type === "thinking_end"
       ) {
-        const phase = update.type === "thinking_start"
-          ? "started"
-          : update.type === "thinking_end"
-            ? "completed"
-            : "delta";
+        const contentIndex = Number(update.contentIndex ?? 0);
+        if (update.type === "thinking_delta") {
+          this.reasoningChars.set(
+            contentIndex,
+            (this.reasoningChars.get(contentIndex) ?? 0) + String(update.delta ?? "").length,
+          );
+          return [];
+        }
+        const phase = update.type === "thinking_end" ? "completed" : "started";
+        const tokenCount = phase === "completed"
+          ? Math.ceil((this.reasoningChars.get(contentIndex) ?? 0) / 4)
+          : 0;
+        if (phase === "started") this.reasoningChars.set(contentIndex, 0);
+        else this.reasoningChars.delete(contentIndex);
         return [{
           ...base(),
-          type: "reasoning",
-          blockId: `provider-reasoning-${Number(update.contentIndex ?? 0)}`,
+          type: "reasoning_status",
+          blockId: `provider-reasoning-${contentIndex}`,
           provider: this.identity.model || "provider",
-          content: update.type === "thinking_delta" ? update.delta : "",
           phase,
+          tokenCount,
         }];
       }
       return [];
@@ -108,13 +117,15 @@ export class PiEventAdapter {
 
   failed(error: unknown, partial: boolean): AgentChunk {
     const message = error instanceof Error ? error.message : String(error);
+    const parsed = /^([a-z][a-z0-9_]+):\s*(.*)$/is.exec(message);
+    const code = parsed?.[1]?.startsWith("model_") ? parsed[1] : "pi_runtime_failed";
     return {
       runId: this.identity.runId,
       conversationId: this.identity.conversationId,
       sequence: ++this.sequence,
       type: "error",
-      code: "pi_runtime_failed",
-      content: message,
+      code,
+      content: parsed && code !== "pi_runtime_failed" ? parsed[2] : message,
       partial,
     };
   }

@@ -13,6 +13,47 @@ MAX_TEXT_CHARS = 160_000
 MAX_TOOLS = 96
 
 
+def _provider_error_category(exc: Exception) -> tuple[str, str]:
+    """Map upstream failures without exposing provider payloads or credentials."""
+    raw_status = (
+        getattr(exc, "status_code", None)
+        or getattr(exc, "status", None)
+        or getattr(exc, "code", None)
+    )
+    try:
+        status = int(raw_status) if raw_status is not None else None
+    except (TypeError, ValueError):
+        status = None
+    description = str(exc).lower()
+    if status in {401, 403}:
+        return "model_authentication_failed", "模型认证失败；请检查所选配置的凭据与访问权限"
+    if status == 429:
+        return "model_rate_limited", "模型供应商正在限流；请稍后重试"
+    if status == 404 or (
+        status in {400, 422}
+        and any(term in description for term in ("model not found", "unknown model", "invalid model"))
+    ):
+        return "model_not_found", "供应商未找到所选模型；请检查模型名称与配置"
+    if status in {400, 413, 422} and any(
+        term in description
+        for term in (
+            "context length", "context_length", "maximum context", "too many tokens",
+            "max token", "token limit", "request too large",
+        )
+    ):
+        return "model_context_length_exceeded", "模型上下文超过供应商限制；请压缩会话后重试"
+    if isinstance(exc, json.JSONDecodeError) or any(
+        term in description
+        for term in ("invalid chunk", "malformed stream", "stream protocol", "invalid json")
+    ):
+        return "model_stream_protocol_error", "供应商返回了无法解析的流式协议数据；请重试"
+    return "model_provider_error", (
+        f"模型供应商请求失败（HTTP {status}）"
+        if status is not None
+        else "模型供应商连接或流式请求失败；请检查配置与网络后重试"
+    )
+
+
 def _text_content(value: Any) -> str:
     if isinstance(value, str):
         return value
@@ -184,13 +225,7 @@ class PiModelProxy:
         try:
             yield from provider.stream_agent(model, messages, tools=tools, **options)
         except Exception as exc:
-            status = getattr(exc, "code", None)
-            code = "model_provider_rejected" if isinstance(status, int) else "model_provider_unavailable"
-            message = (
-                f"模型请求被供应商拒绝（HTTP {status}）"
-                if isinstance(status, int)
-                else "模型流连接失败；请检查模型配置或网络后重试"
-            )
+            code, message = _provider_error_category(exc)
             yield {"type": "proxy_error", "code": code, "message": message}
 
     def stream(self, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
@@ -217,7 +252,12 @@ class PiModelProxy:
             yield {
                 "schemaVersion": MODEL_STREAM_SCHEMA,
                 "type": "error",
-                "code": code if code in messages else "model_stream_invalid",
+                "code": (
+                    "model_context_length_exceeded"
+                    if code in {"model_messages_invalid", "model_message_too_large", "tool_result_too_large"}
+                    else code if code in messages
+                    else "model_stream_protocol_error"
+                ),
                 "message": messages.get(code, "模型请求未能启动；请检查模型配置或上下文后重试"),
             }
 
@@ -342,7 +382,7 @@ class PiModelProxy:
                 yield {
                     "schemaVersion": MODEL_STREAM_SCHEMA,
                     "type": "error",
-                    "code": str(event.get("code") or "model_provider_unavailable"),
+                    "code": str(event.get("code") or "model_provider_error"),
                     "message": str(event.get("message") or "模型流连接失败"),
                 }
                 return

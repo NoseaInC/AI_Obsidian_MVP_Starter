@@ -41,6 +41,38 @@ def _decode(value: str | None, fallback: Any) -> Any:
         return fallback
 
 
+def _reasoning_safe_metadata(value: Any) -> Any:
+    """Remove provider reasoning prose from conversation-side UI metadata."""
+    if isinstance(value, list):
+        return [_reasoning_safe_metadata(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    result: dict[str, Any] = {}
+    for raw_key, item in value.items():
+        key = str(raw_key)
+        if key == "reasoningBlocks" and isinstance(item, list):
+            blocks: list[dict[str, Any]] = []
+            for index, raw_block in enumerate(item):
+                block = raw_block if isinstance(raw_block, dict) else {}
+                raw_content = str(block.get("content") or block.get("thinking") or "")
+                try:
+                    token_count = max(0, int(block.get("tokenCount") or 0))
+                except (TypeError, ValueError):
+                    token_count = 0
+                if not token_count and raw_content:
+                    token_count = max(1, (len(raw_content) + 3) // 4)
+                blocks.append({
+                    "id": str(block.get("id") or f"provider-reasoning-{index}"),
+                    "provider": str(block.get("provider") or "provider"),
+                    "tokenCount": token_count,
+                    "status": "streaming" if block.get("status") == "streaming" else "completed",
+                })
+            result[key] = blocks
+        else:
+            result[key] = _reasoning_safe_metadata(item)
+    return result
+
+
 def _atomic_bytes(path: Path, body: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
@@ -70,6 +102,23 @@ class IntakeService:
         self.root = self.vault / "90-Local-Only/Agent"
         self.attachments_root = self.root / "Attachments"
         self.messages_root = self.root / "Conversations/messages"
+        self._scrub_provider_reasoning_metadata()
+
+    def _scrub_provider_reasoning_metadata(self) -> None:
+        """One-way local migration for metadata written by pre-privacy builds."""
+        if not self.messages_root.is_dir():
+            return
+        for path in self.messages_root.glob("*.json"):
+            if not path.is_file() or path.is_symlink():
+                continue
+            payload = _decode(path.read_text(encoding="utf-8", errors="replace"), {})
+            if not isinstance(payload, dict) or not isinstance(payload.get("metadata"), dict):
+                continue
+            safe = _reasoning_safe_metadata(payload["metadata"])
+            if safe == payload["metadata"]:
+                continue
+            payload["metadata"] = safe
+            _atomic_bytes(path, (_json(payload) + "\n").encode())
 
     def create_conversation(self, title: str = "新会话") -> dict[str, Any]:
         conversation_id, now = f"conv-{uuid.uuid4().hex}", _now()
@@ -128,6 +177,7 @@ class IntakeService:
         if not content or len(content) > 250_000:
             raise ValueError("invalid_message_content")
         content = redact_secret_text(content)
+        metadata = _reasoning_safe_metadata(metadata) if metadata else metadata
         self.ensure_conversation(conversation_id)
         message_id = str(message_id or f"msg-{uuid.uuid4().hex}")
         if not re.fullmatch(r"[A-Za-z0-9._-]{1,160}", message_id):
@@ -179,6 +229,7 @@ class IntakeService:
         self.ensure_conversation(conversation_id)
         if not isinstance(metadata, dict):
             raise ValueError("invalid_message_metadata")
+        metadata = _reasoning_safe_metadata(metadata)
         encoded_metadata = _json(metadata).encode("utf-8")
         if len(encoded_metadata) > 1_000_000:
             raise ValueError("message_metadata_too_large")
@@ -211,7 +262,8 @@ class IntakeService:
         else:
             payload = _decode(path.read_text(encoding="utf-8", errors="replace"), {})
             content = str(payload.get("content", ""))
-            metadata = payload.get("metadata")
+            raw_metadata = payload.get("metadata")
+            metadata = _reasoning_safe_metadata(raw_metadata) if isinstance(raw_metadata, dict) else raw_metadata
         return {
             "id": row["id"], "role": row["role"], "messageType": row["message_type"],
             "content": content, "taskThreadId": row["task_thread_id"],

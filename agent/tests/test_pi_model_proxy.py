@@ -39,9 +39,14 @@ class _AgentProvider:
 
 
 class _RejectedProvider:
+    def __init__(self, status=400, message="provider payload must not reach the UI") -> None:
+        self.status = status
+        self.message = message
+
     def stream_agent(self, model, messages, *, tools=None, **options):
-        error = RuntimeError("provider payload must not reach the UI")
-        error.code = 400
+        error = RuntimeError(self.message)
+        if self.status is not None:
+            error.code = self.status
         raise error
         yield  # pragma: no cover - keep this a generator
 
@@ -201,7 +206,7 @@ class PiModelProxyTests(unittest.TestCase):
         }))
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["type"], "error")
-        self.assertEqual(events[0]["code"], "model_messages_invalid")
+        self.assertEqual(events[0]["code"], "model_context_length_exceeded")
 
     def test_provider_rejection_is_a_terminal_model_protocol_error(self) -> None:
         body = {
@@ -212,8 +217,35 @@ class PiModelProxyTests(unittest.TestCase):
         with patch.object(self.service.models, "provider", return_value=_RejectedProvider()):
             events = list(self.service.stream_model_proxy(body))
         self.assertEqual([item["type"] for item in events], ["start", "error"])
-        self.assertEqual(events[-1]["code"], "model_provider_rejected")
+        self.assertEqual(events[-1]["code"], "model_provider_error")
         self.assertNotIn("payload", json.dumps(events, ensure_ascii=False))
+
+    def test_provider_errors_keep_actionable_categories(self) -> None:
+        body = {
+            "profileId": self.profile["id"],
+            "model": "fake-tool-model",
+            "context": {"messages": [{"role": "user", "content": "continue"}], "tools": []},
+        }
+        cases = [
+            (401, "unauthorized", "model_authentication_failed"),
+            (403, "forbidden", "model_authentication_failed"),
+            (404, "model not found", "model_not_found"),
+            (429, "rate limited", "model_rate_limited"),
+            (400, "maximum context length exceeded", "model_context_length_exceeded"),
+            (500, "internal server error", "model_provider_error"),
+            (None, "malformed stream invalid json", "model_stream_protocol_error"),
+        ]
+        for status, message, expected in cases:
+            with self.subTest(status=status, expected=expected):
+                with patch.object(
+                    self.service.models,
+                    "provider",
+                    return_value=_RejectedProvider(status, message),
+                ):
+                    events = list(self.service.stream_model_proxy(body))
+                self.assertEqual(events[-1]["type"], "error")
+                self.assertEqual(events[-1]["code"], expected)
+                self.assertNotIn(message, json.dumps(events, ensure_ascii=False))
 
     def test_profile_output_limit_is_not_silently_clamped_to_32k(self) -> None:
         profile = self.service.save_model_profile({

@@ -60,6 +60,48 @@ const DEFAULT_MODEL_TIMEOUTS: PiModelTimeoutConfig = {
   hardDeepMs: 30 * 60_000,
 };
 
+type PiModelErrorCode =
+  | "model_first_event_timeout"
+  | "model_idle_timeout"
+  | "model_request_deadline_exceeded"
+  | "model_request_aborted"
+  | "model_authentication_failed"
+  | "model_rate_limited"
+  | "model_not_found"
+  | "model_context_length_exceeded"
+  | "model_provider_error"
+  | "model_stream_protocol_error";
+
+const PROVIDER_ERROR_CODES = new Set<PiModelErrorCode>([
+  "model_authentication_failed",
+  "model_rate_limited",
+  "model_not_found",
+  "model_context_length_exceeded",
+  "model_provider_error",
+  "model_stream_protocol_error",
+]);
+
+function normalizedModelErrorCode(raw: unknown, message = ""): PiModelErrorCode {
+  const code = String(raw ?? "");
+  if (PROVIDER_ERROR_CODES.has(code as PiModelErrorCode)) return code as PiModelErrorCode;
+  if (
+    code.startsWith("model_tool_")
+    || code === "model_stream_invalid"
+    || /(?:json|tool call stream|protocol|unexpected end|malformed)/i.test(message)
+  ) {
+    return "model_stream_protocol_error";
+  }
+  if (/401|403|authentication|unauthorized|forbidden/i.test(`${code} ${message}`)) {
+    return "model_authentication_failed";
+  }
+  if (/429|rate.?limit/i.test(`${code} ${message}`)) return "model_rate_limited";
+  if (/model.{0,12}(?:not found|unknown)/i.test(`${code} ${message}`)) return "model_not_found";
+  if (/context.{0,20}(?:length|limit)|too many tokens|max(?:imum)? tokens/i.test(`${code} ${message}`)) {
+    return "model_context_length_exceeded";
+  }
+  return "model_provider_error";
+}
+
 /** Secure one-request stream function used by Pi Agent Core. */
 export class PiModelTransport {
   private readonly timeouts: PiModelTimeoutConfig;
@@ -106,7 +148,7 @@ export class PiModelTransport {
       hardTimer = undefined;
     };
     const terminate = (
-      code: "model_first_event_timeout" | "model_idle_timeout" | "model_request_deadline_exceeded" | "model_request_aborted",
+      code: PiModelErrorCode,
       message: string,
       reason: "error" | "aborted",
     ): void => {
@@ -249,15 +291,16 @@ export class PiModelTransport {
           .join("\n"));
         stream.push({type: "done", reason: partial.stopReason, message: {...partial, content: [...partial.content]}});
       } else if (type === "error" || type === "run.failed") {
+        const message = String(event.message ?? event.code ?? "Model proxy failed");
         terminate(
-          "model_request_deadline_exceeded",
-          String(event.message ?? event.code ?? "Model proxy failed"),
+          normalizedModelErrorCode(event.code, message),
+          message,
           "error",
         );
       }
     }, requestController.signal).then(() => {
       terminate(
-        "model_request_deadline_exceeded",
+        "model_stream_protocol_error",
         "模型流意外结束，未收到完成事件；请重试",
         "error",
       );
@@ -266,9 +309,15 @@ export class PiModelTransport {
         forwardAbort();
         return;
       }
+      const message = error instanceof Error
+        ? error.message
+        : String(error ?? "模型流异常结束；请重试");
       terminate(
-        "model_request_deadline_exceeded",
-        error instanceof Error ? error.message : String(error ?? "模型流异常结束；请重试"),
+        normalizedModelErrorCode(
+          error && typeof error === "object" ? (error as {code?: unknown}).code : "",
+          message,
+        ),
+        message,
         "error",
       );
     }).finally(() => {
