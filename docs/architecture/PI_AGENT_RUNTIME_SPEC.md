@@ -2,7 +2,8 @@
 
 ## Status
 
-Production architecture as of 2026-07-20. Pi is the sole model–tool loop.
+Production architecture as of 2026-07-23. Pi is the sole model–tool loop for
+every ordinary interactive surface.
 
 ## Runtime placement and compatibility
 
@@ -36,6 +37,12 @@ User Turn
 Python never plans a turn or runs a second Agent loop. It owns the Keychain,
 model transport, Hybrid Retrieval, PDF and web adapters, Task Authorization,
 path policy, transactions, persistence and Undo.
+
+The Main Assistant, contextual learning assistant and user-triggered study-note
+generation all use the same `prepareTurn → query → AgentChunk reducer`
+pipeline. The retired Brain/intake coordinator is reachable only from explicitly
+named compatibility workflows such as Prepared PDF handling; it is not a
+fallback for ordinary chat, learning or note generation.
 
 ## Runtime modules
 
@@ -77,16 +84,32 @@ Turn: a later plan cannot silently add a new path, writable root or operation.
 Pi must surface a scope-expansion question or start a new user-authorized Turn.
 This is action validation, not keyword intent classification.
 
+An inline permission request is a persisted paused Tool Call, not a completed
+Turn. After a plugin or Runtime restart the service validates the original
+Run, Authorization, Tool Contract, arguments, path/workspace guards and absence
+of a completed Tool Result. Approval or denial then resolves that same
+`runId + toolCallId`; it never creates a replacement Run or silently replans the
+operation.
+
 ## Session and events
 
 The append-only Session Tree stores message, tool, authorization, action,
 compaction, steering and follow-up references. It does not store secrets or
-knowledge-file bodies. Every UI event has session/run/turn identifiers and a
-strictly increasing sequence. Reconnect reads the durable event stream.
+knowledge-file bodies. The persisted Session Projection is the only restart
+recovery source for Pi context; renderer memory and conversation-message
+shortcuts are not authoritative. Projection follows one `parent_id` lineage,
+restores standard Pi user/assistant/Tool Call/Tool Result shapes, and excludes
+sibling branches and provider reasoning. Every UI event has
+session/run/turn identifiers and a strictly increasing sequence. Reconnect
+reads the durable event stream.
 
-Editing or regenerating forks a branch. Steering is injected at a safe tool
-boundary; Follow-up begins a new Turn after the current one. Cancel propagates
-an AbortSignal to Pi, model transport and tools.
+Editing or regenerating forks from a resolved persisted Entry boundary. A
+boundary inside a Tool Call/Tool Result pair moves to the preceding complete
+Entry. Regeneration keeps already completed Actions but excludes the old answer,
+future history and pending authority; the new branch starts with fresh
+Run-scoped authorization. Steering is injected at a safe tool boundary;
+Follow-up begins a new Turn after the current one. Cancel propagates an
+AbortSignal to Pi, model transport and tools.
 
 ## Compaction
 
@@ -95,6 +118,25 @@ cuts only at complete Turn boundaries and never separates a Tool Call from its
 Tool Result or removes pending questions/actions. Recent context is retained by
 token budget, not fixed message count. Summaries exclude secrets, private chain
 of thought, full sensitive bodies and unnecessary tool arguments.
+
+Compaction is persistence-first: the Runtime constructs a bounded structured
+checkpoint from the selected Session Projection, Focus, attachment metadata,
+Action references, pending results and workspace authorization, atomically
+persists the checkpoint Entry, and only then replaces in-memory messages. A
+persistence failure leaves the exact live history intact. Restart recovery
+reuses the checkpoint plus entries after `keptFromEntryId`; it does not invent
+a fake user message or merge sibling lineage.
+
+## Learning surfaces
+
+The contextual learning assistant sends bounded course, section, Lesson
+Version, relevant-note and source metadata through the shared Pi pipeline. It
+defaults to network-off and read-only. Study-note generation begins only after
+the user's explicit click and is accepted by the UI only when Pi returns a real
+verified `apply_vault_change` Action under `01-Inbox` or
+`20-Knowledge/Drafts`. The result exposes View Changes and conflict-safe Undo.
+No learning surface may write `reviewed` or `core`; those states remain
+immutable and receive update suggestions instead.
 
 ## Model capability resolution
 
@@ -123,7 +165,13 @@ inputs.
 
 - Production contains no `pydantic_ai`, Pydantic runtime or retired coordinator.
 - No keyword/regex/fixed-phrase Intent Router exists.
+- Ordinary Main Assistant, learning and study-note turns never call the legacy
+  Brain/intake workflow.
 - UI renders only normalized `AgentChunk` events and cannot write Vault files.
+- Persisted Session Projection is the only Pi restart-recovery source.
+- Fork and regeneration resolve persisted Entry boundaries, not message indexes.
+- Pending permission survives restart only as the original validated Tool Call.
+- Compaction changes memory only after its structured checkpoint is durable.
 - The model proxy cannot apply changes.
 - The model cannot bypass Task Authorization or protected-note policy.
 - Action Journal is recovery infrastructure, never an approval inbox.

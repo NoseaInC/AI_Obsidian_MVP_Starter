@@ -1,10 +1,49 @@
 # Project Status
 
-Last updated: 2026-07-21
+Last updated: 2026-07-23
 
 ## Current phase
 
-The `pi-agent-runtime` migration is active. Pi Agent Core and Pi AI now own the only production model–tool loop in the Obsidian TypeScript plugin. Python is limited to the secure model proxy, Keychain access, typed tool execution, task authorization, reversible transactions, hybrid retrieval, capability facts and persistence. PydanticAI and the Python Brain planner have left the production path; no keyword/regex/fixed-phrase Intent Router remains. Ordinary in-scope reversible Markdown work executes through snapshot → atomic apply → verify → Action Result and conflict-safe Undo, while scope expansion, irreversible work and external side effects remain interruptible. The first real Dragonnet `apply-prepared` gate is unchanged.
+The `pi-runtime-hardening-repair` audit has completed R01–R08. Its
+temporary-environment A–S production-code acceptance and final full-suite gate
+both passed. Pi
+Agent Core and Pi AI own the only production model–tool loop for Main Assistant,
+contextual learning assistance and study-note generation. Python is limited to
+the secure model proxy, Keychain access, typed tool execution, task
+authorization, reversible transactions, hybrid retrieval, capability facts and
+persistence. The old Brain/intake path remains only for explicitly named
+compatibility workflows such as Prepared PDF handling. Ordinary in-scope
+reversible Markdown work executes through snapshot → atomic apply → verify →
+Action Result and conflict-safe Undo, while scope expansion, irreversible work
+and external side effects remain interruptible. The first real Dragonnet
+`apply-prepared` gate is unchanged.
+
+## Pi runtime hardening repair — R01–R08
+
+- Stall detection is side-effect aware, progress structured and bounded; model
+  timeouts terminate independently of provider AbortSignal cooperation.
+- Restart context comes only from the persisted Session Projection, including
+  typed Tool pairs, control messages, Action references and selected lineage.
+- Pending permission survives restart as the original validated
+  `runId + toolCallId`; approve and deny resume the same Run idempotently.
+- Fork and Regenerate resolve persisted Entry boundaries, exclude future/sibling
+  history and never inherit Run-scoped allow-all, network or workspace grants.
+- Structured compaction persists its checkpoint before changing in-memory
+  history and is recoverable across restart without fake conversation turns.
+- Main Assistant, learning assistant and study-note generation share the Pi
+  prepare/query/reducer path. Learning Q&A is network-off/read-only by default;
+  note generation accepts only a verified reversible draft Action.
+- Ordinary standalone Review, Artifact and Task Thread UI paths have been
+  removed. The legacy Brain is restricted to explicit compatibility workflows.
+- Runtime-generated knowledge notes were split to
+  `knowledge-notes-from-runtime-hardening` (`d22d6f8`); this branch's
+  `20-Knowledge` tree matches `origin/pi-agent-runtime`.
+- The repeatable headless A–S acceptance passed 19/19 against temporary
+  Vault/SQLite/Git fixtures with deterministic model transport. It did not read
+  a real key, call a real model, touch the user's Vault or restart Obsidian.
+- Final gates passed: Python compileall, 236/236 Python tests, 163/163 plugin
+  tests, TypeScript strict typecheck, production build and
+  `./scripts/check.sh` (including its 40/40 ingestion/review gate).
 
 ## Pi runtime migration — current implementation
 
@@ -57,7 +96,7 @@ superseded by D-042 through D-044 and the Pi runtime migration above. Provider
 reasoning visibility follows the narrower D-046 contract.
 
 - Chat-first V1 implemented: unified conversations, binary/URL/path/folder attachments, deterministic multi-Intent routing, idempotent submit and seven versioned Artifact types.
-- Assistant is the only universal input and authorization surface. Materials is a one-column status center; Plan is today blocks plus weekend preview; Today is five queues plus a single learning detail. The former standalone Review UI is retained only as unreachable legacy audit code for Prepared history.
+- Assistant is the only universal input and authorization surface. Materials is a one-column status center; Plan is today blocks plus weekend preview; Today is five queues plus a single learning detail. The former standalone Review UI was later removed from ordinary production code; Prepared history remains available only through explicit compatibility workflows.
 - Follow-up instructions revise the active Artifact and retain parent versions. Raw conversation text and attachment bodies live only under `90-Local-Only`; SQLite stores hashes, counts and state.
 - Sixteen V3 historical visual/live acceptance screenshots cover the earlier five-module shell. The current installed shell has four primary modules and routes legacy Review commands into Assistant.
 - Secure model subsystem includes Keychain/FakeKeyStore, OpenAI-compatible adapter, connection diagnostics and per-task routing.
@@ -207,7 +246,6 @@ reasoning visibility follows the narrower D-046 contract.
 - Heading-aware field-level Diff editing and cancellable model streaming remain P2; V1 existing-draft updates use a bounded managed block.
 - Study Workspace V1 has no outstanding visual-state gap; its 21-image matrix is stored under `artifacts/today-study-workspace-v1-screenshots/`.
 - Several legacy Python tests leave SQLite connections for interpreter cleanup and emit non-failing `ResourceWarning` messages; this is P2 resource hygiene, not a transaction or data-integrity failure.
-- A permission card waiting inside a live JavaScript Promise cannot yet be reconstructed after an Obsidian/plugin reload; the interrupted Run is recoverable, but the exact inline card must be requested again. This is P2 crash-recovery polish, not a permission bypass.
 - Developer workspace IDs currently include a truncated Run identifier. Persisted records and server-side project validation prevent cross-workspace authority, but a hash suffix would further reduce diagnostic ambiguity (P2).
 
 ## P0 / P1
@@ -216,4 +254,7 @@ reasoning visibility follows the narrower D-046 contract.
 
 ## Resume point
 
-Unlock macOS and disable/re-enable the installed Zhixu plugin (or restart Obsidian), then verify that `/health` reports a new PID and Runtime ID. After that, review GitHub PR #2 (`pi-agent-runtime` → `main`). The deliberate first real Dragonnet Apply gate remains separate and untouched.
+The repair implementation and offline acceptance are complete. Review the
+pushed `pi-runtime-hardening-repair` branch; do not merge automatically. Live
+installation/restart of the user's Obsidian and the deliberate first real
+Dragonnet Apply gate remain separate and untouched.

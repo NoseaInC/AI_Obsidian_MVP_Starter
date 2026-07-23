@@ -1,12 +1,72 @@
 # Pi Agent Runtime Acceptance
 
-Date: 2026-07-20
+Date: 2026-07-23
 
-Branch: `pi-agent-runtime`
+Branch: `pi-runtime-hardening-repair`
 
-Production model used for the real gate: `deepseek-v4-pro`
+Current repair gate: deterministic provider; no real model, Keychain reference,
+user Vault or running Obsidian process was used.
 
-## Offline release gate
+## R08 temporary-environment A–S acceptance
+
+Command:
+
+```bash
+python scripts/pi_runtime_repair_acceptance.py
+```
+
+Result: 19/19 passed. The runner removes secret-like environment variables and
+places every test fixture under a temporary root. A–C drive the bundled
+production `PiAgentRuntime` with a deterministic model transport and real
+temporary Markdown files. D–E and P–S execute the production transaction and
+developer-workspace implementations against temporary SQLite/Vault/Git state.
+F–O execute the production TypeScript Runtime, persistence, recovery, fork,
+compaction and shared learning-turn code.
+
+This is a real headless production-code acceptance, not a live user-Obsidian UI
+session. It intentionally does not call a real provider or restart/install the
+user's plugin, so it must not be cited as evidence of manual UI clicking or a
+live model response.
+
+| Case | Result | Executed invariant |
+| --- | --- | --- |
+| A — ordinary Q&A | Passed | Bundled Pi Runtime completed one deterministic text Turn |
+| B — current note | Passed | `get_current_note` read a real temporary note and its Observation returned to Pi |
+| C — cross-Vault | Passed | `search_vault` → `read_vault_note` traversed real temporary Markdown |
+| D — direct reversible write | Passed | planned write applied atomically, verified and produced Diff/Undo without repeated confirmation |
+| E — Undo | Passed | authorized update restored the exact prior snapshot |
+| F — permission card | Passed | Tool Call paused and resumed under the same Run |
+| G — reload waiting | Passed | two Runtime recreations preserved one pending Tool Call and Authorization |
+| H — recover approve | Passed | rebuilt card approved and continued the original call |
+| I — recover deny | Passed | denial injected one blocked Observation without executing the tool |
+| J — Fork | Passed | persisted Entry boundary excluded future history without mutating the source |
+| K — Regenerate | Passed | pre-answer boundary preserved completed Actions and removed the old answer |
+| L — Compaction | Passed | no Tool Call/Tool Result pair was split |
+| M — compaction restart | Passed | persisted checkpoint was recoverable after Runtime recreation |
+| N — learning assistant Q&A | Passed | bounded learning context used the shared Pi prepare/query/reducer path with network off |
+| O — generate study note | Passed | bundled Pi plan/apply loop atomically wrote a temporary Draft and shared reducer projected its verified Action Result |
+| P — Developer Workspace | Passed | isolated temporary Git worktree and atomic project write |
+| Q — controlled Bash | Passed | sandboxed Bash ran inside the worktree with network denied |
+| R — Skill Draft | Passed | valid draft accepted and secret-accessing draft rejected |
+| S — MCP Validate/Probe | Passed | temporary MCP server validated, started in minimal environment and listed tools |
+
+## R08 full release gate
+
+The final full-suite was run after the A–S gate and before the final repair
+commit:
+
+- Python compileall: passed;
+- Python Agent/Runtime/security suite: 236/236 passed;
+- Obsidian plugin suite: 163/163 passed;
+- TypeScript strict typecheck: passed;
+- production plugin build: passed;
+- unified `./scripts/check.sh`: passed (40/40 ingestion/review tests,
+  236/236 Python Agent tests, 163/163 plugin tests, typecheck and build).
+
+The existing non-failing legacy SQLite `ResourceWarning` messages remain P2
+test-resource hygiene; no gate failed.
+
+## Historical 2026-07-20 offline release gate
 
 `./scripts/check.sh` passed with:
 
@@ -26,7 +86,7 @@ The Python test process still reports non-failing `ResourceWarning` messages for
 several legacy test-created SQLite connections. They do not affect correctness
 but remain a P2 cleanup item.
 
-## Real DeepSeek A–H gate
+## Historical real DeepSeek A–H gate
 
 Command:
 

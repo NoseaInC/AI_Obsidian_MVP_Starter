@@ -218,3 +218,54 @@ A model context window, model output budget and tool-result page are distinct li
 
 Before the model issues any write plan, the Task Authorization's `resourceScope.writeScopeState` is `"unbound"`: Q&A and any write proposal still cannot write, and every plan would surface a permission card. The *first* reversible, in-scope Markdown write plan (via `plan_vault_change` / `plan_vault_copy`, including batched copy under one `toolCallId`) is the Turn's concretization: the Harness auto-binds the explicit path/operation scope and transitions `writeScopeState` to `"bound"` with no confirmation card. This is deterministic, not intent classification—no keyword, regex, fixed phrase, or Intent Router is involved. Auto-bind is gated by the same path policy and protection checks as `grant_scope`: updates require an explicit scoped path, creates require `DEFAULT_CREATE_ROOTS` (`01-Inbox`, `20-Knowledge/Drafts`), reviewed/core/protected targets and path escapes are hard-denied, and the scope is frozen atomically under the StateStore lock. A *later* plan in the same Run that adds new paths, roots or operations is a real expansion and still raises a permission card (a different `toolCallId` cannot auto-bind). The same `toolCallId` re-binding is idempotent and only extends the already-frozen scope.
 
+## D-053 — Every ordinary interactive surface uses Pi
+
+- Main Assistant, contextual learning assistance and study-note generation use
+  one shared `prepareTurn → query → AgentChunk reducer` path.
+- The retired Brain/intake coordinator is not an ordinary fallback. It may
+  remain only behind explicitly named compatibility workflows such as Prepared
+  PDF processing.
+- Ordinary Review, Artifact and Task Thread UI projections are removed rather
+  than retained as unreachable alternate product paths.
+
+## D-054 — Persisted projection and Entry lineage define recovery
+
+- Session Projection is the only source for reconstructing Pi messages after
+  restart. Renderer memory, conversation-message shortcuts and ad-hoc local
+  caches are not recovery authorities.
+- Projection follows one persisted `parent_id` lineage and restores typed user,
+  assistant, Tool Call and Tool Result shapes while excluding provider
+  reasoning, siblings and sensitive bodies.
+- Fork and Regenerate resolve a persisted Entry boundary. They do not use array
+  indexes, approximate message positions or inherited Run-scoped permissions.
+
+## D-055 — A permission decision resumes the original persisted Tool Call
+
+- Pending permission is durable state keyed by the original
+  `runId + toolCallId + taskAuthorizationId`.
+- On restart the backend revalidates the Tool Contract, arguments,
+  path/workspace guards, Authorization and absence of a completed Tool Result
+  before the card is shown.
+- Approve or deny injects exactly one typed Tool Result and continues the same
+  Run. Repeated decisions are idempotent; invalid or stale requests fail closed.
+
+## D-056 — Compaction is structured and persistence-first
+
+- A compaction checkpoint contains bounded structured state from the selected
+  Session Projection, Focus, attachment metadata, Actions, pending results and
+  workspace authorization; it is never a fake conversational turn.
+- The checkpoint Entry is committed before in-memory messages change. A failed
+  commit leaves the exact active context untouched.
+- Restart recovery reuses the checkpoint plus Entries after
+  `keptFromEntryId`, never sibling branches, secrets, reasoning or unbounded
+  tool output.
+
+## D-057 — Learning writes are direct, reversible drafts
+
+- Contextual learning Q&A is network-off and read-only by default.
+- An explicit study-note action may let Pi plan and apply a change directly,
+  but the UI accepts only a verified Action under `01-Inbox` or
+  `20-Knowledge/Drafts` and exposes Diff and conflict-safe Undo.
+- Authorized reversible draft work does not ask for repeated confirmation.
+  `reviewed`, `core`, protected paths and policy failures remain non-bypassable
+  and can produce only update suggestions or explicit denials.

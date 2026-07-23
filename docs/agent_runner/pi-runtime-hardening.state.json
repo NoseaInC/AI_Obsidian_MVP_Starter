@@ -4,6 +4,9 @@
   "completed": ["T01", "T02", "T03", "T04", "T05", "T06", "T07", "T08", "T09"],
   "currentTask": null,
   "status": "completed",
+  "superseded": true,
+  "supersededBy": "docs/agent_runner/pi-runtime-hardening-repair.state.json",
+  "supersededNote": "该 completed 仅表示旧 T01–T09 计划当时结束，不代表最新代码通过严格纠偏验收。T09 的 Option A 不是最终生产架构结论；R01–R08 repair state 才是当前权威状态。",
   "resolution": "Option A — Minimum Viable Isolation：创建 explicit_workflow_service.py 将旧 Brain 依赖（BrainModelGateway/IntentResult/StructuredWorkflowRunner/ContextMaterialCoordinator）完全从 service.py 剥离到 ExplicitWorkflowService。service.py 不再定义 submit_intake、不再直接导入旧 Brain 符号。server.py 路由通过 self.service.explicit 调用。补 11 条架构边界测试断言隔离正确性。64 个受影响测试全部通过。",
   "lastCommit": "d8e983f",
   "updatedAt": "2026-07-22T15:00:00+08:00"

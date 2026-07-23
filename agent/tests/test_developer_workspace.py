@@ -115,6 +115,17 @@ class DeveloperWorkspaceTests(unittest.TestCase):
             with self.subTest(script=script), self.assertRaises(PermissionError):
                 self.workspace.run_bash(self.item["id"], "run-dev", {"script": script, "networkPolicy": "deny"})
 
+    def test_controlled_bash_runs_inside_workspace_with_network_denied(self) -> None:
+        result = self.workspace.run_bash(self.item["id"], "run-dev", {
+            "script": "pwd; printf controlled-bash",
+            "networkPolicy": "deny",
+            "timeoutMs": 10_000,
+        })
+        self.assertEqual(result["exitCode"], 0, result["stderr"])
+        self.assertEqual(result["networkPolicy"], "deny")
+        self.assertIn("controlled-bash", result["stdout"])
+        self.assertIn(str(Path(self.item["path"]).name), result["stdout"])
+
     def test_status_diff_commit_and_rollback_are_structured(self) -> None:
         self.workspace.write(self.item["id"], "run-dev", "feature.txt", "done\n")
         diff = self.workspace.git_diff(self.item["id"], "run-dev")

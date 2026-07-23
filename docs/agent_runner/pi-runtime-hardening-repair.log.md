@@ -85,4 +85,23 @@
 
 ## R08 — 分支清理、状态纠正和最终验收
 
-状态：进行中
+状态：已完成
+
+- 创建保护分支 `backup/pi-runtime-hardening-before-content-cleanup`，指向
+  R07 提交 `046eaaa`。
+- 导出 `origin/pi-agent-runtime...HEAD` 的 `20-Knowledge/**` 差异到
+  `/tmp/pi-runtime-hardening-knowledge-notes.patch`，在独立 worktree/分支
+  `knowledge-notes-from-runtime-hardening` 提交为
+  `d22d6f8 docs: preserve knowledge notes from runtime hardening work`。
+- 修复分支的 `20-Knowledge/**` 已恢复到 `origin/pi-agent-runtime` 基线；
+  24 个运行时生成的知识文件只从修复分支移除，仍可从保护分支和独立
+  笔记分支恢复。
+- 旧 `pi-runtime-hardening.state.json` 已明确标记 superseded；旧 T01–T09
+  completed 与 T09 Option A 不再代表当前生产架构，repair state 是唯一
+  权威进度。
+- 临时 Vault/SQLite/Git、确定性 Provider 的 headless 生产代码 A–S
+  验收 19/19 通过；未读取真实密钥、调用真实模型、读取用户 Vault 或
+  启停用户 Obsidian。
+- 最终完整门禁：Python compileall、236/236 Python tests、163/163 plugin
+  tests、TypeScript typecheck、production build 与 `./scripts/check.sh`
+  全部通过；`check.sh` 同时通过 40/40 ingestion/review tests。
