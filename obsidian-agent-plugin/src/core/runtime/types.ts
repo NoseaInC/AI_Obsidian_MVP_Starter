@@ -27,6 +27,7 @@ export interface AgentTurnRequest {
   regenerateMessageId?: string;
   parentRunId?: string;
   forkedFromSequence?: number;
+  resolvedForkEntryId?: string;
 }
 
 export interface PreparedAgentTurn {
@@ -43,6 +44,8 @@ export interface AgentConversationState {
   status: "idle" | "running" | "waiting_confirmation" | "completed" | "failed" | "cancelled";
   parentRunId?: string;
   forkedFromSequence?: number;
+  resolvedForkEntryId?: string;
+  completedActionIds?: string[];
 }
 
 export interface AgentInlineConfirmation {

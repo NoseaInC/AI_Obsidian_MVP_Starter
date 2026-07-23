@@ -408,6 +408,8 @@ CREATE TABLE IF NOT EXISTS pi_agent_runs (
   status TEXT NOT NULL,
   parent_run_id TEXT,
   forked_from_sequence INTEGER,
+  forked_from_entry_id TEXT,
+  current_leaf_id TEXT,
   last_event_sequence INTEGER NOT NULL DEFAULT 0,
   checkpoint_id TEXT,
   created_at TEXT NOT NULL,
@@ -504,7 +506,7 @@ CREATE INDEX IF NOT EXISTS idx_pi_compaction_checkpoints_branch
 
 
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 
 def _now() -> str:
@@ -610,6 +612,31 @@ class StateStore:
                 "ALTER TABLE pi_pending_tool_calls "
                 "ADD COLUMN recovery_guard_json TEXT NOT NULL DEFAULT '{}'"
             )
+        run_columns = {
+            row["name"]
+            for row in self.connection.execute("PRAGMA table_info(pi_agent_runs)")
+        }
+        if "forked_from_entry_id" not in run_columns:
+            self.connection.execute(
+                "ALTER TABLE pi_agent_runs ADD COLUMN forked_from_entry_id TEXT"
+            )
+        if "current_leaf_id" not in run_columns:
+            self.connection.execute(
+                "ALTER TABLE pi_agent_runs ADD COLUMN current_leaf_id TEXT"
+            )
+        runs = self.connection.execute(
+            "SELECT run_id FROM pi_agent_runs WHERE current_leaf_id IS NULL"
+        ).fetchall()
+        for run in runs:
+            leaf = self.connection.execute(
+                "SELECT id FROM pi_session_entries WHERE run_id=? ORDER BY timestamp DESC, id DESC LIMIT 1",
+                (run["run_id"],),
+            ).fetchone()
+            if leaf:
+                self.connection.execute(
+                    "UPDATE pi_agent_runs SET current_leaf_id=? WHERE run_id=?",
+                    (leaf["id"], run["run_id"]),
+                )
 
     def create_pi_task_authorization(self, authorization: dict[str, Any]) -> dict[str, Any]:
         required = (
@@ -638,8 +665,9 @@ class StateStore:
             self.connection.execute(
                 """INSERT OR IGNORE INTO pi_agent_runs(
                      run_id, session_id, turn_id, source_message_id, status,
-                     parent_run_id, forked_from_sequence, created_at, updated_at
-                   ) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?)""",
+                     parent_run_id, forked_from_sequence, forked_from_entry_id,
+                     current_leaf_id, created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)""",
                 (
                     run_id,
                     session_id,
@@ -647,10 +675,32 @@ class StateStore:
                     str(authorization["sourceMessageId"]),
                     authorization.get("parentRunId"),
                     authorization.get("forkedFromSequence"),
+                    authorization.get("forkedFromEntryId"),
+                    authorization.get("forkedFromEntryId"),
                     now,
                     now,
                 ),
             )
+            parent_run_id = str(authorization.get("parentRunId") or "")
+            if not authorization.get("forkedFromEntryId") and parent_run_id:
+                self.connection.execute(
+                    """UPDATE pi_agent_runs
+                       SET current_leaf_id=(SELECT current_leaf_id FROM pi_agent_runs WHERE run_id=?)
+                       WHERE run_id=? AND current_leaf_id IS NULL""",
+                    (parent_run_id, run_id),
+                )
+            if not authorization.get("forkedFromEntryId") and not parent_run_id:
+                session_state_row = self.connection.execute(
+                    "SELECT state_json FROM pi_agent_sessions WHERE session_id=?",
+                    (session_id,),
+                ).fetchone()
+                session_state = json.loads(session_state_row["state_json"] or "{}") if session_state_row else {}
+                inherited_leaf = str(session_state.get("currentLeafId") or "") or None
+                self.connection.execute(
+                    "UPDATE pi_agent_runs SET current_leaf_id=? "
+                    "WHERE run_id=? AND current_leaf_id IS NULL",
+                    (inherited_leaf, run_id),
+                )
             existing = self.connection.execute(
                 "SELECT * FROM task_authorizations WHERE id=?",
                 (str(authorization["id"]),),
@@ -871,7 +921,12 @@ class StateStore:
             (run["session_id"],),
         ).fetchone()
         state = json.loads(session["state_json"] or "{}") if session else {}
-        parent_id = str(state.get("currentLeafId") or "") or None
+        current_run = self.connection.execute(
+            "SELECT current_leaf_id FROM pi_agent_runs WHERE run_id=?",
+            (run["run_id"],),
+        ).fetchone()
+        parent_id = str(current_run["current_leaf_id"] or "") if current_run else ""
+        parent_id = parent_id or None
         inserted = self.connection.execute(
             """INSERT OR IGNORE INTO pi_session_entries(
                  id, parent_id, timestamp, entry_type, session_id, run_id,
@@ -891,6 +946,10 @@ class StateStore:
         )
         if inserted.rowcount:
             state["currentLeafId"] = entry_id
+            self.connection.execute(
+                "UPDATE pi_agent_runs SET current_leaf_id=?, updated_at=? WHERE run_id=?",
+                (entry_id, now, run["run_id"]),
+            )
             self.connection.execute(
                 "UPDATE pi_agent_sessions SET state_json=?, updated_at=? WHERE session_id=?",
                 (json.dumps(state, ensure_ascii=False), now, run["session_id"]),
@@ -1358,7 +1417,21 @@ class StateStore:
                 ).fetchone()
 
         focus = _projection_safe(self.get_conversation_focus(conversation_id) or {})
-        pending_items = self.get_pending_tool_calls(session_id=session_id, active_only=True)
+        lineage_calls = {
+            (
+                str(entry["payload"].get("callId") or entry["payload"].get("id") or ""),
+                str(entry["payload"].get("tool") or entry["payload"].get("name") or ""),
+            )
+            for entry in projected_entries
+            if entry["entryType"] == "tool_call" and isinstance(entry.get("payload"), dict)
+        }
+        lineage_run_ids = {str(row["run_id"]) for row in lineage_rows}
+        pending_items = [
+            item
+            for item in self.get_pending_tool_calls(session_id=session_id, active_only=True)
+            if item.get("runId") in lineage_run_ids
+            and (str(item.get("toolCallId") or ""), str(item.get("toolName") or "")) in lineage_calls
+        ]
         pending = _projection_safe(pending_items[0]) if pending_items else None
         active_pending_calls = {
             (str(item.get("toolCallId") or ""), str(item.get("toolName") or ""))
@@ -1426,6 +1499,132 @@ class StateStore:
             "activeActions": active_actions,
             "pending": pending,
             "compaction": compaction,
+            "schemaVersion": 1,
+        }
+
+    def project_pi_fork_context(
+        self,
+        run_id: str,
+        sequence: int | None = None,
+        mode: str = "fork",
+    ) -> dict[str, Any]:
+        """Resolve an event boundary to one complete persisted entry lineage."""
+        if mode not in {"fork", "regenerate"}:
+            raise ValueError("pi_fork_mode_invalid")
+        run = self.get_pi_run(run_id)
+        session_id = str(run["session_id"])
+        with self.lock:
+            session_row = self.connection.execute(
+                "SELECT conversation_id, selected_model FROM pi_agent_sessions WHERE session_id=?",
+                (session_id,),
+            ).fetchone()
+            authorization_row = self.connection.execute(
+                "SELECT resource_scope_json FROM task_authorizations WHERE run_id=? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (run_id,),
+            ).fetchone()
+        resource_scope = json.loads(authorization_row["resource_scope_json"] or "{}") \
+            if authorization_row else {}
+        explicit_paths = resource_scope.get("explicitVaultPaths")
+        source_active_note = (
+            str(explicit_paths[0])
+            if resource_scope.get("currentNote") is True
+            and isinstance(explicit_paths, list)
+            and explicit_paths
+            else ""
+        )
+        leaf_id = str(run.get("current_leaf_id") or "")
+        full = self.project_pi_session_context(
+            session_id,
+            leaf_id=leaf_id or None,
+            upto_run_id=run_id,
+        )
+        entries = list(full["entries"])
+        if not entries:
+            raise ValueError("pi_fork_source_empty")
+
+        if sequence is None:
+            boundary = len(entries) - 1
+        else:
+            requested = max(0, int(sequence))
+            candidates = [
+                index
+                for index, entry in enumerate(entries)
+                if entry["runId"] == run_id and int(entry.get("sequence") or 0) <= requested
+            ]
+            if not candidates:
+                raise ValueError("pi_fork_event_sequence_not_found")
+            boundary = candidates[-1]
+
+        if mode == "regenerate":
+            # Drop the selected assistant answer as one delta block, while
+            # keeping the preceding user message and any completed Tool Pair.
+            answer_index = boundary
+            while answer_index >= 0 and entries[answer_index]["entryType"] != "message":
+                answer_index -= 1
+            if answer_index < 0:
+                raise ValueError("pi_regenerate_answer_not_found")
+            answer_run = entries[answer_index]["runId"]
+            answer_turn = entries[answer_index]["turnId"]
+            first_delta = answer_index
+            while (
+                first_delta > 0
+                and entries[first_delta - 1]["entryType"] == "message"
+                and entries[first_delta - 1]["runId"] == answer_run
+                and entries[first_delta - 1]["turnId"] == answer_turn
+            ):
+                first_delta -= 1
+            boundary = first_delta - 1
+
+        # A fork may never end with an unresolved Tool Call. Move the boundary
+        # to immediately before the earliest still-open call.
+        open_calls: dict[tuple[str, str], int] = {}
+        for index, entry in enumerate(entries[: boundary + 1]):
+            payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+            call_id = str(payload.get("callId") or payload.get("id") or "")
+            tool_name = str(payload.get("tool") or payload.get("name") or "")
+            pair = (call_id, tool_name)
+            if entry["entryType"] == "tool_call" and all(pair):
+                open_calls[pair] = index
+            elif entry["entryType"] == "tool_result" and pair in open_calls:
+                open_calls.pop(pair, None)
+        if open_calls:
+            boundary = min(open_calls.values()) - 1
+        if boundary < 0:
+            raise ValueError("pi_fork_boundary_before_user_message")
+
+        resolved = entries[boundary]
+        projection = self.project_pi_session_context(
+            session_id,
+            leaf_id=str(resolved["id"]),
+        )
+        completed_action_ids = sorted({
+            str(entry["payload"].get("actionId") or "")
+            for entry in projection["entries"]
+            if isinstance(entry.get("payload"), dict)
+            and entry["payload"].get("actionId")
+            and (
+                str(entry["payload"].get("status") or "") in {"completed", "applied"}
+                or str(entry["payload"].get("state") or "") in {"completed", "applied"}
+            )
+        })
+        projection["completedActionIds"] = completed_action_ids
+        return {
+            "sourceRunId": run_id,
+            "sessionId": session_id,
+            "mode": mode,
+            "requestedSequence": sequence,
+            "resolvedForkEntryId": str(resolved["id"]),
+            "resolvedForkSequence": int(resolved.get("sequence") or 0),
+            "completedActionIds": completed_action_ids,
+            "sourceContext": {
+                "conversationId": str(session_row["conversation_id"] or session_id)
+                if session_row else session_id,
+                "selectedModel": str(session_row["selected_model"] or "")
+                if session_row else "",
+                "activeNote": {"path": source_active_note} if source_active_note else None,
+            },
+            "projection": projection,
             "schemaVersion": 1,
         }
 

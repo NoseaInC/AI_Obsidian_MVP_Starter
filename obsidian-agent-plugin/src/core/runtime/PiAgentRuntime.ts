@@ -11,7 +11,7 @@ import type {
 } from "./types";
 import {PiEventAdapter} from "./pi/PiEventAdapter";
 import {PiModelTransport} from "./pi/PiModelTransport";
-import {projectForkMessages, projectPiSessionMessages} from "./pi/PiSessionProjector";
+import {projectPiSessionMessages} from "./pi/PiSessionProjector";
 import {createPiTools} from "./pi/PiToolAdapter";
 import {createTurnIdentity} from "./pi/TaskAuthorization";
 import type {
@@ -31,6 +31,8 @@ interface PiPreparedPayload extends Record<string, unknown> {
 
 interface PiConversation {
   agent: Agent;
+  /** Renderer-local key; a persisted branch still belongs to its source conversation. */
+  localConversationId: string;
   identity: PiRunIdentity;
   state: AgentConversationState;
   events: AgentChunk[];
@@ -52,6 +54,13 @@ interface PiConversation {
   lastPermissionDecision?: "allowed" | "denied";
   /** Plugin teardown detached a pending Run without producing a terminal event. */
   suspended?: boolean;
+  branchSeedPending?: boolean;
+  inheritedContext?: {
+    activeNote?: {path?: string; selectionReference?: string};
+    attachments: Array<Record<string, unknown>>;
+    focus: Record<string, unknown>;
+    completedActionIds: string[];
+  };
 }
 
 const CAPABILITIES: Readonly<AgentRuntimeCapabilities> = Object.freeze({
@@ -119,7 +128,11 @@ function compactionLimits(limits: {contextWindow: number; maxTokens: number}): {
   return {reserve, keepRecent};
 }
 
-function promptWithContext(request: AgentTurnRequest, identity: PiRunIdentity): string {
+function promptWithContext(
+  request: AgentTurnRequest,
+  identity: PiRunIdentity,
+  inherited?: PiConversation["inheritedContext"],
+): string {
   const context = {
     conversationId: identity.conversationId,
     currentNote: request.activeNote?.path || null,
@@ -130,6 +143,17 @@ function promptWithContext(request: AgentTurnRequest, identity: PiRunIdentity): 
       displayName: item.display_name || "attachment",
     })),
     networkAuthorized: identity.taskAuthorization.networkPolicy === "allow",
+    inheritedBranchContext: inherited ? {
+      activeNote: inherited.activeNote ?? null,
+      attachments: inherited.attachments.map(item => ({
+        id: item.id ?? item.attachmentId ?? item.attachment_id ?? null,
+        kind: item.kind ?? null,
+        displayName: item.displayName ?? item.display_name ?? null,
+        sha256: item.sha256 ?? null,
+      })),
+      focus: inherited.focus,
+      completedActionIds: inherited.completedActionIds,
+    } : null,
   };
   return `${request.message}\n\n<zhixu_turn_context>\n${JSON.stringify(context)}\n</zhixu_turn_context>`;
 }
@@ -157,22 +181,52 @@ export class PiAgentRuntime implements AgentRuntime {
 
   async *query(turn: PreparedAgentTurn, signal?: AbortSignal): AsyncGenerator<AgentChunk> {
     const identity = (turn.payload as PiPreparedPayload).identity;
+    const localConversationId = identity.conversationId;
+    const seededSession = this.conversations.get(localConversationId);
+    const branchSeed = seededSession?.branchSeedPending === true ? seededSession : null;
+    if (branchSeed) {
+      const seed = branchSeed.identity;
+      identity.conversationId = seed.conversationId;
+      identity.sessionId = seed.sessionId;
+      identity.runId = seed.runId;
+      identity.turnId = seed.turnId;
+      identity.sourceMessageId = seed.sourceMessageId;
+      identity.parentRunId = seed.parentRunId;
+      identity.forkedFromSequence = seed.forkedFromSequence;
+      identity.forkedFromEntryId = seed.forkedFromEntryId;
+      identity.profileId = identity.profileId || seed.profileId;
+      identity.model = identity.model || seed.model;
+      identity.taskAuthorization = {
+        ...seed.taskAuthorization,
+        objective: turn.request.message,
+      };
+    } else if (seededSession && seededSession.state.runId !== identity.runId) {
+      // Continue the exact local branch, even if another branch appended to
+      // the same persisted session in the meantime.
+      identity.conversationId = seededSession.identity.conversationId;
+      identity.sessionId = seededSession.identity.sessionId;
+      identity.taskAuthorization.sessionId = identity.sessionId;
+      identity.parentRunId = seededSession.state.runId;
+      identity.taskAuthorization.parentRunId = seededSession.state.runId;
+    }
     // Recovery discovery is read-only and must happen before a new Run or
     // Authorization is registered. A valid record rewrites identity to the
     // original persisted lineage in one place.
-    const recovery = await this.findPendingRecovery(identity);
-    const session = await this.session(identity);
+    const recovery = branchSeed ? null : await this.findPendingRecovery(identity);
+    const session = await this.session(identity, localConversationId);
     session.identity = identity;
     session.suspended = false;
     session.stallGuard.reset();
     session.state = {
-      conversationId: identity.conversationId,
+      conversationId: localConversationId,
       runId: identity.runId,
       lastEventSequence: recovery?.lastEventSequence ?? 0,
       selectedModel: identity.model,
       status: "running",
       parentRunId: identity.parentRunId,
       forkedFromSequence: identity.forkedFromSequence,
+      resolvedForkEntryId: identity.forkedFromEntryId,
+      completedActionIds: session.inheritedContext?.completedActionIds ?? [],
     };
     this.runIndex.set(identity.runId, session);
     this.state = {...session.state};
@@ -183,6 +237,7 @@ export class PiAgentRuntime implements AgentRuntime {
         model: identity.model,
         taskAuthorization: identity.taskAuthorization,
       });
+      if (branchSeed) branchSeed.branchSeedPending = false;
     }
     const capabilityPayload = this.transport.modelCapabilities
       ? await this.transport.modelCapabilities(identity.profileId)
@@ -462,8 +517,24 @@ export class PiAgentRuntime implements AgentRuntime {
       const st = session.agent.state as unknown as Record<string, unknown>;
       st.errorMessage = undefined;
       st.status = "idle";
+      const activeNote = turn.request.activeNote?.path
+        ? {
+            path: turn.request.activeNote.path,
+            selectionReference: turn.request.activeNote.selection
+              ? `selection:${turn.request.activeNote.path}`
+              : undefined,
+          }
+        : session.inheritedContext?.activeNote;
+      session.inheritedContext = {
+        activeNote,
+        attachments: turn.request.attachments?.length
+          ? turn.request.attachments.map(item => ({...item}))
+          : session.inheritedContext?.attachments ?? [],
+        focus: session.inheritedContext?.focus ?? {},
+        completedActionIds: session.inheritedContext?.completedActionIds ?? [],
+      };
       running = session.agent
-        .prompt(promptWithContext(turn.request, identity))
+        .prompt(promptWithContext(turn.request, identity, session.inheritedContext))
       .then(async () => {
           if (session.suspended) return;
           if (cancelled || signal?.aborted) await emit(adapter.cancelled());
@@ -809,42 +880,44 @@ export class PiAgentRuntime implements AgentRuntime {
 
   async fork(runId: string, sequence?: number, mode: "fork" | "regenerate" = "fork"): Promise<AgentConversationState> {
     const source = this.runIndex.get(runId);
-    if (!source) throw new Error("pi_run_not_found");
-    // Project the branch context from the chosen point; never copy the full
-    // transcript and never leak messages after the fork point.
-    const projected = projectForkMessages(
-      source.agent.state.messages as unknown as Array<{role: string; toolCall?: unknown}>,
-      sequence,
-      mode,
-    ) as unknown as AgentMessage[];
-    const conversationId = `conversation-${crypto.randomUUID()}`;
+    const forked = await this.transport.runtimeForkProjection(runId, {sequence, mode});
+    const projected = projectPiSessionMessages(forked.projection);
+    const localConversationId = `conversation-${crypto.randomUUID()}`;
+    const persistedConversationId = source?.identity.conversationId
+      ?? forked.sourceContext?.conversationId
+      ?? forked.sessionId;
     const runIdValue = `pi-run-${crypto.randomUUID()}`;
     const turnId = `turn-${crypto.randomUUID()}`;
     const sourceMessageId = `message-${crypto.randomUUID()}`;
-    const forkedFromSequence = sequence ?? source.state.lastEventSequence;
+    const forkedFromSequence = forked.resolvedForkSequence;
+    const selectedModel = source?.state.selectedModel ?? forked.sourceContext?.selectedModel ?? "";
     const identity: PiRunIdentity = {
-      ...source.identity,
-      conversationId,
-      sessionId: conversationId,
+      conversationId: persistedConversationId,
+      sessionId: forked.sessionId,
       runId: runIdValue,
       turnId,
       sourceMessageId,
+      profileId: source?.identity.profileId ?? "",
+      model: selectedModel,
       parentRunId: runId,
       forkedFromSequence,
+      forkedFromEntryId: forked.resolvedForkEntryId,
       taskAuthorization: {
-        ...source.identity.taskAuthorization,
         id: `authorization-${crypto.randomUUID()}`,
-        sessionId: conversationId,
+        sessionId: forked.sessionId,
         runId: runIdValue,
         turnId,
         sourceMessageId,
+        objective: mode === "regenerate" ? "重新生成分支" : "继续分支",
         parentRunId: runId,
         forkedFromSequence,
+        forkedFromEntryId: forked.resolvedForkEntryId,
         resourceScope: {
           currentNote: false,
           explicitVaultPaths: [],
           createRoots: [],
           workspaceId: "",
+          workspaceIds: [],
           projectPaths: [],
           // A fork never inherits the source's blanket capability grant.
           allowAllRunCapabilities: false,
@@ -853,21 +926,42 @@ export class PiAgentRuntime implements AgentRuntime {
           initialWriteBoundAt: null,
         },
         operationScope: [],
+        reversibleOnly: true,
         // Network is never inherited across a fork: the new branch must earn it.
         networkPolicy: "deny",
+        externalSideEffects: false,
+        expiresAtRunEnd: true,
       },
     };
-    const target = await this.session(identity);
+    const target = await this.session(identity, localConversationId);
     target.agent.state.messages = projected;
+    target.branchSeedPending = true;
+    target.inheritedContext = {
+      activeNote: source?.inheritedContext?.activeNote ?? forked.sourceContext?.activeNote ?? undefined,
+      attachments: [
+        ...(source?.inheritedContext?.attachments ?? []),
+        ...forked.projection.attachments,
+      ].filter((item, index, values) => {
+        const id = String(item.id ?? item.attachmentId ?? item.attachment_id ?? "");
+        return values.findIndex(candidate => String(
+          candidate.id ?? candidate.attachmentId ?? candidate.attachment_id ?? "",
+        ) === id) === index;
+      }),
+      focus: forked.projection.focus,
+      completedActionIds: [...forked.completedActionIds],
+    };
     target.state = {
-      conversationId,
+      conversationId: localConversationId,
       runId: identity.runId,
-      lastEventSequence: sequence ?? source.state.lastEventSequence,
-      selectedModel: source.state.selectedModel,
+      lastEventSequence: 0,
+      selectedModel,
       status: "idle",
       parentRunId: runId,
       forkedFromSequence,
+      resolvedForkEntryId: forked.resolvedForkEntryId,
+      completedActionIds: [...forked.completedActionIds],
     };
+    this.runIndex.set(identity.runId, target);
     return {...target.state};
   }
 
@@ -897,13 +991,16 @@ export class PiAgentRuntime implements AgentRuntime {
     this.state = null;
   }
 
-  private async session(identity: PiRunIdentity): Promise<PiConversation> {
-    const existing = this.conversations.get(identity.conversationId);
+  private async session(
+    identity: PiRunIdentity,
+    localConversationId = identity.conversationId,
+  ): Promise<PiConversation> {
+    const existing = this.conversations.get(localConversationId);
     if (existing) {
       // If the agent was aborted/errored on a previous run, discard the
       // stale session so a fresh Agent is created for the next turn.
       if (existing.agent.state.errorMessage || (existing.agent.state as unknown as Record<string, unknown>).status === "failed") {
-        this.conversations.delete(identity.conversationId);
+        this.conversations.delete(localConversationId);
       } else {
         return existing;
       }
@@ -973,12 +1070,13 @@ export class PiAgentRuntime implements AgentRuntime {
     }
     const session: PiConversation = {
       agent,
+      localConversationId,
       identity,
       events: [],
       stallGuard: holder.stallGuard,
       modelLimits: holder.modelLimits,
       state: {
-        conversationId: identity.conversationId,
+        conversationId: localConversationId,
         runId: identity.runId,
         lastEventSequence: 0,
         selectedModel: identity.model,
@@ -1003,7 +1101,7 @@ export class PiAgentRuntime implements AgentRuntime {
       enumerable: true,
       configurable: false,
     });
-    this.conversations.set(identity.conversationId, session);
+    this.conversations.set(localConversationId, session);
     return session;
   }
 }

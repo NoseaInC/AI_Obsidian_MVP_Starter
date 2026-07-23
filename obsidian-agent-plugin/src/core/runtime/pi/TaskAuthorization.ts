@@ -44,6 +44,7 @@ export function createTurnIdentity(request: AgentTurnRequest): PiRunIdentity {
     expiresAtRunEnd: true,
     parentRunId: request.parentRunId,
     forkedFromSequence: request.forkedFromSequence,
+    forkedFromEntryId: request.resolvedForkEntryId,
   };
   return {
     conversationId,
@@ -56,5 +57,6 @@ export function createTurnIdentity(request: AgentTurnRequest): PiRunIdentity {
     taskAuthorization,
     parentRunId: request.parentRunId,
     forkedFromSequence: request.forkedFromSequence,
+    forkedFromEntryId: request.resolvedForkEntryId,
   };
 }

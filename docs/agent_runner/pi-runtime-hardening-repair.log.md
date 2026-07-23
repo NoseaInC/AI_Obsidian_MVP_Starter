@@ -39,4 +39,15 @@
 
 ## R04 — Pending Permission 重启恢复
 
+状态：已完成
+
+- 恢复顺序：先按 session 查 pending 并由后端验证，成功后直接换回原 run/turn/Authorization；只有无可恢复记录时才注册新 Run。
+- 安全验证：持久化无正文的 Vault/Workspace guard；检查 active Authorization、Tool Contract、工作区、路径、protected/base hash/碰撞、可逆性和已持久化 Tool Result。
+- 继续执行：优先复用 R03 标准 Tool Call；Tool Result 先持久化，再注入 Pi 消息、标记 pending completed 并调用 `agent.continue()`；拒绝注入 blocked Result。
+- 目标测试：后端 pending/session/security 38/38，前端 permission recovery/e2e/projector 21/21；覆盖连续两次重启、重复确认、失效/stale/missing 边界和完成后不再出卡。
+- 完整门禁：Python compileall 与 227/227 tests、plugin 152/152 tests、typecheck、build、`./scripts/check.sh` 全部通过。
+- 提交：`15a127b fix: resume pending pi tool calls from the original persisted run`
+
+## R05 — 基于 Session Entry 的 Fork / Regenerate
+
 状态：进行中

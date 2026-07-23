@@ -49,6 +49,7 @@ export interface PiTaskAuthorization {
   expiresAtRunEnd: true;
   parentRunId?: string;
   forkedFromSequence?: number;
+  forkedFromEntryId?: string;
 }
 
 export interface PiRunIdentity {
@@ -62,6 +63,7 @@ export interface PiRunIdentity {
   taskAuthorization: PiTaskAuthorization;
   parentRunId?: string;
   forkedFromSequence?: number;
+  forkedFromEntryId?: string;
 }
 
 export type PiSessionProjectionEntry = {
@@ -88,6 +90,24 @@ export type PiSessionProjection = {
   pending: Record<string, unknown> | null;
   compaction: Record<string, unknown> | null;
   schemaVersion: number;
+  completedActionIds?: string[];
+};
+
+export type PiForkProjection = {
+  sourceRunId: string;
+  sessionId: string;
+  mode: "fork" | "regenerate";
+  requestedSequence: number | null;
+  resolvedForkEntryId: string;
+  resolvedForkSequence: number;
+  completedActionIds: string[];
+  sourceContext?: {
+    conversationId?: string;
+    selectedModel?: string;
+    activeNote?: {path?: string; selection?: string} | null;
+  };
+  projection: PiSessionProjection;
+  schemaVersion: number;
 };
 
 export type PiRuntimeTool = AgentTool<any, Record<string, unknown>>;
@@ -109,6 +129,10 @@ export interface PiRuntimeTransport {
     sessionId: string,
     options?: {leafId?: string; runId?: string; uptoSequence?: number},
   ): Promise<PiSessionProjection>;
+  runtimeForkProjection(
+    runId: string,
+    options?: {sequence?: number; mode?: "fork" | "regenerate"},
+  ): Promise<PiForkProjection>;
   controlRuntimeRun(runId: string, type: "steering" | "follow_up", text: string): Promise<Record<string, unknown>>;
   cancelRuntimeRun(runId: string): Promise<Record<string, unknown>>;
   toolContracts(): Promise<{schemaVersion: number; items: PiToolContract[]}>;

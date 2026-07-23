@@ -109,6 +109,31 @@ test("fork creates a new authorization lineage without mutating the source branc
   const registered = [];
   const transport = baseTransport({
     async registerTaskAuthorization(body) { registered.push(body.taskAuthorization); return {taskAuthorization: body.taskAuthorization}; },
+    async runtimeForkProjection(runId, body) {
+      return {
+        sourceRunId: runId,
+        sessionId: "source-conversation",
+        mode: body.mode ?? "fork",
+        requestedSequence: body.sequence ?? null,
+        resolvedForkEntryId: "entry-source-1",
+        resolvedForkSequence: body.sequence ?? 1,
+        completedActionIds: [],
+        projection: {
+          sessionId: "source-conversation",
+          leafId: "entry-source-1",
+          branchId: runId,
+          entries: [],
+          messages: [{role: "user", content: "source", timestamp: 1}],
+          focus: {},
+          attachments: [],
+          activeActions: [],
+          pending: null,
+          compaction: null,
+          schemaVersion: 1,
+        },
+        schemaVersion: 1,
+      };
+    },
     async streamModelProxy(_body, onEvent) {
       onEvent({type: "start"}); onEvent({type: "text_start"}); onEvent({type: "text_delta", delta: "source"}); onEvent({type: "text_end"}); onEvent({type: "done", finishReason: "stop"});
     },
@@ -124,6 +149,7 @@ test("fork creates a new authorization lineage without mutating the source branc
     assert.notEqual(fork.runId, sourceRunId);
     assert.equal(fork.parentRunId, sourceRunId);
     assert.equal(fork.forkedFromSequence, 1);
+    assert.equal(fork.resolvedForkEntryId, "entry-source-1");
     assert.equal(registered.length, 1);
     assert.equal(registered[0].runId, sourceRunId);
   } finally { await dispose(); }

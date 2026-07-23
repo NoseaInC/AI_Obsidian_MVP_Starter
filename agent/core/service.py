@@ -1732,6 +1732,15 @@ class AgentService:
             upto_sequence=upto_sequence,
         )
 
+    def pi_fork_projection(
+        self,
+        run_id: str,
+        *,
+        sequence: int | None = None,
+        mode: str = "fork",
+    ) -> dict[str, Any]:
+        return self.store.project_pi_fork_context(run_id, sequence, mode)
+
     _PENDING_TOOL_CALL_STATES = {
         "pending",
         "allowed",

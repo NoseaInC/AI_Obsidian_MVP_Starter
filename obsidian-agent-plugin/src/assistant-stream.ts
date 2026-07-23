@@ -148,6 +148,19 @@ export interface AssistantLiveRun {
   };
 }
 
+export interface PersistedAssistantTrace {
+  schemaVersion: 1;
+  runId: string;
+  model: string;
+  status: AssistantLiveRun["status"];
+  reasoningBlocks: AssistantLiveRun["reasoningBlocks"];
+  context?: AssistantLiveRun["context"];
+  steps: AssistantLiveRun["steps"];
+  plannerRound: number;
+  toolCalls: Array<Pick<AssistantLiveRun["toolCalls"][number], "id" | "tool" | "status" | "summary" | "purpose">>;
+  vaultAction?: Record<string, unknown> | null;
+}
+
 export function initialAssistantLiveRun(): AssistantLiveRun {
   return {
     runId: "",
@@ -165,6 +178,50 @@ export function initialAssistantLiveRun(): AssistantLiveRun {
     plannerRound: 0,
     toolCalls: [],
   };
+}
+
+export function isAssistantLiveRunActive(status: AssistantLiveRun["status"]): boolean {
+  return status === "running" || status === "waiting_confirmation";
+}
+
+/**
+ * Keep only the UI-facing, local trace projection. Tool inputs/results can
+ * contain large note excerpts, so they remain in the governed Run event store
+ * and are never duplicated into ordinary conversation-message metadata.
+ */
+export function buildAssistantMessageMetadata(
+  run: AssistantLiveRun,
+  vaultAction: Record<string, unknown> | null = null,
+): {piTrace: PersistedAssistantTrace} {
+  return {
+    piTrace: {
+      schemaVersion: 1,
+      runId: run.runId,
+      model: run.model,
+      status: run.status,
+      reasoningBlocks: run.reasoningBlocks
+        .filter(block => block.content.trim())
+        .map(block => ({...block, status: "completed"})),
+      context: run.context,
+      steps: run.steps.map(step => ({...step})),
+      plannerRound: run.plannerRound,
+      toolCalls: run.toolCalls.map(({id, tool, status, summary, purpose}) => ({
+        id,
+        tool,
+        status,
+        summary,
+        purpose,
+      })),
+      vaultAction,
+    },
+  };
+}
+
+export function persistedAssistantTrace(message: Record<string, any>): PersistedAssistantTrace | null {
+  const raw = message?.metadata?.piTrace;
+  if (!raw || typeof raw !== "object" || raw.schemaVersion !== 1) return null;
+  if (!Array.isArray(raw.steps) || !Array.isArray(raw.toolCalls) || !Array.isArray(raw.reasoningBlocks)) return null;
+  return raw as PersistedAssistantTrace;
 }
 
 export function reduceAssistantStream(
@@ -476,7 +533,7 @@ export function agentChunkToAssistantEvent(chunk: AgentChunk): AssistantStreamEv
 export function cancelledAssistantRun(
   state: AssistantLiveRun,
 ): AssistantLiveRun {
-  return state.status === "running"
+  return isAssistantLiveRunActive(state.status)
     ? {...state, status: "cancelled"}
     : state;
 }

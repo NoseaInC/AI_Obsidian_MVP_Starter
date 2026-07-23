@@ -17,7 +17,7 @@ export interface AgentRuntime {
   followUp(runId: string, text: string): Promise<void>;
   cancel(runId: string): Promise<void>;
   compact(runId: string): Promise<AgentChunk>;
-  fork(runId: string, sequence?: number): Promise<AgentConversationState>;
+  fork(runId: string, sequence?: number, mode?: "fork" | "regenerate"): Promise<AgentConversationState>;
   syncConversationState(state: AgentConversationState | null): void;
   getConversationState(): AgentConversationState | null;
   cleanup(): void;

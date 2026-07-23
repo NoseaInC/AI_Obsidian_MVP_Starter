@@ -180,37 +180,4 @@ export function projectPiSessionMessages(projection: PiSessionProjection): Agent
   return messages;
 }
 
-type ForkMessage = {
-  role: string;
-  toolCall?: unknown;
-};
-
-function isAssistantToolCall(message: ForkMessage): boolean {
-  return message.role === "assistant" && message.toolCall != null;
-}
-
-function isToolResult(message: ForkMessage): boolean {
-  return message.role === "toolResult";
-}
-
-export type ForkMode = "fork" | "regenerate";
-
-/** Legacy in-memory fork slicing retained until R05 moves boundaries to entries. */
-export function projectForkMessages<T extends ForkMessage>(
-  messages: ReadonlyArray<T>,
-  sequence: number | null | undefined,
-  mode: ForkMode = "fork",
-): T[] {
-  const total = messages.length;
-  if (total === 0) return [];
-  const forkIndex = sequence == null ? total : Math.max(0, Math.min(total, Math.floor(sequence)));
-  const keep = mode === "regenerate" ? Math.max(0, forkIndex - 1) : forkIndex;
-  let kept = messages.slice(0, keep);
-  if (kept.length && isAssistantToolCall(kept[kept.length - 1] as ForkMessage)) {
-    const next = messages[keep] as ForkMessage | undefined;
-    if (next && isToolResult(next)) kept = kept.slice(0, kept.length - 1);
-  }
-  return kept;
-}
-
 export default projectPiSessionMessages;

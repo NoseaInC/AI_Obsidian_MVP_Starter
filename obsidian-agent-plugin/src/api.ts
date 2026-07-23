@@ -169,6 +169,15 @@ export class AgentClient {
     const query = params.toString();
     return this.get(`/agent/sessions/${encodeURIComponent(sessionId)}/projection${query ? `?${query}` : ""}`);
   }
+  async runtimeForkProjection(
+    runId: string,
+    options: {sequence?: number; mode?: "fork" | "regenerate"} = {},
+  ): Promise<any> {
+    return this.post(`/agent/runs/${encodeURIComponent(runId)}/fork-projection`, {
+      mode: options.mode ?? "fork",
+      ...(options.sequence != null ? {sequence: Math.max(0, options.sequence)} : {}),
+    });
+  }
   async controlRuntimeRun(runId: string, type: "steering" | "follow_up", text: string): Promise<any> {
     return this.post(`/agent/runs/${encodeURIComponent(runId)}/control`, {type, text});
   }

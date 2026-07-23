@@ -60,7 +60,7 @@ test("NDJSON parser survives arbitrary transport fragmentation", async () => {
   assert.deepEqual(events.map(item => item.type), ["run.started", "message.delta", "run.completed"]);
 });
 
-test("cancel keeps partial output and changes only a running run", async () => {
+test("cancel keeps partial output and changes any active run", async () => {
   const mod = await moduleUnderTest();
   let state = mod.initialAssistantLiveRun();
   state = mod.reduceAssistantStream(state, event(1, "run.started"));
@@ -68,6 +68,7 @@ test("cancel keeps partial output and changes only a running run", async () => {
   state = mod.cancelledAssistantRun(state);
   assert.equal(state.status, "cancelled");
   assert.equal(state.content, "已返回部分");
+  assert.equal(mod.cancelledAssistantRun({...state, status: "waiting_confirmation"}).status, "cancelled");
   assert.equal(mod.cancelledAssistantRun({...state, status: "completed"}).status, "completed");
 });
 
@@ -120,6 +121,38 @@ test("provider reasoning blocks remain separate, ordered and collapsible from fi
   }]);
   assert.equal(state.content, "这是最终回答。");
   assert.doesNotMatch(state.content, /先核对上下文/);
+});
+
+test("completed trace metadata round-trips reasoning without duplicating tool payloads", async () => {
+  const mod = await moduleUnderTest();
+  let state = mod.initialAssistantLiveRun();
+  state = mod.reduceAssistantStream(state, event(1, "run.started", {model: "deepseek-reasoner"}));
+  state = mod.reduceAssistantStream(state, event(2, "reasoning.delta", {
+    blockId: "provider-reasoning-0", provider: "deepseek-reasoner", delta: "只保存在本地轨迹。",
+  }));
+  state = mod.reduceAssistantStream(state, event(3, "tool.completed", {
+    callId: "call-1", tool: "read_note_excerpt", status: "completed", summary: "读取完成",
+    result: {content: "不能复制到消息元数据的长笔记正文"},
+  }));
+  state = mod.reduceAssistantStream(state, event(4, "run.completed"));
+
+  const metadata = mod.buildAssistantMessageMetadata(state, {actionId: "action-1"});
+  const trace = mod.persistedAssistantTrace({metadata});
+  assert.equal(trace.runId, "run-1");
+  assert.equal(trace.status, "completed");
+  assert.equal(trace.reasoningBlocks[0].content, "只保存在本地轨迹。");
+  assert.deepEqual(trace.vaultAction, {actionId: "action-1"});
+  assert.equal(trace.toolCalls[0].tool, "read_note_excerpt");
+  assert.equal("result" in trace.toolCalls[0], false);
+  assert.equal("input" in trace.toolCalls[0], false);
+  assert.equal(mod.persistedAssistantTrace({metadata: {piTrace: {schemaVersion: 2}}}), null);
+});
+
+test("waiting confirmation remains an active cancellable run", async () => {
+  const mod = await moduleUnderTest();
+  assert.equal(mod.isAssistantLiveRunActive("running"), true);
+  assert.equal(mod.isAssistantLiveRunActive("waiting_confirmation"), true);
+  assert.equal(mod.isAssistantLiveRunActive("completed"), false);
 });
 
 test("web search sources remain ordered, public and visible to the inspector", async () => {
@@ -206,11 +239,13 @@ test("assistant production surface uses Pi model proxy, stop and three inspector
   ]);
   assert.match(api, /\/model\/stream/);
   assert.match(api, /cancelRuntimeRun/);
+  assert.match(api, /updateMessageMetadata/);
   assert.match(api, /response\.body\.getReader/);
   assert.match(views, /停止生成/);
   assert.match(views, /reduceAssistantStream/);
   assert.match(views, /paintAssistantLiveTrace\(activeTrace, this\.assistantLiveRun\)/);
   assert.match(views, /regenerateMessageId/);
+  assert.match(views, /this\.agentRuntime\.fork\(regenerateRunId, undefined, "regenerate"\)/);
   assert.match(views, /编辑后重发/);
   assert.match(views, /复制消息/);
   assert.match(views, /重新生成/);
@@ -218,6 +253,8 @@ test("assistant production surface uses Pi model proxy, stop and three inspector
   assert.match(views, /PiAgentRuntime/);
   assert.doesNotMatch(views, /PydanticAgentRuntime/);
   assert.match(views, /resumeInlineConfirmation/);
+  assert.match(views, /runConversationId = conversationId/);
+  assert.match(views, /buildAssistantMessageMetadata/);
   const queryLoop = views.indexOf("for await (const chunk of this.agentRuntime.query");
   const livePermissionMount = views.indexOf('event.type === "inline.confirmation.required"', queryLoop);
   const confirmationResume = views.indexOf("const resumeInlineConfirmation", livePermissionMount);

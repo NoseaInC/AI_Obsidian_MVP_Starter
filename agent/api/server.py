@@ -255,6 +255,16 @@ class Handler(BaseHTTPRequestHandler):
                     path.removeprefix("/agent/runs/").removesuffix("/control")
                 )
                 self._send(200, self.service.control_pi_run(run_id, body)); return
+            if path.startswith("/agent/runs/") and path.endswith("/fork-projection"):
+                run_id = self._identifier(
+                    path.removeprefix("/agent/runs/").removesuffix("/fork-projection")
+                )
+                raw_sequence = body.get("sequence")
+                self._send(200, self.service.pi_fork_projection(
+                    run_id,
+                    sequence=max(0, int(raw_sequence)) if raw_sequence is not None else None,
+                    mode=str(body.get("mode") or "fork"),
+                )); return
             if path.startswith("/agent/runs/") and path.endswith("/cancel"):
                 run_id = self._identifier(
                     path.removeprefix("/agent/runs/").removesuffix("/cancel")

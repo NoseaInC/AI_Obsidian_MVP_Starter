@@ -47,8 +47,11 @@ import {
 import {
   AssistantLiveRun,
   agentChunkToAssistantEvent,
+  buildAssistantMessageMetadata,
   cancelledAssistantRun,
   initialAssistantLiveRun,
+  isAssistantLiveRunActive,
+  persistedAssistantTrace,
   reduceAssistantStream,
 } from "./assistant-stream";
 import {ObsidianAssistantMarkdownRenderer, ProgressiveAssistantMarkdown} from "./markdown-renderer";
@@ -473,10 +476,6 @@ export class LearningAgentMainView extends ItemView {
   private conversationId = "";
   private assistantMessages: any[] = [];
   private conversationMessageCache = new Map<string, Record<string, any>[]>();
-  // conversationId → [[traceSteps, ...], ...] — 按完成顺序存储 trace
-  private pendingTraces = new Map<string, any[][]>();
-  // conversationId → offset — 渲染时当前匹配到的 trace 位置（不消费队列）
-  private pendingTraceOffsets = new Map<string, number>();
   private assistantArtifacts: any[] = [];
   private assistantTaskThread: AssistantTaskThread | null = null;
   private assistantArtifactGroup: ArtifactGroup | null = null;
@@ -498,6 +497,7 @@ export class LearningAgentMainView extends ItemView {
   private assistantDraft = "";
   private assistantSubmitInFlight = false;
   private assistantRegenerateMessageId = "";
+  private assistantRegenerateRunId = "";
   private assistantToday = new Set<string>();
   private pendingAttachments: any[] = [];
   private abort: AbortController | null = null;
@@ -614,7 +614,7 @@ export class LearningAgentMainView extends ItemView {
         const response = await this.client.post<any>("/conversations", {title: "新会话"});
         if (this.conversationId) this.assistantLiveRuns.set(this.conversationId, this.assistantLiveRun);
         this.conversationId = String(response.conversation.id); this.assistantMessages = []; this.assistantArtifacts = [];
-        this.pendingAttachments = []; this.assistantDraft = ""; this.assistantRegenerateMessageId = ""; this.assistantLiveRun = initialAssistantLiveRun(); this.assistantVisibleMessageLimit = 160; await this.refresh();
+        this.pendingAttachments = []; this.assistantDraft = ""; this.assistantRegenerateMessageId = ""; this.assistantRegenerateRunId = ""; this.assistantLiveRun = initialAssistantLiveRun(); this.assistantVisibleMessageLimit = 160; await this.refresh();
       };
       const search = actions.createDiv({cls: "la-conversation-search"}); setIcon(search.createSpan(), "search");
       const searchInput = search.createEl("input", {attr: {placeholder: "搜索对话", "aria-label": "搜索历史会话"}});
@@ -1968,11 +1968,6 @@ export class LearningAgentMainView extends ItemView {
         } else {
           this.assistantMessages = backendMessages;
         }
-        console.log("[renderAssistant] conversationId=%s messages=%d cacheLen=%d traces=%d/%d",
-          this.conversationId, this.assistantMessages.length,
-          cached?.length ?? 0,
-          this.assistantMessages.filter((m: any) => Array.isArray(m._traceSteps) && m._traceSteps.length > 0).length,
-          this.assistantMessages.filter((m: any) => Array.isArray(m.reasoningBlocks) && m.reasoningBlocks.length > 0).length);
         // 不覆盖缓存！只在不存在时设置初始值
         if (!this.conversationMessageCache.has(this.conversationId)) {
           this.conversationMessageCache.set(this.conversationId, [...this.assistantMessages]);
@@ -2045,7 +2040,7 @@ export class LearningAgentMainView extends ItemView {
       for (const conversation of conversations.items ?? []) menu.addItem(item => item
         .setTitle(`${conversation.title} · ${conversation.messageCount} 条`)
         .setIcon(conversation.id === this.conversationId ? "check" : "message-square")
-        .onClick(() => { if (this.conversationId) this.assistantLiveRuns.set(this.conversationId, this.assistantLiveRun); this.conversationId = String(conversation.id); this.assistantLiveRun = this.assistantLiveRuns.get(this.conversationId) ?? initialAssistantLiveRun(); this.assistantRun = null; this.assistantVisibleMessageLimit = 160; void this.refresh(); }));
+        .onClick(() => { if (this.conversationId) this.assistantLiveRuns.set(this.conversationId, this.assistantLiveRun); this.conversationId = String(conversation.id); this.assistantLiveRun = this.assistantLiveRuns.get(this.conversationId) ?? initialAssistantLiveRun(); this.assistantRegenerateMessageId = ""; this.assistantRegenerateRunId = ""; this.assistantRun = null; this.assistantVisibleMessageLimit = 160; void this.refresh(); }));
       if (this.conversationId) {
         menu.addSeparator();
         menu.addItem(item => item.setTitle("导出当前会话（本地）").setIcon("download").onClick(async () => {
@@ -2073,7 +2068,7 @@ export class LearningAgentMainView extends ItemView {
       if (this.conversationId) this.assistantLiveRuns.set(this.conversationId, this.assistantLiveRun);
       this.conversationId = String(response.conversation.id); this.assistantMessages = []; this.assistantArtifacts = [];
       this.assistantTaskThread = null; this.assistantArtifactGroup = null;
-      this.pendingAttachments = []; this.assistantDraft = ""; this.assistantRegenerateMessageId = ""; this.assistantRun = null; this.assistantVisibleMessageLimit = 160; await this.refresh();
+      this.pendingAttachments = []; this.assistantDraft = ""; this.assistantRegenerateMessageId = ""; this.assistantRegenerateRunId = ""; this.assistantRun = null; this.assistantVisibleMessageLimit = 160; await this.refresh();
     };
     const setInspectorOpen = (open: boolean): void => {
       this.assistantInspectorOpen = open;
@@ -2156,6 +2151,7 @@ export class LearningAgentMainView extends ItemView {
     input.oninput = () => {
       this.assistantDraft = input.value;
       this.assistantRegenerateMessageId = "";
+      this.assistantRegenerateRunId = "";
     };
     const composerTools = composer.createDiv({cls: "la-composer-tools"});
     const fileInput = composerTools.createEl("input", {type: "file", cls: "la-visually-hidden", attr: {multiple: "true", accept: ".pdf,.md,.txt,.json,text/plain,text/markdown,application/pdf"}});
@@ -2423,7 +2419,7 @@ export class LearningAgentMainView extends ItemView {
         });
       }
     };
-    const isLiveRunActive = this.assistantLiveRun.status === "running" || this.assistantLiveRun.status === "waiting_confirmation";
+    const isLiveRunActive = isAssistantLiveRunActive(this.assistantLiveRun.status);
     paintSendButton(isLiveRunActive);
     if (isLiveRunActive) {
       input.setAttribute("placeholder", "运行中：输入可调整当前任务；也可从 + 选择完成后继续");
@@ -2472,10 +2468,11 @@ export class LearningAgentMainView extends ItemView {
     const sendMessage = async (): Promise<void> => {
       let content = input.value.trim();
       const regenerateMessageId = this.assistantRegenerateMessageId;
-      if (this.assistantSubmitInFlight && this.assistantLiveRun.status !== "running") return;
-      if (this.assistantLiveRun.status === "running") {
+      const regenerateRunId = this.assistantRegenerateRunId;
+      if (this.assistantSubmitInFlight && !isAssistantLiveRunActive(this.assistantLiveRun.status)) return;
+      if (isAssistantLiveRunActive(this.assistantLiveRun.status)) {
         const activeRunId = this.assistantLiveRun.runId;
-        if (content && activeRunId) {
+        if (this.assistantLiveRun.status === "running" && content && activeRunId) {
           await this.agentRuntime.steer(activeRunId, content);
           const user = messages.createDiv({cls: "la-message la-message--user"});
           user.createDiv({cls: "la-message-copy", text: content});
@@ -2501,10 +2498,14 @@ export class LearningAgentMainView extends ItemView {
       const submittedDraft = content;
       let progressiveMarkdown: ProgressiveAssistantMarkdown | null = null;
       let awaitingInlineConfirmation = false;
-      const runConversationId = this.conversationId;
+      let runConversationId = this.conversationId;
       let liveRun = initialAssistantLiveRun();
       try {
         const conversationId = await ensureConversation();
+        // The first message in an empty Vault creates its conversation here.
+        // Bind the Run only after that stable identity exists; capturing the
+        // earlier empty string makes every later event look like another chat.
+        runConversationId = conversationId;
         if (!this.pendingAttachments.length && /^\/(?:Users|Volumes)\/[^\n]+$/.test(content)) {
           const pathResult = await this.client.post<any>("/intake/attachments", {conversation_id: conversationId, path: content, explicit_user_selection: true});
           if (pathResult.attachment?.requiresConfirmation) {
@@ -2514,6 +2515,9 @@ export class LearningAgentMainView extends ItemView {
         }
         const mentionedNotePath = referencedVaultNotePath(content);
         const contextualNotePath = currentFile && isAssistantReadableVaultPath(currentFile.path) ? currentFile.path : mentionedNotePath;
+        const runtimeConversationId = regenerateMessageId
+          ? (await this.agentRuntime.fork(regenerateRunId, undefined, "regenerate")).conversationId
+          : conversationId;
         if (!regenerateMessageId) {
           const user = messages.createDiv({cls: "la-message la-message--user"});
           const userCopy = user.createDiv({cls: "la-message-copy"}); userCopy.createEl("p", {text: content || "处理这些附件"});
@@ -2553,7 +2557,7 @@ export class LearningAgentMainView extends ItemView {
         const turn = this.agentRuntime.prepareTurn({
           message: content || "请处理这些附件并告诉我下一步",
           regenerateMessageId: regenerateMessageId || undefined,
-          conversationId,
+          conversationId: runtimeConversationId,
           profileId: selectedProfileId,
           model: enabledProfiles.find(item => item.id === selectedProfileId)?.defaultModel || undefined,
           attachments: this.pendingAttachments.map(item => ({
@@ -2646,6 +2650,26 @@ export class LearningAgentMainView extends ItemView {
         // Store the completed liveRun for this conversation
         this.assistantLiveRuns.set(runConversationId, liveRun);
 
+        const appliedCall = [...liveRun.toolCalls].reverse().find(
+          item => item.tool === "apply_vault_change" && item.status === "completed",
+        );
+        const nestedResult = appliedCall?.result?.result;
+        const vaultAction = nestedResult && typeof nestedResult === "object" && !Array.isArray(nestedResult)
+          ? (nestedResult as Record<string, unknown>)
+          : null;
+        const messageMetadata = buildAssistantMessageMetadata(liveRun, vaultAction);
+        if (liveRun.runId && (liveRun.content || liveRun.status === "completed")) {
+          // The terminal Run event is persisted before it reaches this loop, so
+          // the backend assistant message already exists. Metadata persistence
+          // is best-effort and must never turn a completed model Run into a UI
+          // failure if the local service is restarting.
+          await this.client.updateMessageMetadata(
+            runConversationId,
+            `pi-assistant-${liveRun.runId}`,
+            messageMetadata,
+          ).catch(() => undefined);
+        }
+
         // If user switched away, don't add messages to another conversation
         if (this.conversationId !== runConversationId) {
           this.assistantLiveTraceEls.delete(runConversationId);
@@ -2662,15 +2686,9 @@ export class LearningAgentMainView extends ItemView {
           id: this.assistantLiveRun.messageId, role: "assistant", content: this.assistantLiveRun.content,
           createdAt: new Date().toISOString(),
         };
-        const appliedCall = [...liveRun.toolCalls].reverse().find(
-          item => item.tool === "apply_vault_change" && item.status === "completed",
-        );
-        const nestedResult = appliedCall?.result?.result;
-        const vaultAction = nestedResult && typeof nestedResult === "object" && !Array.isArray(nestedResult)
-          ? (nestedResult as Record<string, any>)
-          : null;
         const completedMessage: Record<string, any> = {
           ...completedMessageBase,
+          metadata: messageMetadata,
           reasoningBlocks: this.assistantLiveRun.reasoningBlocks
             .filter(block => block.content.trim())
             .map(block => ({...block, status: "completed"})),
@@ -2688,16 +2706,8 @@ export class LearningAgentMainView extends ItemView {
           this.assistantMessages.push({id: `local-user-${Date.now()}`, role: "user", content, createdAt: new Date().toISOString()});
           this.assistantMessages.push(completedMessage);
           this.conversationMessageCache.set(runConversationId, [...this.assistantMessages]);
-          // 按对话顺序存储 trace steps，用于切换后恢复
-          const traceLen = completedMessage._traceSteps?.length ?? 0;
-          if (traceLen > 0) {
-            const queue = this.pendingTraces.get(runConversationId) ?? [];
-            queue.push(completedMessage._traceSteps);
-            this.pendingTraces.set(runConversationId, queue);
-            console.log("[saveTrace] saved to pendingTraces, queue now has %d entries", queue.length);
-          }
         }
-        this.pendingAttachments = []; input.value = ""; this.assistantDraft = ""; this.assistantRegenerateMessageId = "";
+        this.pendingAttachments = []; input.value = ""; this.assistantDraft = ""; this.assistantRegenerateMessageId = ""; this.assistantRegenerateRunId = "";
         this.assistantLiveTraceEls.delete(runConversationId);
         this.assistantLiveAssistantEls.delete(runConversationId);
         this.assistantLiveConfirmationEls.delete(runConversationId);
@@ -3159,7 +3169,7 @@ export class LearningAgentMainView extends ItemView {
   }
 
   private renderConversationMessage(parent: HTMLElement, message: any, previousUserMessage: any = null): void {
-    const piTrace = message?.metadata?.piTrace;
+    const piTrace = persistedAssistantTrace(message);
     if (piTrace && !message._traceSteps) {
       message._traceSteps = piTrace.steps;
       message._traceToolCalls = piTrace.toolCalls;
@@ -3168,6 +3178,8 @@ export class LearningAgentMainView extends ItemView {
       message._traceVaultAction = piTrace.vaultAction;
       message._traceRunId = piTrace.runId;
       message._traceModel = piTrace.model;
+      message._traceStatus = piTrace.status;
+      message.reasoningBlocks = piTrace.reasoningBlocks;
     }
     const root = parent.createDiv({cls: `la-message la-message--${message.role === "user" ? "user" : "assistant"}`});
     if (message.role !== "user") renderAssistantAvatar(root, this.app);
@@ -3188,7 +3200,9 @@ export class LearningAgentMainView extends ItemView {
           conversationId: this.conversationId,
           messageId: String(message.id ?? ""),
           model: String(message._traceModel ?? ""),
-          status: "completed" as const,
+          status: (["completed", "failed", "cancelled"].includes(String(message._traceStatus))
+            ? message._traceStatus
+            : "completed") as "completed" | "failed" | "cancelled",
           content: "",
           reasoningBlocks: Array.isArray(message.reasoningBlocks) ? message.reasoningBlocks : [],
           completedMessage: message,
@@ -3219,6 +3233,7 @@ export class LearningAgentMainView extends ItemView {
         composer.value = String(message.content ?? "");
         this.assistantDraft = composer.value;
         this.assistantRegenerateMessageId = "";
+        this.assistantRegenerateRunId = "";
         composer.focus();
       });
       return;
@@ -3251,8 +3266,9 @@ export class LearningAgentMainView extends ItemView {
     const actions = copy.createDiv({cls: "la-message-actions"});
     iconButton(actions, "copy", "复制回答", () => void navigator.clipboard.writeText(String(message.content ?? "")));
     const previousContent = String(previousUserMessage?.content ?? "");
+    const regenerateRunId = persistedAssistantTrace(message)?.runId ?? String(message._traceRunId ?? "");
     const governedWrite = /(保存|写入|存入\s*Obsidian|更新(?:到|进|当前)|修改(?:当前)?笔记|应用修改|整理到)/i.test(previousContent);
-    if (previousUserMessage?.id && previousContent && !governedWrite) {
+    if (previousUserMessage?.id && previousContent && regenerateRunId && !governedWrite) {
       iconButton(actions, "refresh-cw", "重新生成", () => {
         const composer = this.containerEl.querySelector<HTMLTextAreaElement>('textarea[aria-label="知序统一输入"]');
         const send = this.containerEl.querySelector<HTMLButtonElement>('button[aria-label="发送"]');
@@ -3260,6 +3276,7 @@ export class LearningAgentMainView extends ItemView {
         composer.value = previousContent;
         this.assistantDraft = previousContent;
         this.assistantRegenerateMessageId = String(previousUserMessage.id);
+        this.assistantRegenerateRunId = regenerateRunId;
         send.click();
       });
     }

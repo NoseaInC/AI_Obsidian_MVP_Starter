@@ -23,7 +23,7 @@ class PiSessionTreeTests(unittest.TestCase):
             "turnId": "turn-tree-1",
             "sourceMessageId": "message-tree-1",
             "objective": "读取当前知识并回答",
-            "resourceScope": {"currentNote": True, "explicitVaultPaths": [], "createRoots": ["01-Inbox"], "workspaceId": "", "projectPaths": []},
+            "resourceScope": {"currentNote": True, "explicitVaultPaths": ["20-Knowledge/Drafts/current.md"], "createRoots": ["01-Inbox"], "workspaceId": "", "projectPaths": []},
             "operationScope": ["read"],
             "reversibleOnly": True,
             "networkPolicy": "deny",
@@ -250,6 +250,122 @@ class PiSessionTreeTests(unittest.TestCase):
         assistant = next(item for item in projected["messages"] if item["role"] == "assistant")
         self.assertEqual(assistant["content"][0]["arguments"]["apiKey"], "[redacted]")
         self.assertEqual(assistant["content"][0]["arguments"]["accessToken"], "[redacted]")
+
+    def test_fork_resolves_event_sequences_without_using_message_indexes(self) -> None:
+        self.service.append_pi_events({"runId": "run-tree-1", "events": [
+            {"sequence": 10, "type": "text", "content": "序号十，不是第十条消息。"},
+            {"sequence": 20, "type": "tool_use", "id": "fork-call", "name": "search_vault", "input": {"query": "主线"}},
+            {"sequence": 30, "type": "tool_result", "id": "fork-call", "name": "search_vault", "result": {"result": {"actionId": "action-fork"}}, "status": "completed"},
+            {"sequence": 40, "type": "text", "content": "旧回答"},
+            {"sequence": 50, "type": "done", "status": "completed"},
+        ]})
+        inside_pair = self.service.pi_fork_projection("run-tree-1", sequence=20)
+        self.assertEqual(inside_pair["resolvedForkSequence"], 10)
+        self.assertNotIn("fork-call", json.dumps(inside_pair["projection"]["messages"], ensure_ascii=False))
+
+        after_result = self.service.pi_fork_projection("run-tree-1", sequence=30)
+        roles = [message["role"] for message in after_result["projection"]["messages"]]
+        self.assertEqual(roles, ["user", "assistant", "toolResult"])
+        self.assertEqual(after_result["completedActionIds"], ["action-fork"])
+        self.assertEqual(after_result["sourceContext"], {
+            "conversationId": "conversation-tree",
+            "selectedModel": "fake",
+            "activeNote": {"path": "20-Knowledge/Drafts/current.md"},
+        })
+
+    def test_regenerate_drops_old_answer_and_future_pending_but_keeps_completed_fact(self) -> None:
+        self.service.append_pi_events({"runId": "run-tree-1", "events": [
+            {"sequence": 10, "type": "tool_use", "id": "fact-call", "name": "search_vault", "input": {"query": "fact"}},
+            {"sequence": 20, "type": "tool_result", "id": "fact-call", "name": "search_vault", "result": {"result": {"actionId": "action-complete"}}, "status": "completed"},
+            {"sequence": 30, "type": "text", "content": "需要重新生成的旧回答"},
+            {"sequence": 40, "type": "tool_use", "id": "future-call", "name": "plan_vault_change", "input": {"title": "future", "writes": [{"path": "01-Inbox/future.md", "content": "future"}]}},
+        ]})
+        self.service.save_pending_tool_call("run-tree-1", {
+            "toolCallId": "future-call",
+            "toolName": "plan_vault_change",
+            "turnId": "turn-tree-1",
+            "sessionId": "session-tree-1",
+            "taskAuthorizationId": "auth-tree-1",
+            "arguments": {"title": "future", "writes": [{"path": "01-Inbox/future.md", "content": "future"}]},
+            "permissionRequest": {"type": "vault_writes", "writes": [{"path": "01-Inbox/future.md"}]},
+        })
+        regenerated = self.service.pi_fork_projection("run-tree-1", sequence=30, mode="regenerate")
+        encoded = json.dumps(regenerated["projection"], ensure_ascii=False)
+        self.assertNotIn("需要重新生成的旧回答", encoded)
+        self.assertNotIn("future-call", encoded)
+        self.assertIsNone(regenerated["projection"]["pending"])
+        self.assertEqual(regenerated["completedActionIds"], ["action-complete"])
+        self.assertEqual(regenerated["resolvedForkSequence"], 20)
+
+    def test_forked_authorization_first_entry_uses_resolved_parent_entry(self) -> None:
+        self.service.append_pi_events({"runId": "run-tree-1", "events": [
+            {"sequence": 10, "type": "text", "content": "分支点"},
+            {"sequence": 20, "type": "text", "content": "源分支未来"},
+        ]})
+        forked = self.service.pi_fork_projection("run-tree-1", sequence=10)
+        authorization = {
+            **self.authorization,
+            "id": "auth-real-entry-fork",
+            "runId": "run-real-entry-fork",
+            "turnId": "turn-real-entry-fork",
+            "sourceMessageId": "message-real-entry-fork",
+            "objective": "从真实 Entry 继续",
+            "parentRunId": "run-tree-1",
+            "forkedFromSequence": forked["resolvedForkSequence"],
+            "forkedFromEntryId": forked["resolvedForkEntryId"],
+            "resourceScope": {
+                "currentNote": False,
+                "explicitVaultPaths": [],
+                "createRoots": [],
+                "workspaceId": "",
+                "projectPaths": [],
+            },
+            "operationScope": [],
+            "networkPolicy": "deny",
+        }
+        self.service.register_task_authorization({
+            "conversationId": "conversation-entry-fork",
+            "model": "fake",
+            "taskAuthorization": authorization,
+        })
+        session = self.store.get_pi_session("session-tree-1")
+        first = next(entry for entry in session["entries"] if entry["run_id"] == "run-real-entry-fork")
+        self.assertEqual(first["parent_id"], forked["resolvedForkEntryId"])
+        source = self.service.pi_session_projection("session-tree-1", run_id="run-tree-1")
+        self.assertIn("源分支未来", json.dumps(source["messages"], ensure_ascii=False))
+
+    def test_forking_turn_two_excludes_later_turns(self) -> None:
+        self.service.append_pi_events({"runId": "run-tree-1", "events": [
+            {"sequence": 1, "type": "text", "content": "Turn 1"},
+        ]})
+
+        def add_turn(number: int, parent: str) -> str:
+            run_id = f"run-tree-{number}"
+            authorization = {
+                **self.authorization,
+                "id": f"auth-tree-{number}",
+                "runId": run_id,
+                "turnId": f"turn-tree-{number}",
+                "sourceMessageId": f"message-tree-{number}",
+                "objective": f"User Turn {number}",
+                "parentRunId": parent,
+            }
+            self.service.register_task_authorization({
+                "conversationId": "conversation-tree", "model": "fake", "taskAuthorization": authorization,
+            })
+            self.service.append_pi_events({"runId": run_id, "events": [
+                {"sequence": 1, "type": "text", "content": f"Assistant Turn {number}"},
+            ]})
+            return run_id
+
+        run_two = add_turn(2, "run-tree-1")
+        run_three = add_turn(3, run_two)
+        add_turn(4, run_three)
+        forked = self.service.pi_fork_projection(run_two)
+        encoded = json.dumps(forked["projection"]["messages"], ensure_ascii=False)
+        self.assertIn("Assistant Turn 2", encoded)
+        self.assertNotIn("Assistant Turn 3", encoded)
+        self.assertNotIn("Assistant Turn 4", encoded)
 
 
 if __name__ == "__main__":
