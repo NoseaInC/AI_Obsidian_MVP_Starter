@@ -85,7 +85,7 @@ function terminalCode(events) {
 
 test("no first packet triggers model_first_event_timeout and one terminal", async () => {
   const {module: {PiModelTransport}, dispose} = await loadTransport();
-  const transport = {streamModelProxy: async (_req, _emit, signal) => { await waitAbort(signal); }};
+  const transport = {streamModelProxy: async () => { await new Promise(() => {}); }};
   const t = new PiModelTransport(transport, TEST_TIMEOUTS);
   const events = await collect(t.stream(identity, model, context, {}, undefined));
   assert.equal(terminalCode(events), "model_first_event_timeout");
@@ -95,7 +95,10 @@ test("no first packet triggers model_first_event_timeout and one terminal", asyn
 
 test("stall after first packet triggers model_idle_timeout", async () => {
   const {module: {PiModelTransport}, dispose} = await loadTransport();
-  const transport = {streamModelProxy: async (_req, emit, signal) => { emit({type: "start"}); await waitAbort(signal); }};
+  const transport = {streamModelProxy: async (_req, emit) => {
+    emit({type: "start"});
+    await new Promise(() => {});
+  }};
   const t = new PiModelTransport(transport, TEST_TIMEOUTS);
   const events = await collect(t.stream(identity, model, context, {}, undefined));
   assert.equal(terminalCode(events), "model_idle_timeout");
@@ -128,14 +131,13 @@ test("continuous deltas within idle budget complete without timeout", async () =
 test("exceeding hard deadline triggers model_request_deadline_exceeded", async () => {
   const {module: {PiModelTransport}, dispose} = await loadTransport();
   const transport = {
-    streamModelProxy: async (_req, emit, signal) => {
+    streamModelProxy: async (_req, emit) => {
       emit({type: "start"});
-      let i = 0;
-      while (!signal.aborted) {
-        await delay(40, signal);
-        if (signal.aborted) return;
-        emit({type: "text_delta", delta: String(i += 1)});
+      for (let i = 0; i < 20; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        emit({type: "text_delta", delta: String(i + 1)});
       }
+      await new Promise(() => {});
     },
   };
   const t = new PiModelTransport(transport, TEST_TIMEOUTS);
@@ -164,7 +166,11 @@ test("done emits exactly one terminal and no secondary error", async () => {
 
 test("user abort triggers model_request_aborted and one terminal", async () => {
   const {module: {PiModelTransport}, dispose} = await loadTransport();
-  const transport = {streamModelProxy: async (_req, emit, signal) => { emit({type: "start"}); await waitAbort(signal); }};
+  const transport = {streamModelProxy: async (_req, emit) => {
+    emit({type: "text_start"});
+    emit({type: "text_delta", delta: "partial before abort"});
+    await new Promise(() => {});
+  }};
   const t = new PiModelTransport(transport, TEST_TIMEOUTS);
   const userAbort = new AbortController();
   const stream = t.stream(identity, model, context, {signal: userAbort.signal}, undefined);
@@ -173,6 +179,37 @@ test("user abort triggers model_request_aborted and one terminal", async () => {
   userAbort.abort();
   const events = await collected;
   assert.equal(terminalCode(events), "model_request_aborted");
+  const terminal = events.find((event) => event.type === "error");
+  assert.equal(terminal.error.content[0].text, "partial before abort");
+  assert.equal(events.filter((event) => event.type === "error").length, 1);
+  dispose();
+});
+
+test("provider events arriving after timeout are ignored", async () => {
+  const {module: {PiModelTransport}, dispose} = await loadTransport();
+  let finalTextProgress = 0;
+  const guard = {
+    beforeModelRequest() {},
+    noteFinalText() { finalTextProgress += 1; },
+  };
+  const transport = {streamModelProxy: async (_req, emit) => {
+    emit({type: "text_start"});
+    emit({type: "text_delta", delta: "partial"});
+    setTimeout(() => {
+      emit({type: "text_delta", delta: " late"});
+      emit({type: "text_end"});
+      emit({type: "done", finishReason: "stop"});
+    }, 160);
+    await new Promise(() => {});
+  }};
+  const t = new PiModelTransport(transport, {...TEST_TIMEOUTS, idleMs: 60});
+  const events = await collect(t.stream(identity, model, context, {}, guard));
+  assert.equal(terminalCode(events), "model_idle_timeout");
+  const terminal = events.find((event) => event.type === "error");
+  assert.equal(terminal.error.content[0].text, "partial");
+  await new Promise((resolve) => setTimeout(resolve, 140));
+  assert.equal(finalTextProgress, 0, "late text_end must not mutate run progress");
+  assert.equal(events.filter((event) => event.type === "done" || event.type === "error").length, 1);
   dispose();
 });
 

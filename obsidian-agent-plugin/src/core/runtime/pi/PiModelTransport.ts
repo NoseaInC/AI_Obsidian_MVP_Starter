@@ -87,82 +87,82 @@ export class PiModelTransport {
     let terminal = false;
     let providerActivity = false;
     const requestController = new AbortController();
-    const forwardAbort = (): void => requestController.abort();
-    if (options.signal?.aborted) requestController.abort();
-    else options.signal?.addEventListener("abort", forwardAbort, {once: true});
     const deep = Boolean(options?.reasoning);
     const to = this.timeouts;
-    let firstTimedOut = false;
-    let idleTimedOut = false;
-    let hardTimedOut = false;
-    const firstTimer = globalThis.setTimeout(() => {
-      if (terminal || providerActivity) return;
-      firstTimedOut = true;
-      requestController.abort();
-    }, to.firstEventMs);
+    let firstTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
     let idleTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
-    const resetIdle = (): void => {
-      if (terminal) return;
-      if (idleTimer) globalThis.clearTimeout(idleTimer);
-      idleTimer = globalThis.setTimeout(() => {
-        if (terminal) return;
-        idleTimedOut = true;
-        requestController.abort();
-      }, deep ? to.idleDeepMs : to.idleMs);
-    };
-    const hardTimer = globalThis.setTimeout(() => {
-      if (terminal) return;
-      hardTimedOut = true;
-      requestController.abort();
-    }, deep ? to.hardDeepMs : to.hardMs);
-    const markProviderActivity = (): void => {
-      providerActivity = true;
-      globalThis.clearTimeout(firstTimer);
-      resetIdle();
-    };
+    let hardTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
     const pushStart = (): void => {
       if (started) return;
       started = true;
       stream.push({type: "start", partial: {...partial, content: [...partial.content]}});
     };
-    const pushError = (message: string, code = "model_request_deadline_exceeded"): void => {
+    const clearTimers = (): void => {
+      if (firstTimer) globalThis.clearTimeout(firstTimer);
+      if (idleTimer) globalThis.clearTimeout(idleTimer);
+      if (hardTimer) globalThis.clearTimeout(hardTimer);
+      firstTimer = undefined;
+      idleTimer = undefined;
+      hardTimer = undefined;
+    };
+    const terminate = (
+      code: "model_first_event_timeout" | "model_idle_timeout" | "model_request_deadline_exceeded" | "model_request_aborted",
+      message: string,
+      reason: "error" | "aborted",
+    ): void => {
       if (terminal) return;
       terminal = true;
-      globalThis.clearTimeout(firstTimer);
-      if (idleTimer) globalThis.clearTimeout(idleTimer);
-      globalThis.clearTimeout(hardTimer);
+      clearTimers();
+      options.signal?.removeEventListener("abort", forwardAbort);
       pushStart();
-      partial.stopReason = options.signal?.aborted ? "aborted" : "error";
+      partial.stopReason = reason;
       partial.errorMessage = `${code}: ${message}`;
       stream.push({
         type: "error",
-        reason: partial.stopReason,
+        reason,
         error: {...partial, content: [...partial.content]},
         code,
       } as unknown as Parameters<typeof stream.push>[0]);
+      // The stream already has its terminal event. Abort is only best-effort
+      // cleanup; correctness never depends on the provider observing it.
+      requestController.abort();
     };
-
-    const resolveFailure = (error?: unknown): void => {
+    const resetIdle = (): void => {
       if (terminal) return;
-      let code = "model_request_deadline_exceeded";
-      let message: string;
-      if (options.signal?.aborted && !firstTimedOut && !idleTimedOut && !hardTimedOut) {
-        code = "model_request_aborted";
-        message = "模型请求已被用户中止";
-      } else if (firstTimedOut) {
-        code = "model_first_event_timeout";
-        message = "连接模型超时（45 秒内未收到内容或工具事件）；请重试或切换模型";
-      } else if (idleTimedOut) {
-        code = "model_idle_timeout";
-        message = "模型流空闲超时（未在预算内继续产出内容或工具事件）；请重试";
-      } else if (hardTimedOut) {
-        code = "model_request_deadline_exceeded";
-        message = "模型请求超过总时限；请重试或拆分任务";
-      } else {
-        message = error instanceof Error ? error.message : (error ? String(error) : "模型流意外结束，未收到完成事件；请重试");
-      }
-      pushError(message, code);
+      if (idleTimer) globalThis.clearTimeout(idleTimer);
+      idleTimer = globalThis.setTimeout(() => {
+        terminate(
+          "model_idle_timeout",
+          "模型流空闲超时（未在预算内继续产出内容或工具事件）；请重试",
+          "error",
+        );
+      }, deep ? to.idleDeepMs : to.idleMs);
     };
+    const markProviderActivity = (): void => {
+      providerActivity = true;
+      if (firstTimer) globalThis.clearTimeout(firstTimer);
+      firstTimer = undefined;
+      resetIdle();
+    };
+    const forwardAbort = (): void => {
+      terminate("model_request_aborted", "模型请求已被用户中止", "aborted");
+    };
+    if (options.signal?.aborted) {
+      forwardAbort();
+      return stream;
+    }
+    options.signal?.addEventListener("abort", forwardAbort, {once: true});
+    firstTimer = globalThis.setTimeout(() => {
+      if (providerActivity) return;
+      terminate(
+        "model_first_event_timeout",
+        "连接模型超时（首个事件预算内未收到内容或工具事件）；请重试或切换模型",
+        "error",
+      );
+    }, to.firstEventMs);
+    hardTimer = globalThis.setTimeout(() => {
+      terminate("model_request_deadline_exceeded", "模型请求超过总时限；请重试或拆分任务", "error");
+    }, deep ? to.hardDeepMs : to.hardMs);
 
     void this.transport.streamModelProxy({
       profileId: identity.profileId,
@@ -175,6 +175,7 @@ export class PiModelTransport {
         sessionId: identity.sessionId,
       },
     }, event => {
+      if (terminal) return;
       const type = String(event.type ?? "");
       markProviderActivity();
       if (type === "start") {
@@ -238,8 +239,8 @@ export class PiModelTransport {
         partial.usage = finalUsage;
       } else if (type === "done") {
         terminal = true;
-        if (idleTimer) globalThis.clearTimeout(idleTimer);
-        globalThis.clearTimeout(hardTimer);
+        clearTimers();
+        options.signal?.removeEventListener("abort", forwardAbort);
         partial.usage = finalUsage;
         partial.stopReason = String(event.finishReason ?? "stop") as "stop" | "length" | "toolUse";
         stallGuard?.noteFinalText(partial.content
@@ -248,16 +249,30 @@ export class PiModelTransport {
           .join("\n"));
         stream.push({type: "done", reason: partial.stopReason, message: {...partial, content: [...partial.content]}});
       } else if (type === "error" || type === "run.failed") {
-        pushError(String(event.message ?? event.code ?? "Model proxy failed"));
+        terminate(
+          "model_request_deadline_exceeded",
+          String(event.message ?? event.code ?? "Model proxy failed"),
+          "error",
+        );
       }
     }, requestController.signal).then(() => {
-      resolveFailure();
+      terminate(
+        "model_request_deadline_exceeded",
+        "模型流意外结束，未收到完成事件；请重试",
+        "error",
+      );
     }).catch(error => {
-      resolveFailure(error);
+      if (options.signal?.aborted) {
+        forwardAbort();
+        return;
+      }
+      terminate(
+        "model_request_deadline_exceeded",
+        error instanceof Error ? error.message : String(error ?? "模型流异常结束；请重试"),
+        "error",
+      );
     }).finally(() => {
-      globalThis.clearTimeout(firstTimer);
-      if (idleTimer) globalThis.clearTimeout(idleTimer);
-      globalThis.clearTimeout(hardTimer);
+      clearTimers();
       options.signal?.removeEventListener("abort", forwardAbort);
     });
     return stream;
