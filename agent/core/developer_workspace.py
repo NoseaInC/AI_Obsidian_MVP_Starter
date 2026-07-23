@@ -76,6 +76,38 @@ class DeveloperWorkspace:
         if not root.is_dir() or not self._within(root, self.root): raise RuntimeError("developer_workspace_unavailable")
         return item
 
+    def pending_recovery_guard(
+        self,
+        workspace_id: str,
+        run_id: str,
+        relative: str = "",
+        base_hash: str = "",
+    ) -> dict[str, Any]:
+        """Return a body-free workspace snapshot for permission recovery."""
+        item = self.get(workspace_id, run_id)
+        root = Path(str(item["path"]))
+        guard: dict[str, Any] = {
+            "workspaceId": workspace_id,
+            "runId": run_id,
+            "path": "",
+            "exists": True,
+            "sha256": "",
+        }
+        if relative:
+            target = self._target(root, relative, allow_missing=True)
+            body = target.read_bytes() if target.is_file() else b""
+            current_hash = _hash(body)
+            if base_hash and current_hash != base_hash:
+                raise RuntimeError("developer_file_stale")
+            guard.update({
+                "path": target.relative_to(root).as_posix(),
+                "exists": target.exists(),
+                "isFile": target.is_file(),
+                "sha256": current_hash if target.is_file() else "missing",
+                "baseHash": base_hash,
+            })
+        return guard
+
     def read(self, workspace_id: str, run_id: str, relative: str, max_chars: int = 50_000) -> dict[str, Any]:
         root = Path(self.get(workspace_id, run_id)["path"])
         target = self._target(root, relative)

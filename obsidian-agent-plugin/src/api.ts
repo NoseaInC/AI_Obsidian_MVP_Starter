@@ -195,6 +195,11 @@ export class AgentClient {
       state,
     });
   }
+  async validatePendingToolCallRecovery(runId: string, toolCallId: string): Promise<any> {
+    return this.post(`/agent/runs/${encodeURIComponent(runId)}/pending-tool-calls/validate`, {
+      toolCallId,
+    });
+  }
   async saveCompactionCheckpoint(body: Record<string, unknown> & {runId?: string}): Promise<any> {
     const {runId, ...rest} = body;
     const id = String(runId ?? "");

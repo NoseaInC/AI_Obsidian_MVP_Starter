@@ -86,6 +86,21 @@ test("orphaned calls become interrupted results and orphaned results are dropped
   assert.equal(restored[1].details.code, "tool_call_interrupted_by_restart");
 });
 
+test("a persisted pending record keeps its exact Tool Call unresolved for R04 recovery", () => {
+  const restored = projectPiSessionMessages(projection([
+    {role: "assistant", content: [{type: "toolCall", id: "pending-1", name: "organize_vault_notes", arguments: {moves: []}}]},
+  ], {
+    pending: {toolCallId: "pending-1", toolName: "organize_vault_notes", state: "pending"},
+  }));
+  assert.deepEqual(restored.map(item => item.role), ["assistant"]);
+  assert.deepEqual(restored[0].content[0], {
+    type: "toolCall",
+    id: "pending-1",
+    name: "organize_vault_notes",
+    arguments: {moves: []},
+  });
+});
+
 test("reasoning blocks never enter restored context; controls and checkpoints do", () => {
   const restored = projectPiSessionMessages(projection([
     {role: "assistant", content: [

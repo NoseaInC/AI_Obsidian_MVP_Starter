@@ -28,4 +28,15 @@
 
 ## R03 — Session Tree 到 Pi AgentMessage 投影
 
+状态：已完成
+
+- 实现：后端按 `parent_id` 投影唯一持久化 lineage，恢复标准 user/assistant/tool pair、blocked/failed/interrupted、控制消息、Action 引用与 checkpoint；delta 聚合，孤立结果丢弃，孤立调用转为明确 interrupted Result。
+- 隐私：provider reasoning 不进入恢复上下文；敏感键与 secret-shaped 文本统一脱敏；附件、Action 与大型值只返回有界元数据/引用。
+- Runtime/API：新增 projection API 与前端 transport；`projectPiSessionMessages()` 生成 Pi Agent Core 标准消息，删除 `restoredMessages()` 旧路径。
+- 目标测试：后端 `test_pi_session_tree` 11/11，前端投影/生命周期/Runtime 27/27 通过。
+- 完整门禁：Python compileall 与 220/220 tests、plugin 149/149 tests、typecheck、build、`./scripts/check.sh` 全部通过。
+- 提交：`2d0e41d feat: restore complete pi context from persisted session lineage`
+
+## R04 — Pending Permission 重启恢复
+
 状态：进行中

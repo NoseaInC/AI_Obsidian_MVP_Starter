@@ -471,6 +471,7 @@ CREATE TABLE IF NOT EXISTS pi_pending_tool_calls (
   tool_name TEXT NOT NULL,
   arguments_json TEXT NOT NULL,
   permission_request_json TEXT NOT NULL,
+  recovery_guard_json TEXT NOT NULL DEFAULT '{}',
   task_authorization_id TEXT NOT NULL,
   state TEXT NOT NULL,
   created_at TEXT NOT NULL,
@@ -503,7 +504,7 @@ CREATE INDEX IF NOT EXISTS idx_pi_compaction_checkpoints_branch
 
 
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 
 def _now() -> str:
@@ -600,6 +601,15 @@ class StateStore:
             "CREATE INDEX IF NOT EXISTS idx_pi_session_entries_run_sequence "
             "ON pi_session_entries(session_id, run_id, sequence)"
         )
+        pending_columns = {
+            row["name"]
+            for row in self.connection.execute("PRAGMA table_info(pi_pending_tool_calls)")
+        }
+        if "recovery_guard_json" not in pending_columns:
+            self.connection.execute(
+                "ALTER TABLE pi_pending_tool_calls "
+                "ADD COLUMN recovery_guard_json TEXT NOT NULL DEFAULT '{}'"
+            )
 
     def create_pi_task_authorization(self, authorization: dict[str, Any]) -> dict[str, Any]:
         required = (
@@ -975,6 +985,25 @@ class StateStore:
             ).fetchall()
         return [json.loads(row["payload_json"]) for row in rows]
 
+    def has_pi_tool_result(self, run_id: str, tool_call_id: str, tool_name: str) -> bool:
+        """Check the exact durable Tool Result boundary without JSON SQL extensions."""
+        with self.lock:
+            rows = self.connection.execute(
+                "SELECT payload_json FROM pi_agent_events WHERE run_id=? AND event_type='tool_result'",
+                (run_id,),
+            ).fetchall()
+        for row in rows:
+            try:
+                event = json.loads(row["payload_json"] or "{}")
+            except json.JSONDecodeError:
+                continue
+            if (
+                str(event.get("id") or event.get("toolCallId") or "") == tool_call_id
+                and str(event.get("name") or event.get("toolName") or "") == tool_name
+            ):
+                return True
+        return False
+
     def get_pi_session(self, session_id: str) -> dict[str, Any]:
         with self.lock:
             row = self.connection.execute(
@@ -1001,6 +1030,7 @@ class StateStore:
         entries: list[dict[str, Any]],
         branch_id: str,
         branch_run: dict[str, Any] | None,
+        active_pending_calls: set[tuple[str, str]] | None = None,
     ) -> list[dict[str, Any]]:
         """Build a privacy-bounded Pi transcript without orphaned tool results."""
         messages: list[dict[str, Any]] = []
@@ -1010,6 +1040,7 @@ class StateStore:
         assistant_turn_id = ""
         pending: dict[str, dict[str, Any]] = {}
         pending_order: list[str] = []
+        active_pending_calls = active_pending_calls or set()
 
         if branch_run and branch_run.get("parent_run_id"):
             messages.append({
@@ -1095,6 +1126,10 @@ class StateStore:
             for call_id in list(pending_order):
                 call = pending.pop(call_id, None)
                 if not call:
+                    continue
+                if (call_id, str(call["tool"])) in active_pending_calls:
+                    # This is not an orphan: R04 will resume it from the
+                    # persisted pending record under the original Run.
                     continue
                 append_tool_result(
                     call_id,
@@ -1325,6 +1360,10 @@ class StateStore:
         focus = _projection_safe(self.get_conversation_focus(conversation_id) or {})
         pending_items = self.get_pending_tool_calls(session_id=session_id, active_only=True)
         pending = _projection_safe(pending_items[0]) if pending_items else None
+        active_pending_calls = {
+            (str(item.get("toolCallId") or ""), str(item.get("toolName") or ""))
+            for item in pending_items
+        }
         action_ids = list(dict.fromkeys(
             str(entry["payload"].get("actionId") or "")
             for entry in projected_entries
@@ -1367,7 +1406,9 @@ class StateStore:
             "leafId": selected_leaf or None,
             "branchId": branch_id,
             "entries": projected_entries,
-            "messages": self._project_pi_messages(projected_entries, branch_id, branch_run),
+            "messages": self._project_pi_messages(
+                projected_entries, branch_id, branch_run, active_pending_calls,
+            ),
             "focus": focus,
             "attachments": [
                 {
@@ -1399,6 +1440,7 @@ class StateStore:
         tool_name: str,
         arguments: dict[str, Any],
         permission_request: dict[str, Any],
+        recovery_guard: dict[str, Any],
         task_authorization_id: str,
         state: str = "pending",
     ) -> None:
@@ -1411,15 +1453,17 @@ class StateStore:
             self.connection.execute(
                 """INSERT INTO pi_pending_tool_calls(
                      run_id, session_id, turn_id, tool_call_id, tool_name,
-                     arguments_json, permission_request_json, task_authorization_id,
+                     arguments_json, permission_request_json, recovery_guard_json,
+                     task_authorization_id,
                      state, created_at, updated_at, resolved_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
                    ON CONFLICT(run_id, tool_call_id) DO UPDATE SET
                      session_id=excluded.session_id,
                      turn_id=excluded.turn_id,
                      tool_name=excluded.tool_name,
                      arguments_json=excluded.arguments_json,
                      permission_request_json=excluded.permission_request_json,
+                     recovery_guard_json=excluded.recovery_guard_json,
                      task_authorization_id=excluded.task_authorization_id,
                      state=excluded.state,
                      updated_at=excluded.updated_at,
@@ -1432,6 +1476,7 @@ class StateStore:
                     tool_name,
                     json.dumps(arguments, ensure_ascii=False),
                     json.dumps(permission_request, ensure_ascii=False),
+                    json.dumps(recovery_guard, ensure_ascii=False, sort_keys=True),
                     task_authorization_id,
                     state,
                     existing["created_at"] if existing else now,
@@ -1462,6 +1507,8 @@ class StateStore:
             placeholders = ",".join("?" for _ in effective_states)
             clauses.append(f"state IN ({placeholders})")
             params.extend(effective_states)
+        if active_only:
+            clauses.append("resolved_at IS NULL")
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         with self.lock:
             rows = self.connection.execute(
@@ -1477,6 +1524,7 @@ class StateStore:
                 "toolName": row["tool_name"],
                 "arguments": json.loads(row["arguments_json"]),
                 "permissionRequest": json.loads(row["permission_request_json"]),
+                "recoveryGuard": json.loads(row["recovery_guard_json"] or "{}"),
                 "taskAuthorizationId": row["task_authorization_id"],
                 "state": row["state"],
                 "createdAt": row["created_at"],

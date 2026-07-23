@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from time import time
 from typing import Any
@@ -374,6 +375,80 @@ class TaskAuthorizationService:
             ):
                 raise PermissionError("task_organization_scope_required")
         return {"authorization": authorization, "organization": normalized}
+
+    def capture_pending_recovery_guard(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        permission_request: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Capture bounded Vault state needed to safely resume a paused call.
+
+        The guard contains paths, existence/protection flags and content hashes,
+        never note bodies. Recomputing it after restart detects edits, newly
+        protected notes and target collisions before an old permission card can
+        be reused.
+        """
+        files: dict[tuple[str, str], dict[str, Any]] = {}
+        directories: dict[str, dict[str, Any]] = {}
+
+        def remember_file(relative: str, role: str) -> None:
+            target = _safe_write_target(self.vault, relative)
+            normalized = target.relative_to(self.vault).as_posix()
+            exists = target.exists()
+            classification = self.classify_path(normalized, allow_missing=not exists)
+            body = target.read_bytes() if target.is_file() else b""
+            files[(role, normalized)] = {
+                "role": role,
+                "path": normalized,
+                "exists": exists,
+                "isFile": target.is_file(),
+                "sha256": hashlib.sha256(body).hexdigest() if target.is_file() else "missing",
+                "protected": bool(classification.get("protected")) if exists else False,
+            }
+
+        def remember_directory(relative: str) -> None:
+            target = _safe_vault_path(self.vault, relative, directory=True)
+            normalized = target.relative_to(self.vault).as_posix()
+            directories[normalized] = {
+                "path": normalized,
+                "exists": target.exists(),
+                "isDirectory": target.is_dir(),
+            }
+
+        if tool_name == "organize_vault_notes":
+            raw = permission_request.get("organization")
+            organization = raw if isinstance(raw, dict) else arguments
+            normalized = self._normalize_organization(organization)
+            for relative in normalized["directories"]:
+                remember_directory(relative)
+            for move in normalized["moves"]:
+                remember_file(move["source_path"], "source")
+                remember_file(move["target_path"], "target")
+        elif tool_name == "plan_vault_change":
+            for item in list(arguments.get("writes") or []):
+                if isinstance(item, dict):
+                    remember_file(str(item.get("path") or ""), "target")
+        elif tool_name == "plan_vault_copy":
+            destination_root = str(arguments.get("destination_root") or "").strip().strip("/")
+            for raw_source in list(arguments.get("source_paths") or []):
+                source = str(raw_source or "")
+                remember_file(source, "source")
+                remember_file(f"{destination_root}/{Path(source).name}", "target")
+        else:
+            for item in list(permission_request.get("writes") or []):
+                if not isinstance(item, dict):
+                    continue
+                if item.get("source_path"):
+                    remember_file(str(item["source_path"]), "source")
+                target = item.get("target_path") or item.get("path")
+                if target:
+                    remember_file(str(target), "target")
+        return {
+            "version": 1,
+            "files": [files[key] for key in sorted(files)],
+            "directories": [directories[key] for key in sorted(directories)],
+        }
 
     def register_workspace(
         self,

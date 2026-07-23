@@ -159,6 +159,30 @@ export class PiEventAdapter {
     };
   }
 
+  recoveredToolResult(
+    toolCallId: string,
+    toolName: string,
+    details: Record<string, unknown>,
+    isError: boolean,
+  ): AgentChunk {
+    const blocked = details.blocked === true || details.status === "blocked";
+    return {
+      runId: this.identity.runId,
+      conversationId: this.identity.conversationId,
+      sequence: ++this.sequence,
+      type: "tool_result",
+      id: toolCallId,
+      name: toolName,
+      result: details,
+      summary: blocked
+        ? "用户未授权该操作，Agent 将依据 Observation 调整步骤"
+        : isError
+          ? "工具未能完成，Agent 将依据 Observation 调整步骤"
+          : "工具已完成",
+      status: blocked ? "blocked" : isError ? "failed" : "completed",
+    };
+  }
+
   compacted(checkpointId: string): AgentChunk {
     return {
       runId: this.identity.runId,

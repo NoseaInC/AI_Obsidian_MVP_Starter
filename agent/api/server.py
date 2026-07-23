@@ -270,6 +270,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, self.service.resolve_pending_tool_call(
                     run_id, tool_call_id, str(body.get("state") or ""),
                 )); return
+            if path.startswith("/agent/runs/") and path.endswith("/pending-tool-calls/validate"):
+                run_id = self._identifier(
+                    path.removeprefix("/agent/runs/").removesuffix("/pending-tool-calls/validate")
+                )
+                tool_call_id = self._identifier(str(body.get("toolCallId") or ""))
+                self._send(200, self.service.validate_pending_tool_call_recovery(
+                    run_id, tool_call_id,
+                )); return
             if path.startswith("/agent/runs/") and path.endswith("/pending-tool-calls"):
                 run_id = self._identifier(
                     path.removeprefix("/agent/runs/").removesuffix("/pending-tool-calls")

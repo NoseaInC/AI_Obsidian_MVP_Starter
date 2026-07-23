@@ -1761,6 +1761,39 @@ class AgentService:
         permission_request = body.get("permissionRequest")
         if not isinstance(permission_request, dict):
             permission_request = {}
+        if session_id != str(run.get("session_id") or "") or turn_id != str(run.get("turn_id") or ""):
+            raise ValueError("pi_pending_tool_call_identity_mismatch")
+        authorization = self.store.get_task_authorization(task_authorization_id)
+        if (
+            authorization["status"] != "active"
+            or authorization["runId"] != run_id
+            or authorization["sessionId"] != session_id
+            or authorization["turnId"] != turn_id
+            or not authorization["reversibleOnly"]
+            or authorization["externalSideEffects"]
+        ):
+            raise PermissionError("pi_pending_tool_call_authorization_invalid")
+        contracts = {item["name"]: item for item in self.tool_contracts()["items"]}
+        if tool_name not in contracts:
+            raise ValueError("pi_pending_tool_contract_missing")
+        vault_guard = self.task_authorizations.capture_pending_recovery_guard(
+            tool_name, arguments, permission_request,
+        )
+        workspace_guard: dict[str, Any] | None = None
+        workspace_id = str(arguments.get("workspace_id") or "").strip()
+        if workspace_id:
+            workspace_guard = self.developer_workspace.pending_recovery_guard(
+                workspace_id,
+                run_id,
+                str(arguments.get("path") or ""),
+                str(arguments.get("base_hash") or ""),
+            )
+        recovery_guard = {
+            "version": 1,
+            "toolName": tool_name,
+            "vault": vault_guard,
+            "workspace": workspace_guard,
+        }
         self.store.save_pending_tool_call(
             run_id=run_id,
             session_id=session_id,
@@ -1769,10 +1802,114 @@ class AgentService:
             tool_name=tool_name,
             arguments=arguments,
             permission_request=permission_request,
+            recovery_guard=recovery_guard,
             task_authorization_id=task_authorization_id,
             state=state,
         )
         return {"ok": True, "runId": run_id, "toolCallId": tool_call_id, "state": state}
+
+    def validate_pending_tool_call_recovery(
+        self,
+        run_id: str,
+        tool_call_id: str,
+    ) -> dict[str, Any]:
+        """Fail closed unless a paused call is still safe under its original Run."""
+        records = self.store.get_pending_tool_calls(run_id=run_id, active_only=False)
+        record = next((item for item in records if item["toolCallId"] == tool_call_id), None)
+        if record is None:
+            raise ValueError("pi_pending_tool_call_not_found")
+
+        def invalid(code: str) -> dict[str, Any]:
+            if record["state"] in {"pending", "interrupted"}:
+                self.store.resolve_pending_tool_call(run_id, tool_call_id, "interrupted")
+            return {
+                "recoverable": False,
+                "resolved": True,
+                "code": str(code or "pi_pending_recovery_invalid")[:200],
+                "runId": run_id,
+                "toolCallId": tool_call_id,
+            }
+
+        try:
+            if record["state"] not in {"pending", "interrupted"}:
+                return invalid("pi_pending_tool_call_already_resolved")
+            if self.store.has_pi_tool_result(run_id, tool_call_id, record["toolName"]):
+                self.store.resolve_pending_tool_call(run_id, tool_call_id, "completed")
+                return {
+                    "recoverable": False,
+                    "resolved": True,
+                    "code": "pi_pending_tool_call_already_completed",
+                    "runId": run_id,
+                    "toolCallId": tool_call_id,
+                }
+            run = self.store.get_pi_run(run_id)
+            if str(run.get("status") or "") != "running":
+                return invalid("pi_pending_run_not_active")
+            if (
+                record["sessionId"] != str(run.get("session_id") or "")
+                or record["turnId"] != str(run.get("turn_id") or "")
+            ):
+                return invalid("pi_pending_run_identity_mismatch")
+            authorization = self.store.get_task_authorization(record["taskAuthorizationId"])
+            if authorization["status"] != "active":
+                return invalid("task_authorization_expired")
+            if (
+                authorization["runId"] != run_id
+                or authorization["sessionId"] != record["sessionId"]
+                or authorization["turnId"] != record["turnId"]
+            ):
+                return invalid("task_authorization_run_mismatch")
+            if not authorization["reversibleOnly"] or authorization["externalSideEffects"]:
+                return invalid("task_authorization_not_reversible")
+            contracts = {item["name"]: item for item in self.tool_contracts()["items"]}
+            contract = contracts.get(record["toolName"])
+            if not contract:
+                return invalid("pi_pending_tool_contract_missing")
+            if contract.get("permission_level") != "proposal" or contract.get("uses_network") is True:
+                return invalid("pi_pending_operation_not_reversible")
+            guard = record.get("recoveryGuard")
+            if not isinstance(guard, dict) or guard.get("version") != 1:
+                return invalid("pi_pending_recovery_guard_missing")
+            current_vault = self.task_authorizations.capture_pending_recovery_guard(
+                record["toolName"], record["arguments"], record["permissionRequest"],
+            )
+            current_workspace: dict[str, Any] | None = None
+            workspace_id = str(record["arguments"].get("workspace_id") or "").strip()
+            if workspace_id:
+                current_workspace = self.developer_workspace.pending_recovery_guard(
+                    workspace_id,
+                    run_id,
+                    str(record["arguments"].get("path") or ""),
+                    str(record["arguments"].get("base_hash") or ""),
+                )
+            current_guard = {
+                "version": 1,
+                "toolName": record["toolName"],
+                "vault": current_vault,
+                "workspace": current_workspace,
+            }
+            if current_guard != guard:
+                return invalid("pi_pending_recovery_state_changed")
+            if record["toolName"] == "apply_vault_change":
+                self.brain_change_sets.validate({
+                    "change_set_id": str(record["arguments"].get("change_set_id") or ""),
+                })
+            elif record["toolName"] == "undo_agent_action":
+                action = self.store.get_agent_action(
+                    str(record["arguments"].get("action_id") or "")
+                )
+                if str(action.get("status") or "") != "completed":
+                    return invalid("agent_action_not_undoable")
+            return {
+                "recoverable": True,
+                "resolved": False,
+                "record": record,
+                "taskAuthorization": authorization,
+                "lastEventSequence": int(run.get("last_event_sequence") or 0),
+                "schemaVersion": 1,
+            }
+        except (ValueError, RuntimeError, PermissionError, FileNotFoundError, FileExistsError) as exc:
+            return invalid(str(exc) or exc.__class__.__name__)
 
     def get_pending_tool_calls(
         self,

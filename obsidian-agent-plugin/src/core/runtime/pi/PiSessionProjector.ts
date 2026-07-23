@@ -38,6 +38,9 @@ export function projectPiSessionMessages(projection: PiSessionProjection): Agent
   const messages: AgentMessage[] = [];
   const pendingCalls = new Map<string, {name: string; timestamp: number}>();
   let hasCompaction = false;
+  const persistedPending = asRecord(projection?.pending);
+  const persistedPendingId = String(persistedPending.toolCallId ?? "");
+  const persistedPendingName = String(persistedPending.toolName ?? "");
 
   for (const rawValue of Array.isArray(projection?.messages) ? projection.messages : []) {
     const raw = asRecord(rawValue);
@@ -146,6 +149,7 @@ export function projectPiSessionMessages(projection: PiSessionProjection): Agent
   // Defensive completion for old/malformed projections. The backend normally
   // inserts this result at the exact lineage boundary.
   for (const [toolCallId, call] of pendingCalls) {
+    if (toolCallId === persistedPendingId && call.name === persistedPendingName) continue;
     const observation = {
       ok: false,
       status: "interrupted",

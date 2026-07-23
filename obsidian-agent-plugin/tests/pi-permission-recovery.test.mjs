@@ -47,6 +47,8 @@ const CID = "conv-t06";
 function makeRecoveryTransport(pendingOverride = {}) {
   const modelCalls = {count: 0};
   const toolCalls = [];
+  const registerCalls = [];
+  const continuationContexts = [];
   let authorization = null;
   const pending = new Map();
   const events = [];
@@ -74,11 +76,13 @@ function makeRecoveryTransport(pendingOverride = {}) {
       // Continuation: the recovered (re-executed or blocked) tool result must
       // be fed back to the model.
       const ctx = JSON.stringify(body.context?.messages ?? []);
-      assert.ok(
-        ctx.includes("action-organize") || ctx.includes("permission_denied"),
-        "recovered tool result injected into model continuation",
+      continuationContexts.push(ctx);
+      emitText(
+        onEvent,
+        ctx.includes("action-organize") || ctx.includes("user_denied_permission")
+          ? "已整理 Vault 笔记：action-organize 已应用。"
+          : "已开始新的独立回合。",
       );
-      emitText(onEvent, "已整理 Vault 笔记：action-organize 已应用。");
     }
   };
   const organizationArguments = {
@@ -109,12 +113,39 @@ function makeRecoveryTransport(pendingOverride = {}) {
   const transport = {
     modelCalls,
     toolCalls,
+    registerCalls,
+    continuationContexts,
     pending,
-    appendRuntimeEvents: async () => ({}),
+    appendRuntimeEvents: async (body) => {
+      events.push(...body.events.map(event => structuredClone(event)));
+      return {};
+    },
     runtimeSession: async () => ({history: events}),
+    runtimeSessionProjection: async (sessionId) => {
+      const record = [...pending.values()].find(item => item.sessionId === sessionId && ["pending", "interrupted"].includes(item.state));
+      return {
+        sessionId,
+        leafId: null,
+        branchId: record?.runId ?? "",
+        entries: [],
+        messages: record ? [{
+          role: "assistant",
+          content: [{type: "toolCall", id: record.toolCallId, name: record.toolName, arguments: record.arguments}],
+          stopReason: "toolUse",
+          timestamp: record.createdAt,
+        }] : [],
+        focus: {},
+        attachments: [],
+        activeActions: [],
+        pending: record ?? null,
+        compaction: null,
+        schemaVersion: 1,
+      };
+    },
     controlRuntimeRun: async () => ({}),
     cancelRuntimeRun: async () => ({}),
     registerTaskAuthorization: async (body) => {
+      registerCalls.push(structuredClone(body.taskAuthorization));
       authorization = body.taskAuthorization;
       return {ok: true, taskAuthorization: authorization};
     },
@@ -184,6 +215,23 @@ function makeRecoveryTransport(pendingOverride = {}) {
         rec.resolvedAt = new Date().toISOString();
       }
       return {ok: true};
+    },
+    validatePendingToolCallRecovery: async (runId, toolCallId) => {
+      const key = `${runId}:${toolCallId}`;
+      const rec = pending.get(key);
+      const invalidCode = pendingOverride[key]?.validationCode;
+      if (!rec || invalidCode) {
+        if (rec) rec.state = "interrupted";
+        return {recoverable: false, resolved: true, code: invalidCode ?? "missing"};
+      }
+      return {
+        recoverable: true,
+        resolved: false,
+        record: structuredClone(rec),
+        taskAuthorization: structuredClone(authorization),
+        lastEventSequence: Math.max(0, ...events.filter(event => event.runId === runId).map(event => event.sequence ?? 0)),
+        schemaVersion: 1,
+      };
     },
   };
   return transport;
@@ -256,9 +304,11 @@ describe("T06 pending permission survives plugin restart", () => {
     }
 
     assert.ok(chunksB.some((c) => c.type === "done"), "run completed");
+    assert.equal(transport.registerCalls.length, 1, "restart did not create an orphan Run/Authorization");
     assert.equal(transport.toolCalls.length, 2, "tool executed once originally and once on recovery");
+    assert.match(transport.continuationContexts.at(-1), /action-organize/, "persisted result reached agent.continue()");
     const resolved = await transport.listPendingToolCalls({runId: runIdA});
-    assert.equal(resolved.items[0].state, "allowed", "pending marked allowed");
+    assert.equal(resolved.items[0].state, "completed", "pending completed after Tool Result persistence");
   });
 
   it("deny on the recovered card blocks the tool without re-executing it", async () => {
@@ -298,11 +348,61 @@ describe("T06 pending permission survives plugin restart", () => {
     assert.ok(second.length >= 0);
   });
 
-  it("expired pending call is not resumed", async () => {
+  it("survives two consecutive restarts without duplicating the Tool Call or Authorization", async () => {
+    runtimeA.cleanup();
+    const runtimeB = new rt.PiAgentRuntime(transport);
+    const prepareB = runtimeB.prepareTurn({message: "继续", conversationId: CID});
+    const chunksB = [];
+    driveTurn(runtimeB, prepareB, chunksB);
+    await sleep(50);
+    assert.equal(collectChunks(chunksB, "confirmation_required").length, 1);
+    runtimeB.cleanup();
+
+    const runtimeC = new rt.PiAgentRuntime(transport);
+    const prepareC = runtimeC.prepareTurn({message: "继续", conversationId: CID});
+    const chunksC = [];
+    for await (const chunk of runtimeC.query(prepareC)) {
+      chunksC.push(chunk);
+      if (chunk.type === "confirmation_required") {
+        for await (const resolved of runtimeC.confirm(chunk.runId, true)) chunksC.push(resolved);
+      }
+    }
+    assert.ok(chunksC.some(chunk => chunk.type === "done" && chunk.status === "completed"));
+    assert.equal(transport.registerCalls.length, 1);
+    assert.equal(transport.toolCalls.length, 2);
+    assert.equal((await transport.listPendingToolCalls({runId: runIdA})).items[0].state, "completed");
+  });
+
+  it("does not restore a permission card after its Tool Result completed", async () => {
+    runtimeA.cleanup();
+    const runtimeB = new rt.PiAgentRuntime(transport);
+    const prepareB = runtimeB.prepareTurn({message: "继续", conversationId: CID});
+    for await (const chunk of runtimeB.query(prepareB)) {
+      if (chunk.type === "confirmation_required") {
+        for await (const _ of runtimeB.confirm(chunk.runId, true)) { /* drain */ }
+      }
+    }
+    runtimeB.cleanup();
+
+    const runtimeC = new rt.PiAgentRuntime(transport);
+    const chunksC = [];
+    for await (const chunk of runtimeC.query(runtimeC.prepareTurn({message: "新任务", conversationId: CID}))) {
+      chunksC.push(chunk);
+    }
+    assert.equal(chunksC.some(chunk => chunk.type === "confirmation_required"), false);
+    assert.equal(transport.registerCalls.length, 2, "completed pending no longer hijacks a fresh Turn");
+  });
+
+  it("invalid backend recovery validation interrupts the old call before a fresh Run", async () => {
     const originalCallId = (await transport.listPendingToolCalls({runId: runIdA})).items[0].toolCallId;
     const key = `${runIdA}:${originalCallId}`;
     const rec = transport.pending.get(key);
-    rec.createdAt = new Date(Date.now() - 31 * 60 * 1000).toISOString();
+    // Recovery eligibility is authoritative backend state, not a client-side age heuristic.
+    transport.validatePendingToolCallRecovery = async (runId, toolCallId) => {
+      const item = transport.pending.get(`${runId}:${toolCallId}`);
+      if (item) item.state = "interrupted";
+      return {recoverable: false, resolved: true, code: "task_authorization_expired"};
+    };
 
     runtimeA.cleanup();
     const runtimeB = new rt.PiAgentRuntime(transport);
@@ -311,13 +411,14 @@ describe("T06 pending permission survives plugin restart", () => {
     for await (const chunk of runtimeB.query(prepareB)) {
       chunksB.push(chunk);
       if (chunk.type === "confirmation_required") {
-        // a fresh card may appear; resolving it is fine for this scenario
+        // A fresh Run may independently need permission; it must not reuse the old card.
         for await (const r of runtimeB.confirm(prepareB.payload.identity.runId, true)) chunksB.push(r);
       }
     }
 
     const resolved = await transport.listPendingToolCalls({runId: runIdA});
     const original = resolved.items.find((p) => p.toolCallId === originalCallId);
-    assert.equal(original.state, "interrupted", "expired pending is resolved, not resumed");
+    assert.equal(original.state, "interrupted", "invalid pending is resolved, not resumed");
+    assert.equal(transport.registerCalls.length, 2, "only the invalid case creates a fresh Run");
   });
 });

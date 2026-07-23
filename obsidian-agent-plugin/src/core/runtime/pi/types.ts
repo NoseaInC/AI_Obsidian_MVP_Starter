@@ -130,6 +130,11 @@ export interface PiRuntimeTransport {
     toolCallId: string,
     state: PiPendingToolCallState,
   ): Promise<Record<string, unknown>>;
+  /** Validate recovery against the original Run and fresh server-side guards. */
+  validatePendingToolCallRecovery?(
+    runId: string,
+    toolCallId: string,
+  ): Promise<PiPendingRecoveryValidation>;
   /** Persist a structured compaction checkpoint so a restart can reuse it. */
   saveCompactionCheckpoint?(body: Record<string, unknown>): Promise<Record<string, unknown>>;
   /** Read the latest compaction checkpoint for a run (used after restart). */
@@ -161,6 +166,17 @@ export type PiPendingToolCallRecord = PiPendingToolCallInput & {
   createdAt: string;
   updatedAt: string;
   resolvedAt: string | null;
+  recoveryGuard?: Record<string, unknown>;
+};
+
+export type PiPendingRecoveryValidation = {
+  recoverable: boolean;
+  resolved: boolean;
+  code?: string;
+  record?: PiPendingToolCallRecord;
+  taskAuthorization?: PiTaskAuthorization;
+  lastEventSequence?: number;
+  schemaVersion?: number;
 };
 
 export interface PiPermissionRequest {
