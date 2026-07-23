@@ -1,0 +1,11 @@
+{
+  "planVersion": 1,
+  "branch": "pi-runtime-hardening-repair",
+  "baseBranch": "pi-runtime-hardening",
+  "completed": [],
+  "currentTask": "R01",
+  "status": "running",
+  "blockedReason": "",
+  "lastCommit": "",
+  "updatedAt": "2026-07-23T09:36:12+08:00"
+}

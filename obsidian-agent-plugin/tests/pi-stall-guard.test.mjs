@@ -87,7 +87,7 @@ const writeNonIdempotentContract = {
 
 const readArgs = {toolCallId: "c1", name: "read_only_tool", args: {value: "x"}, mutatesState: false, idempotent: true, permissionLevel: "read_only"};
 
-test("read-only repeat reuses cached observation without re-execution", async () => {
+test("cache reuse requires read_only + idempotent + non-mutating exactly", async () => {
   const {module: {PiStallGuard}, dispose} = await loadGuard();
   const g = new PiStallGuard();
   const r1 = g.beforeTool(readArgs);
@@ -96,6 +96,29 @@ test("read-only repeat reuses cached observation without re-execution", async ()
   const r2 = g.beforeTool({...readArgs, toolCallId: "c2"});
   assert.ok(r2.cached, "second read-only call should reuse cached observation");
   assert.equal(r2.duplicate, undefined);
+
+  for (const [label, overrides] of [
+    ["proposal permission", {permissionLevel: "proposal"}],
+    ["mutating contract", {mutatesState: true}],
+    ["non-idempotent contract", {idempotent: false}],
+  ]) {
+    const other = new PiStallGuard();
+    const descriptor = {...readArgs, ...overrides, name: `tool_${label.replaceAll(" ", "_")}`};
+    const first = other.beforeTool(descriptor);
+    other.remember(first.key, {value: label});
+    const second = other.beforeTool({...descriptor, toolCallId: "c2"});
+    assert.equal(second.cached, undefined, `${label} must not be cached`);
+  }
+  dispose();
+});
+
+test("remember increments repeats by exactly one for the same Tool+Args+result", async () => {
+  const {module: {PiStallGuard}, dispose} = await loadGuard();
+  const g = new PiStallGuard();
+  const first = g.beforeTool(readArgs);
+  assert.equal(g.remember(first.key, {value: "same"}).repeats, 0);
+  assert.equal(g.remember(first.key, {value: "same"}).repeats, 1);
+  assert.equal(g.remember(first.key, {value: "same"}).repeats, 2);
   dispose();
 });
 
@@ -145,6 +168,60 @@ test("a new unique observation resets consecutive no-progress", async () => {
   dispose();
 });
 
+test("new structured action ids and result cursors are tracked as progress", async () => {
+  const {module: {PiStallGuard}, dispose} = await loadGuard();
+  const g = new PiStallGuard();
+  const first = g.beforeTool(readArgs);
+  g.remember(first.key, {action_id: "action-1", next_cursor: "cursor-1"});
+  const cached = g.beforeTool({...readArgs, toolCallId: "c2"});
+  g.repeated(cached.cached);
+  assert.equal(g.progress.consecutiveNoProgress, 1);
+
+  g.remember("other:action", {actionId: "action-2", nextCursor: "cursor-2"});
+  assert.equal(g.progress.consecutiveNoProgress, 0);
+  assert.deepEqual(g.progress.uniqueActionIds, ["action-1", "action-2"]);
+  assert.deepEqual(g.progress.uniqueResultPages, ["nextcursor:cursor-1", "nextcursor:cursor-2"]);
+  assert.ok(g.progress.lastNewObservationAt > 0);
+  dispose();
+});
+
+test("new final text resets no-progress without language heuristics", async () => {
+  const {module: {PiStallGuard}, dispose} = await loadGuard();
+  const g = new PiStallGuard();
+  const first = g.beforeTool(readArgs);
+  g.remember(first.key, {value: 1});
+  g.repeated(g.beforeTool({...readArgs, toolCallId: "c2"}).cached);
+  assert.equal(g.progress.consecutiveNoProgress, 1);
+  g.noteFinalText("A completed answer");
+  assert.equal(g.progress.consecutiveNoProgress, 0);
+  g.noteFinalText("A completed answer");
+  assert.equal(g.progress.consecutiveNoProgress, 0);
+  dispose();
+});
+
+test("repeated validation and missing-tool failures are bounded and counted", async () => {
+  const {module: {PiStallGuard}, dispose} = await loadGuard();
+  const validation = new PiStallGuard();
+  assert.equal(validation.noteFailure("tool_validation_failed", {tool: "x"}), undefined);
+  const validationStages = Array.from({length: 6}, () => validation.noteFailure("tool_validation_failed", {tool: "x"}));
+  assert.deepEqual(validationStages, [
+    "reused_existing_observation",
+    "no_new_information",
+    "no_new_information",
+    "stall_replan_required",
+    "stall_replan_required",
+    "stall_safe_termination",
+  ]);
+  assert.equal(validation.progress.repeatedValidationFailures, 6);
+
+  const missing = new PiStallGuard();
+  missing.noteFailure("unknown_tool", {tool: "absent"});
+  for (let index = 0; index < 6; index += 1) missing.noteFailure("unknown_tool", {tool: "absent"});
+  assert.equal(missing.progress.repeatedMissingToolCalls, 6);
+  assert.equal(missing.progress.consecutiveNoProgress, 6);
+  dispose();
+});
+
 test("reset clears budget and progress counters for a new Turn", async () => {
   const {module: {PiStallGuard}, dispose} = await loadGuard();
   const g = new PiStallGuard();
@@ -156,10 +233,15 @@ test("reset clears budget and progress counters for a new Turn", async () => {
   assert.equal(g.progress.toolCalls, 0);
   assert.equal(g.progress.consecutiveNoProgress, 0);
   assert.equal(g.progress.uniqueObservationCount, 0);
+  assert.equal(g.progress.lastNewObservationAt, null);
+  assert.deepEqual(g.progress.uniqueActionIds, []);
+  assert.deepEqual(g.progress.uniqueResultPages, []);
+  assert.equal(g.progress.repeatedValidationFailures, 0);
+  assert.equal(g.progress.repeatedMissingToolCalls, 0);
   dispose();
 });
 
-test("six consecutive no-progress events trigger safe termination", async () => {
+test("2/4/6 no-progress thresholds return model-readable safe observations", async () => {
   const {module: {PiStallGuard}, dispose} = await loadGuard();
   const g = new PiStallGuard();
   const r = g.beforeTool(readArgs);
@@ -177,7 +259,31 @@ test("six consecutive no-progress events trigger safe termination", async () => 
     "stall_replan_required",
   ]);
   const c6 = g.beforeTool({...readArgs, toolCallId: "c7"});
-  assert.throws(() => g.repeated(c6.cached), /stall_guard_safe_termination/);
+  const terminal = g.repeated(c6.cached);
+  assert.equal(terminal.code, "stall_guard_safe_termination");
+  assert.equal(terminal.status, "blocked");
+  assert.equal(terminal.stallGuard, "stall_safe_termination");
+  assert.match(terminal.message, /安全停止/);
+  dispose();
+});
+
+test("hard model/tool/time budgets remain 32/96/30 minutes", async () => {
+  const {module: {PiStallGuard}, dispose} = await loadGuard();
+  const models = new PiStallGuard();
+  assert.equal(models.maxModelRequests, 32);
+  assert.equal(models.maxToolCalls, 96);
+  assert.equal(models.maxWindowMs, 30 * 60 * 1000);
+  for (let index = 0; index < 32; index += 1) models.beforeModelRequest();
+  assert.throws(() => models.beforeModelRequest(), /stall_guard_model_requests_exceeded/);
+
+  const tools = new PiStallGuard();
+  for (let index = 0; index < 96; index += 1) {
+    tools.beforeTool({...readArgs, toolCallId: `budget-${index}`, args: {value: String(index)}});
+  }
+  assert.throws(
+    () => tools.beforeTool({...readArgs, toolCallId: "budget-over", args: {value: "over"}}),
+    /stall_guard_tool_calls_exceeded/,
+  );
   dispose();
 });
 
@@ -241,5 +347,28 @@ test("idempotent write re-executes through the backend each time (includes autho
   await tool.execute("call-1", {value: "x"}, undefined);
   await tool.execute("call-1", {value: "x"}, undefined);
   assert.equal(calls, 2);
+  dispose();
+});
+
+test("adapter turns the sixth repeated validation failure into safe termination", async () => {
+  const {module: {createPiTools}, dispose} = await loadAdapter();
+  const {module: {PiStallGuard}} = await loadGuard();
+  const transport = {
+    callRuntimeTool: async () => ({
+      ok: false,
+      isError: true,
+      error: {code: "tool_validation_failed", message: "invalid arguments"},
+    }),
+  };
+  const guard = new PiStallGuard();
+  const tool = createPiTools([readContract], identity, transport, guard)[0];
+  for (let index = 0; index < 6; index += 1) {
+    await assert.rejects(() => tool.execute(`call-${index}`, {value: "x"}, undefined), /tool_validation_failed/);
+  }
+  const terminal = await tool.execute("call-6", {value: "x"}, undefined);
+  const parsed = JSON.parse(terminal.content[0].text);
+  assert.equal(parsed.code, "stall_guard_safe_termination");
+  assert.equal(parsed.stallGuard, "stall_safe_termination");
+  assert.equal(parsed.lastFailure.code, "tool_validation_failed");
   dispose();
 });

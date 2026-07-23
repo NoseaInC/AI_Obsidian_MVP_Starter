@@ -195,7 +195,9 @@ export class PiModelTransport {
       } else if (type === "text_end") {
         const contentIndex = findLastContentIndex(partial.content, "text");
         const block = partial.content[contentIndex];
-        stream.push({type: "text_end", contentIndex, content: block?.type === "text" ? block.text : "", partial: {...partial, content: [...partial.content]}});
+        const content = block?.type === "text" ? block.text : "";
+        stallGuard?.noteFinalText(content);
+        stream.push({type: "text_end", contentIndex, content, partial: {...partial, content: [...partial.content]}});
       } else if (type === "thinking_start") {
         const contentIndex = partial.content.length;
         partial.content.push({type: "thinking", thinking: ""});
@@ -240,6 +242,10 @@ export class PiModelTransport {
         globalThis.clearTimeout(hardTimer);
         partial.usage = finalUsage;
         partial.stopReason = String(event.finishReason ?? "stop") as "stop" | "length" | "toolUse";
+        stallGuard?.noteFinalText(partial.content
+          .filter((block): block is Extract<AssistantMessage["content"][number], {type: "text"}> => block.type === "text")
+          .map(block => block.text)
+          .join("\n"));
         stream.push({type: "done", reason: partial.stopReason, message: {...partial, content: [...partial.content]}});
       } else if (type === "error" || type === "run.failed") {
         pushError(String(event.message ?? event.code ?? "Model proxy failed"));

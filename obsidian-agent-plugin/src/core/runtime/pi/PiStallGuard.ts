@@ -15,9 +15,56 @@ export type SeenObservation = {
   repeats: number;
 };
 
+export type StallGuardStage =
+  | "reused_existing_observation"
+  | "no_new_information"
+  | "stall_replan_required"
+  | "stall_safe_termination";
+
+export type RunProgress = {
+  lastNewObservationAt: number | null;
+  uniqueObservationCount: number;
+  uniqueActionIds: string[];
+  uniqueResultPages: string[];
+  consecutiveNoProgress: number;
+  repeatedValidationFailures: number;
+  repeatedMissingToolCalls: number;
+  modelRequests: number;
+  toolCalls: number;
+};
+
 const NO_PROGRESS_NO_INFO = 2;
 const NO_PROGRESS_REPLAN = 4;
 const NO_PROGRESS_TERMINATE = 6;
+
+const ACTION_KEYS = new Set(["actionid", "actionids"]);
+const RESULT_PAGE_KEYS = new Set([
+  "cursor",
+  "nextcursor",
+  "offset",
+  "nextoffset",
+  "page",
+  "pagenumber",
+  "pagetoken",
+]);
+const FILE_PATH_KEYS = new Set([
+  "path",
+  "paths",
+  "filepath",
+  "filepaths",
+  "sourcepath",
+  "targetpath",
+  "destinationpath",
+]);
+const TEST_RESULT_KEYS = new Set([
+  "testresult",
+  "testresults",
+  "teststatus",
+  "teststatuses",
+  "exitcode",
+  "passed",
+  "failed",
+]);
 
 function hash(value: unknown): string {
   try {
@@ -27,14 +74,95 @@ function hash(value: unknown): string {
   }
 }
 
+function normalizedKey(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function primitiveValues(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap(primitiveValues);
+  if (["string", "number", "boolean"].includes(typeof value)) return [String(value)];
+  return [];
+}
+
+type StructuredProgress = {
+  actionIds: Set<string>;
+  resultPages: Set<string>;
+  filePaths: Set<string>;
+  testResults: Set<string>;
+};
+
+/** Extract only typed result fields. Free-form language never counts as progress. */
+function extractStructuredProgress(value: unknown): StructuredProgress {
+  const found: StructuredProgress = {
+    actionIds: new Set(),
+    resultPages: new Set(),
+    filePaths: new Set(),
+    testResults: new Set(),
+  };
+  const visited = new WeakSet<object>();
+  const visit = (item: unknown): void => {
+    if (!item || typeof item !== "object") return;
+    if (visited.has(item)) return;
+    visited.add(item);
+    if (Array.isArray(item)) {
+      item.forEach(visit);
+      return;
+    }
+    for (const [rawKey, child] of Object.entries(item as Record<string, unknown>)) {
+      const key = normalizedKey(rawKey);
+      const values = primitiveValues(child);
+      if (ACTION_KEYS.has(key)) values.forEach(entry => found.actionIds.add(entry));
+      if (RESULT_PAGE_KEYS.has(key)) values.forEach(entry => found.resultPages.add(`${key}:${entry}`));
+      if (FILE_PATH_KEYS.has(key)) values.forEach(entry => found.filePaths.add(entry));
+      if (TEST_RESULT_KEYS.has(key)) found.testResults.add(`${key}:${hash(child)}`);
+      visit(child);
+    }
+  };
+  visit(value);
+  return found;
+}
+
+function addNew(target: Set<string>, values: Set<string>): boolean {
+  let changed = false;
+  for (const value of values) {
+    if (target.has(value)) continue;
+    target.add(value);
+    changed = true;
+  }
+  return changed;
+}
+
+function isValidationFailure(code: string): boolean {
+  const normalized = normalizedKey(code);
+  return normalized.includes("validation")
+    || normalized.includes("invalidtoolargument")
+    || normalized.includes("schemaerror");
+}
+
+function isMissingToolFailure(code: string): boolean {
+  const normalized = normalizedKey(code);
+  return normalized.includes("missingtool")
+    || normalized.includes("toolmissing")
+    || normalized.includes("unknowntool")
+    || normalized.includes("toolnotfound");
+}
+
 export class PiStallGuard {
   private modelRequests = 0;
   private toolCalls = 0;
   private startedAt = Date.now();
   private seen = new Map<string, SeenObservation>();
   private consecutiveNoProgress = 0;
-  private uniqueObservationCount = 0;
+  private lastNewObservationAt: number | null = null;
+  private observationHashes = new Set<string>();
   private uniqueActionIds = new Set<string>();
+  private uniqueResultPages = new Set<string>();
+  private uniqueFilePaths = new Set<string>();
+  private uniqueTestResults = new Set<string>();
+  private finalTextHashes = new Set<string>();
+  private failureSignatures = new Set<string>();
+  private repeatedValidationFailures = 0;
+  private repeatedMissingToolCalls = 0;
 
   readonly maxModelRequests = 32;
   readonly maxToolCalls = 96;
@@ -47,8 +175,16 @@ export class PiStallGuard {
     this.startedAt = Date.now();
     this.seen.clear();
     this.consecutiveNoProgress = 0;
-    this.uniqueObservationCount = 0;
+    this.lastNewObservationAt = null;
+    this.observationHashes.clear();
     this.uniqueActionIds.clear();
+    this.uniqueResultPages.clear();
+    this.uniqueFilePaths.clear();
+    this.uniqueTestResults.clear();
+    this.finalTextHashes.clear();
+    this.failureSignatures.clear();
+    this.repeatedValidationFailures = 0;
+    this.repeatedMissingToolCalls = 0;
   }
 
   beforeModelRequest(): void {
@@ -57,43 +193,42 @@ export class PiStallGuard {
   }
 
   /**
-   * Decide how a tool call is handled before execution.
-   * - Read-only tools may reuse a previously observed result (no side effects).
-   * - Side-effecting but idempotent tools are never cached by the frontend; the
-   *   backend re-executes them idempotently (including authorization recovery
-   *   under the same toolCallId).
-   * - Side-effecting, non-idempotent tools that repeat an equivalent call are
-   *   intercepted and must not reuse the previous result.
+   * Only a read-only, explicitly idempotent and non-mutating tool may reuse a
+   * frontend observation. Other idempotent tools are re-executed; repeated
+   * non-idempotent calls are intercepted to avoid duplicating side effects.
    */
   beforeTool(descriptor: StallGuardDescriptor): {key: string; cached?: SeenObservation; duplicate?: boolean} {
     this.toolCalls += 1;
     this.assertBudget();
     const key = `${descriptor.name}:${hash(descriptor.args)}`;
     const seen = this.seen.get(key);
-    if (!descriptor.mutatesState) {
-      if (seen) return {key, cached: seen};
-      return {key};
-    }
-    if (descriptor.idempotent) {
-      return {key};
-    }
-    if (seen) return {key, duplicate: true};
+    const cacheable = descriptor.permissionLevel === "read_only"
+      && descriptor.idempotent === true
+      && descriptor.mutatesState === false;
+    if (cacheable && seen) return {key, cached: seen};
+    if (!descriptor.idempotent && seen) return {key, duplicate: true};
     return {key};
   }
 
-  /** Reuse a cached read-only observation, tracking consecutive no-progress. */
+  /** Reuse a cached observation, tracking consecutive no-progress exactly once. */
   repeated(existing: SeenObservation): Record<string, unknown> {
+    existing.repeats += 1;
     const stallGuard = this.bumpNoProgress();
+    if (stallGuard === "stall_safe_termination") {
+      return this.safeTerminationObservation(undefined, existing.observationHash);
+    }
     return {
       ...existing.result,
       stallGuard,
       observationHash: existing.observationHash,
+      repeats: existing.repeats,
     };
   }
 
-  /** Intercept an equivalent repeat of a non-idempotent mutating tool call. */
+  /** Intercept an equivalent repeat of a non-idempotent tool call. */
   duplicateObservation(name: string): Record<string, unknown> {
     const stallGuard = this.bumpNoProgress();
+    if (stallGuard === "stall_safe_termination") return this.safeTerminationObservation(name);
     return {
       ok: false,
       status: "blocked",
@@ -104,35 +239,80 @@ export class PiStallGuard {
     };
   }
 
-  /** Record a freshly executed observation. A new observation resets no-progress. */
-  remember(key: string, result: Record<string, unknown>): void {
+  /**
+   * Record a freshly executed observation. The same Tool+Args+result advances
+   * the repeat counter by exactly one; only new structured evidence resets it.
+   */
+  remember(key: string, result: Record<string, unknown>): SeenObservation {
     const observationHash = hash(result);
     const existing = this.seen.get(key);
-    if (!existing || existing.observationHash !== observationHash) {
-      this.noteProgress();
-    } else {
-      existing.repeats += 1;
+    const sameObservation = existing?.observationHash === observationHash;
+    const structured = extractStructuredProgress(result);
+    let madeProgress = false;
+    if (!this.observationHashes.has(observationHash)) {
+      this.observationHashes.add(observationHash);
+      madeProgress = true;
     }
-    this.seen.set(key, {
+    madeProgress = addNew(this.uniqueActionIds, structured.actionIds) || madeProgress;
+    madeProgress = addNew(this.uniqueResultPages, structured.resultPages) || madeProgress;
+    madeProgress = addNew(this.uniqueFilePaths, structured.filePaths) || madeProgress;
+    madeProgress = addNew(this.uniqueTestResults, structured.testResults) || madeProgress;
+    if (madeProgress) this.noteProgress();
+    else this.bumpNoProgress();
+
+    const observation: SeenObservation = {
       result,
       observationHash,
-      repeats: existing && existing.observationHash === observationHash ? existing.repeats + 1 : 0,
-    });
-    const actionId = result && typeof result === "object" ? (result as Record<string, unknown>).actionId : undefined;
-    if (typeof actionId === "string") this.uniqueActionIds.add(actionId);
+      repeats: sameObservation ? existing.repeats + 1 : 0,
+    };
+    this.seen.set(key, observation);
+    return observation;
   }
 
-  get progress(): {
-    consecutiveNoProgress: number;
-    uniqueObservationCount: number;
-    uniqueActionIds: string[];
-    modelRequests: number;
-    toolCalls: number;
-  } {
+  /** A new non-empty final answer is progress even when no tool was called. */
+  noteFinalText(text: string): void {
+    const value = text.trim();
+    if (!value) return;
+    const textHash = hash(value);
+    if (this.finalTextHashes.has(textHash)) return;
+    this.finalTextHashes.add(textHash);
+    this.noteProgress();
+  }
+
+  /** Track repeated typed runtime failures without inspecting natural language. */
+  noteFailure(code: string, context: Record<string, unknown> = {}): StallGuardStage | undefined {
+    const signature = hash({code, context});
+    if (!this.failureSignatures.has(signature)) {
+      this.failureSignatures.add(signature);
+      this.noteProgress();
+      return undefined;
+    }
+    if (isValidationFailure(code)) this.repeatedValidationFailures += 1;
+    if (isMissingToolFailure(code)) this.repeatedMissingToolCalls += 1;
+    return this.bumpNoProgress();
+  }
+
+  safeTerminationObservation(tool?: string, lastObservationHash?: string): Record<string, unknown> {
     return {
-      consecutiveNoProgress: this.consecutiveNoProgress,
-      uniqueObservationCount: this.uniqueObservationCount,
+      ok: false,
+      status: "blocked",
+      code: "stall_guard_safe_termination",
+      message: "连续多次操作没有产生新信息，当前运行已安全停止。请基于现有观察给出结论，或在下一轮更换策略。",
+      ...(tool ? {tool} : {}),
+      ...(lastObservationHash ? {lastObservationHash} : {}),
+      stallGuard: "stall_safe_termination",
+    };
+  }
+
+  get progress(): RunProgress {
+    return {
+      lastNewObservationAt: this.lastNewObservationAt,
+      uniqueObservationCount: this.observationHashes.size,
       uniqueActionIds: [...this.uniqueActionIds],
+      uniqueResultPages: [...this.uniqueResultPages],
+      consecutiveNoProgress: this.consecutiveNoProgress,
+      repeatedValidationFailures: this.repeatedValidationFailures,
+      repeatedMissingToolCalls: this.repeatedMissingToolCalls,
       modelRequests: this.modelRequests,
       toolCalls: this.toolCalls,
     };
@@ -140,14 +320,12 @@ export class PiStallGuard {
 
   private noteProgress(): void {
     this.consecutiveNoProgress = 0;
-    this.uniqueObservationCount += 1;
+    this.lastNewObservationAt = Date.now();
   }
 
-  private bumpNoProgress(): string {
+  private bumpNoProgress(): StallGuardStage {
     this.consecutiveNoProgress += 1;
-    if (this.consecutiveNoProgress >= NO_PROGRESS_TERMINATE) {
-      throw new Error("stall_guard_safe_termination");
-    }
+    if (this.consecutiveNoProgress >= NO_PROGRESS_TERMINATE) return "stall_safe_termination";
     if (this.consecutiveNoProgress >= NO_PROGRESS_REPLAN) return "stall_replan_required";
     if (this.consecutiveNoProgress >= NO_PROGRESS_NO_INFO) return "no_new_information";
     return "reused_existing_observation";

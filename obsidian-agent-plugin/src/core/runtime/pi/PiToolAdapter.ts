@@ -235,6 +235,22 @@ export function createPiTools(
           Math.max(1, contract.timeout_seconds) * 1000,
           signal,
         );
+        let terminalFailureObservation = false;
+        const stopOrThrow = (code: string, message: string): Record<string, unknown> => {
+          const stage = stallGuard.noteFailure(code, {
+            tool: contract.name,
+            arguments: argumentsRecord,
+          });
+          if (stage !== "stall_safe_termination") {
+            const guardSuffix = stage ? ` [stallGuard=${stage}]` : "";
+            throw new Error(`${code}: ${message}${guardSuffix}`);
+          }
+          terminalFailureObservation = true;
+          return {
+            ...stallGuard.safeTerminationObservation(contract.name),
+            lastFailure: {code, message},
+          };
+        };
         let response: Record<string, unknown>;
         if (check.cached) {
           response = {ok: true, content: stallGuard.repeated(check.cached)};
@@ -298,16 +314,20 @@ export function createPiTools(
             response = await call();
             if (response.ok !== true || response.isError === true) {
               const retryError = response.error as Record<string, unknown> | undefined;
-              throw new Error(`${String(retryError?.code ?? "runtime_tool_failed")}: ${String(retryError?.message ?? "Tool execution failed")}`);
+              const retryCode = String(retryError?.code ?? "runtime_tool_failed");
+              const retryMessage = String(retryError?.message ?? "Tool execution failed");
+              response = {ok: true, content: stopOrThrow(retryCode, retryMessage)};
             }
           } else {
-            throw new Error(`${code}: ${message}`);
+            response = {ok: true, content: stopOrThrow(code, message)};
           }
         }
         const content = response.content && typeof response.content === "object"
           ? response.content as Record<string, unknown>
           : {value: response.content};
-        if (!check.cached && !check.duplicate) stallGuard.remember(check.key, content);
+        if (!check.cached && !check.duplicate && !terminalFailureObservation) {
+          stallGuard.remember(check.key, content);
+        }
         return {
           content: [{type: "text", text: serializeToolObservation(contract, {content})}],
           details: {
