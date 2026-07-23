@@ -255,12 +255,12 @@ test("assistant production surface uses Pi model proxy, stop and three inspector
   assert.match(views, /resumeInlineConfirmation/);
   assert.match(views, /runConversationId = conversationId/);
   assert.match(views, /buildAssistantMessageMetadata/);
-  const queryLoop = views.indexOf("for await (const chunk of this.agentRuntime.query");
+  const queryLoop = views.indexOf("for await (const update of runPiAssistantTurn(turnInput");
   const livePermissionMount = views.indexOf('event.type === "inline.confirmation.required"', queryLoop);
   const confirmationResume = views.indexOf("const resumeInlineConfirmation", livePermissionMount);
   assert.ok(queryLoop >= 0 && livePermissionMount > queryLoop, "permission card must mount inside the live query loop");
   assert.ok(confirmationResume > livePermissionMount, "same-Run confirmation handler must remain available to the live card");
-  assert.doesNotMatch(views.slice(confirmationResume, views.indexOf("const resultActiveArtifact", confirmationResume)), /\.abort\(\)/);
+  assert.doesNotMatch(views.slice(confirmationResume, views.indexOf("input.onkeydown", confirmationResume)), /\.abort\(\)/);
   assert.match(views, /permission_mode: this\.assistantPermissionMode/);
   assert.match(views, /当前任务全部允许/);
   assert.doesNotMatch(api, /cancelAssistantRun/);

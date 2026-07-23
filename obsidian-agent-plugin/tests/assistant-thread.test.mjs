@@ -14,7 +14,7 @@ async function moduleUnderTest() {
 test("task thread exposes five human steps and hides technical failures by default", async () => {
   const mod = await moduleUnderTest();
   const task = mod.taskThreadFromRun({
-    id: "run-1", status: "running", primary_intent: "learn_topic",
+    id: "run-1", status: "running", taskType: "runtime_task",
     created_at: "2026-07-14T10:00:00+08:00", updated_at: "2026-07-14T10:00:01+08:00",
   }, "conv-1", "msg-1", "PSM");
   assert.equal(task.steps.length, 5);
@@ -90,27 +90,25 @@ test("assistant inspector derives real sources and pending change sets from conv
   assert.equal(changes[0].path, "01-Inbox/Delta.md");
 });
 
-test("assistant visual contract contains the three-column task and result experience", async () => {
+test("ordinary assistant visual contract is driven by Pi messages and Action Results", async () => {
   const views = await readFile(new URL("../src/views.ts", import.meta.url), "utf8");
   const css = await readFile(new URL("../styles.css", import.meta.url), "utf8");
-  for (const label of ["本次任务", "当前上下文", "相关笔记", "最近资料", "推荐动作", "当前任务：", "你将学到", "前置知识", "内容结构", "小测预览", "拆成三天", "先学前置知识"]) {
+  for (const label of ["当前上下文", "相关笔记", "最近资料", "推荐动作", "当前理解", "最近对话信号"]) {
     assert.match(views, new RegExp(label));
   }
-  assert.match(views, /\/integrations\/today\/add/);
-  assert.match(views, /assistantContext\?\.inToday/);
-  assert.match(views, /groupAssistantArtifacts/);
+  assert.match(views, /runPiAssistantTurn/);
+  assert.match(views, /buildAssistantMessageMetadata/);
+  assert.match(views, /apply_vault_change/);
+  assert.match(views, /undoAgentAction/);
   assert.match(css, /\.la-assistant-shell-v4/);
   assert.match(css, /grid-template-columns:\s*minmax\(560px, 1fr\) 300px/);
-  assert.match(css, /\.la-assistant-task-steps/);
-  assert.match(css, /\.la-learning-pack__grid/);
-  assert.match(views, /latestMessage\?\.taskThreadId/);
-  assert.doesNotMatch(views, /result\.task_thread \?\? taskThreadFromRun/);
-  for (const label of ["当前理解", "Agent 正在做什么", "最近修改", "需要确认一个指代", "最近对话信号", "本会话不用于个性化", "Harness 校验并可撤销", "打开笔记", "查看变化", "撤销"]) assert.match(views, new RegExp(label));
+  for (const label of ["需要确认一个指代", "本会话不用于个性化", "Harness 校验并可撤销", "查看变化", "撤销"]) assert.match(views, new RegExp(label));
+  assert.match(views, /openLinkText/);
   assert.match(views, /本地优先 · 低风险写入可撤销/);
   assert.doesNotMatch(views, /写入先审核/);
-  assert.match(views, /\/agent-actions\/\$\{encodeURIComponent\(change\.actionId\)\}\/undo/);
-  assert.match(css, /\.la-context-plan-row/);
-  assert.match(css, /\.la-context-change__actions/);
+  assert.doesNotMatch(views, /latestMessage\?\.taskThreadId/);
+  assert.doesNotMatch(views, /this\.renderAssistantTaskThread\(/);
+  assert.doesNotMatch(views, /this\.renderAssistantArtifactGroup\(/);
 });
 
 test("assistant exposes private conversation controls and governed Vault actions", async () => {

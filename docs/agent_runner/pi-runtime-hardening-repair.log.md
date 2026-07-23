@@ -62,4 +62,27 @@
 
 ## R06 — Structured Compaction
 
+状态：已完成
+
+- 完整状态：从 Session Projection、Focus、附件元数据、Action Journal、pending Tool Result和 Workspace 授权构建有界的 structured checkpoint；`currentLeafId` 使用真实 Entry ID，兄弟分支不进入投影。
+- 事务顺序：先构建并原子持久化 Compaction Entry/checkpoint，确认后才替换内存消息并发送 `context_compacted`；持久化失败保留原消息并返回诊断。
+- 恢复与安全：重启后复用同一 checkpoint 与 `keptFromEntryId` 后记录；待授权/待回答时不压缩；秘钥、完整输出和 reasoning 不进入 checkpoint。
+- 目标测试：后端 compaction/session tree 24/24；前端 compaction/projector/lifecycle 19/19 通过。
+- 完整门禁：Python compileall 与 234/234 tests、plugin 152/152 tests、typecheck、build、`./scripts/check.sh` 全部通过。
+- 提交：`b047300 fix: make pi compaction state-complete and persistence-first`
+
+## R07 — 普通学习助手全量迁移至 Pi
+
+状态：已完成
+
+- 统一回路：新增 DOM 无关的 `runPiAssistantTurn()`，主 Assistant、学习助手和学习笔记生成共同复用 `prepareTurn → query → reducer`；课程、小节、Lesson Version、相关笔记与来源作为有界结构化上下文传入。
+- 学习助手：默认关闭网络并保持只读；任何意外写授权都会取消当前 Run，最终文本只来自 Pi 流聚合。
+- 学习笔记：用户明确点击后由 Pi 执行 `plan_vault_change → apply_vault_change`；只接受 `20-Knowledge/Drafts` 或 `01-Inbox` 下 `state=applied` 的真实 Action Result，并在 UI 提供查看与撤销。
+- 产品边界：删除普通 UI 中不可达的审核中心、Artifact 卡片和旧 Task Thread；普通前端生产目录全量扫描禁止 legacy intake/intent 状态；变更检查器只显示 Pi 的持久化/实时 Action Result。
+- Legacy 收缩：旧 intake 的 Artifact、摘要、状态与会话智能 helper 全部迁入 `ExplicitWorkflowService`；兼容 API 明确标记 deprecated explicit/legacy；Prepared PDF、apply-prepared 和附件入口保留。
+- 目标测试：R07 架构、学习助手、Action Result、Runtime 与显式工作流目标测试 36/36；后端边界/intake/context/structured workflow 43/43 通过。
+- 完整门禁：Python compileall 与 235/235 tests、plugin 159/159 tests、typecheck、build、`./scripts/check.sh` 全部通过。
+
+## R08 — 分支清理、状态纠正和最终验收
+
 状态：进行中

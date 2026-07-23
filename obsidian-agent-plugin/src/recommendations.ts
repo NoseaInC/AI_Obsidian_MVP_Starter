@@ -1,3 +1,5 @@
+import {isActiveExplicitWorkflowJob} from "./explicit-workflow-ui";
+
 export type RecommendationKind = "review" | "learn" | "explore" | "source";
 export type RecommendationSort = "smart" | "due" | "mainline" | "short" | "recent" | "explore";
 
@@ -67,7 +69,7 @@ export function selectRecommendations(items: Recommendation[], query: string, ki
   });
 }
 
-export function activeJobs(jobs: any[]): any[] { return jobs.filter(job => ["queued", "running", "prepared", "awaiting_confirmation", "applying"].includes(job.state)); }
+export function activeJobs(jobs: any[]): any[] { return jobs.filter(job => isActiveExplicitWorkflowJob(String(job.state ?? ""))); }
 export function pendingBundles(bundles: any[]): any[] { return bundles.filter(bundle => bundle.state === "prepared"); }
 export function readableJobTitle(job: any): string {
   const pdf = String(job.payload?.pdf ?? "");

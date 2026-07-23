@@ -104,15 +104,45 @@ test("primary navigation has no standalone approval or review inbox", () => {
   const views = fs.readFileSync(path.join(root, "views.ts"), "utf8");
   assert.match(views, /type MainTab = "today" \| "sources" \| "plan" \| "assistant"/);
   assert.doesNotMatch(views, /this\.navStat\(stats, "需要你确认"/);
+  assert.doesNotMatch(views, /renderReviews|renderAgentArtifactReview|renderReviewDetail|renderAssistantArtifactGroup|renderArtifactCard/);
 });
 
-test("ordinary assistant sendMessage does not call /intake/submit", () => {
+test("every ordinary production UI module is free of legacy intake and intent contracts", () => {
+  const ordinary = files(root).filter(file => path.basename(file) !== "explicit-workflow-ui.ts");
+  const banned = /\/intake\/submit|assistantIntent|primary_intent|precise_intent|awaiting_confirmation/;
+  const violations = ordinary.filter(file => banned.test(fs.readFileSync(file, "utf8")));
+  assert.deepEqual(violations.map(file => path.relative(process.cwd(), file)), []);
+});
+
+test("main and learning surfaces share one Pi turn helper", () => {
   const views = fs.readFileSync(path.join(root, "views.ts"), "utf8");
-  const start = views.indexOf("const sendMessage = async");
-  assert.ok(start >= 0, "views.ts must define sendMessage");
-  const end = views.indexOf("const resultActiveArtifact", start + 10);
-  const body = views.slice(start, end > start ? end : views.length);
-  assert.doesNotMatch(body, /\/intake\/submit/);
+  const helper = fs.readFileSync(path.join(root, "run-pi-assistant-turn.ts"), "utf8");
+  assert.equal((helper.match(/\.prepareTurn\(/g) ?? []).length, 1);
+  assert.equal((helper.match(/\.query\(/g) ?? []).length, 1);
+  assert.equal((views.match(/runPiAssistantTurn\(/g) ?? []).length, 3);
+  assert.match(views, /renderStudyAssistantDrawer[\s\S]*runPiAssistantTurn/);
+});
+
+test("learning assistant is a network-off read-only Pi turn", () => {
+  const views = fs.readFileSync(path.join(root, "views.ts"), "utf8");
+  const start = views.indexOf("private renderStudyAssistantDrawer");
+  const end = views.indexOf("private renderStudyQuiz", start);
+  const body = views.slice(start, end);
+  assert.match(body, /surface: "study_assistant"/);
+  assert.match(body, /allow_network: false/);
+  assert.match(body, /agentRuntime\.cancel/);
+  assert.doesNotMatch(body, /plan_vault_change|apply_vault_change|createRoots/);
+});
+
+test("study-note generation uses Pi, verifies an applied draft Action, and exposes undo", () => {
+  const views = fs.readFileSync(path.join(root, "views.ts"), "utf8");
+  const start = views.indexOf("private async generateStudyNote");
+  const end = views.indexOf("private async openChangeSet", start);
+  const body = views.slice(start, end);
+  for (const token of ["runPiAssistantTurn", "plan_vault_change", "apply_vault_change", "20-Knowledge/Drafts/", "01-Inbox/", 'action.state !== "applied"', "undoAgentAction"]) {
+    assert.match(body, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  assert.doesNotMatch(body, /artifact|proposal_id|change_set_id/);
 });
 
 test("PiAgentRuntime does not import legacy Brain", () => {
@@ -132,6 +162,29 @@ test("ordinary Pi assistant does not produce awaiting_confirmation artifacts", (
 
 test("explicit workflow service owns the legacy Brain intake path", () => {
   const explicit = fs.readFileSync(path.resolve("..", "agent", "core", "explicit_workflow_service.py"), "utf8");
+  const service = fs.readFileSync(path.resolve("..", "agent", "core", "service.py"), "utf8");
   assert.match(explicit, /class ExplicitWorkflowService/);
   assert.match(explicit, /def submit_intake\(/);
+  for (const helper of ["_artifacts_for_run", "_assistant_response", "_record_conversation_intelligence", "_latest_write_status"]) {
+    assert.match(explicit, new RegExp(`def ${helper}\\(`));
+    assert.doesNotMatch(service, new RegExp(`def ${helper}\\(`));
+  }
+});
+
+test("Prepared PDF gates and attachment endpoints remain explicit and intact", () => {
+  const server = fs.readFileSync(path.resolve("..", "agent", "api", "server.py"), "utf8");
+  const service = fs.readFileSync(path.resolve("..", "agent", "core", "service.py"), "utf8");
+  assert.match(server, /path == "\/prepared\/apply"/);
+  assert.match(server, /path == "\/intake\/attachments"/);
+  assert.match(service, /inspect_prepared/);
+  assert.match(service, /apply_prepared/);
+  const views = fs.readFileSync(path.join(root, "views.ts"), "utf8");
+  assert.match(views, /new TextPreviewModal[\s\S]*\/prepared\/apply/);
+});
+
+test("legacy workflow is a named explicit service, not the Pi Agent loop", () => {
+  const explicit = fs.readFileSync(path.resolve("..", "agent", "core", "explicit_workflow_service.py"), "utf8");
+  assert.match(explicit, /StructuredWorkflowRunner/);
+  const executable = explicit.slice(explicit.indexOf("from __future__"));
+  assert.doesNotMatch(executable, /streamModelProxy|append_pi_agent_events|from agent\.core\.pi_|import PiAgentRuntime/);
 });

@@ -7,11 +7,13 @@
     "R02",
     "R03",
     "R04",
-    "R05"
+    "R05",
+    "R06",
+    "R07"
   ],
-  "currentTask": "R06",
+  "currentTask": "R08",
   "status": "running",
   "blockedReason": "",
-  "lastCommit": "54a27b7",
-  "updatedAt": "2026-07-23T10:50:09+08:00"
+  "lastCommit": "b047300",
+  "updatedAt": "2026-07-23T14:10:00+08:00"
 }

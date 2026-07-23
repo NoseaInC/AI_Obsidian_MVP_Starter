@@ -22,9 +22,10 @@ Forbidden legacy symbols that live ONLY here (not in ``service.py``):
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import uuid
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,8 @@ from agent.brain.schemas import IntentResult
 from agent.brain.model_gateway import BrainModelGateway
 from agent.core.assistant_outcomes import AssistantOutcome, resolve_assistant_outcome
 from agent.core.context_material import ContextMaterialCoordinator
+from agent.core.conversation_intelligence import build_conversation_summary, extract_knowledge_signals
+from agent.core.redaction import redact_secret_text
 from agent.core.structured_workflow import StructuredWorkflowRunner
 from agent.core.vault_autonomy import VaultAutonomyService, render_managed_block
 from agent.skills import build_skill_registry
@@ -42,9 +45,9 @@ from agent.tools.change_set import ChangeSetTools
 class ExplicitWorkflowService:
     """Owns the legacy Brain-coupled workflow paths.
 
-    The parent ``AgentService`` is passed in so the migrated methods can keep
-    calling the shared helpers (store, intake, log, research, etc.) through
-    bound references without duplicating state.
+    The parent ``AgentService`` is passed in so explicit workflows can share
+    stores and policy services without leaking Brain-owned behavior back into
+    the ordinary Pi runtime boundary.
     """
 
     def __init__(self, agent: Any) -> None:
@@ -59,15 +62,11 @@ class ExplicitWorkflowService:
         self.log = agent.log
         self.get_brain_run = agent.get_brain_run
         self.get_conversation = agent.get_conversation
-        self._artifacts_for_run = agent._artifacts_for_run
-        self._assistant_task_title = agent._assistant_task_title
-        self._latest_write_status = agent._latest_write_status
-        self._conversation_title = agent._conversation_title
-        self._requested_today_budget = agent._requested_today_budget
-        self._requested_today_constraints = agent._requested_today_constraints
         self.adjust_today = agent.adjust_today
         self.enqueue = agent.enqueue
         self.research_public_web = agent.research_public_web
+        self.refresh_learning_directions = agent.refresh_learning_directions
+        self.learning_directions = agent.learning_directions
         # Legacy Brain-owned dependencies.
         self.context_material = ContextMaterialCoordinator(
             self.vault, self.store, self.intake, self.autonomy,
@@ -80,8 +79,185 @@ class ExplicitWorkflowService:
         self.workflows = StructuredWorkflowRunner(self.vault, self.store, self.skills)
         self.brain_change_sets = ChangeSetTools(self.vault, self.store)
 
-    # ------------------------------------------------------------------
-    # Explicit workflow submission (legacy Brain path)
+    def _artifacts_for_run(
+        self, conversation_id: str, run: dict[str, Any], original_reference: str,
+        attachments: list[dict[str, Any]], original_message: str = "", outcome: str = "create_artifact",
+    ) -> list[dict[str, Any]]:
+        artifacts: list[dict[str, Any]] = []
+        for result in (run.get("result") or {}).get("results", []):
+            kind = str(result.get("kind") or "")
+            if kind in {"capture", "organized-text", "save-proposal"} and outcome in {"propose_write", "create_artifact"}:
+                notes = result.get("proposed_notes") or []
+                title = str((notes[0] if notes else {}).get("title") or result.get("suggested_title") or "Obsidian 保存提案")
+                payload = {**result, "originalReference": original_reference, "sourceType": "用户原文", "riskLevel": "low"}
+                artifacts.append(self.intake.create_artifact("capture_proposal", title, "awaiting_confirmation", conversation_id, run["id"], payload))
+            elif kind == "research-bundle" and outcome == "create_artifact":
+                bundle = result.get("bundle") or {}
+                artifacts.append(self.intake.create_artifact("research_bundle", str(bundle.get("title") or "研究资料包"), "draft", conversation_id, run["id"], {**result, "estimatedMinutes": bundle.get("estimated_minutes", 0), "sourceType": "研究"}))
+            elif kind == "plan-proposal" and outcome == "create_artifact":
+                proposal = result.get("proposal") or {}
+                artifacts.append(self.intake.create_artifact("learning_plan", str(proposal.get("title") or "学习计划"), "awaiting_confirmation", conversation_id, run["id"], {**result, "estimatedMinutes": sum(int(item.get("minutes", 0)) for item in proposal.get("tasks", []))}))
+            elif kind == "curriculum" and outcome == "create_artifact":
+                artifacts.append(self.intake.create_artifact("knowledge_gap", "AI 补全知识候选", "draft", conversation_id, run["id"], {**result, "summary": "基于 reviewed/core 薄弱点生成，不是正式知识"}))
+            elif kind == "tutor" and outcome == "create_artifact":
+                question = str(result.get("question") or original_message or "当前主题")
+                topic_source = re.sub(r"^(请|帮我|介绍一下|解释一下|学习|了解)\s*", "", question).strip(" ：:。")
+                topic_source = re.sub(r"^把\s*", "", topic_source)
+                topic_source = re.split(r"(?:整理成|做成|生成|构建)(?:一个)?学习包", topic_source, maxsplit=1)[0].strip()
+                topic = re.split(r"[，,。；;！？!?]", topic_source, maxsplit=1)[0].strip()[:48] or "当前主题"
+                no_formula = any(token in original_message for token in ("不要公式", "暂时不要公式", "先讲直觉", "不讲公式"))
+                sections = [
+                    {"title": "背景与直觉", "minutes": 4},
+                    {"title": "条件与边界", "minutes": 3},
+                    {"title": "配对流程", "minutes": 3},
+                    {"title": "实践小结", "minutes": 2},
+                ]
+                learning_pack = {
+                    **result, "kind": "learning-pack", "summary": result.get("answer", "学习包已生成"),
+                    "estimatedMinutes": 12, "domain": "因果推断" if any(token in topic.upper() for token in ("PSM", "倾向得分", "因果")) else "当前学习主线",
+                    "format": "微课", "noFormula": no_formula,
+                    "learningOutcomes": [f"用直觉解释{topic}的核心思想", "识别适用条件与常见误区", "完成一组理解小测"],
+                    "prerequisites": ["基础统计知识", "处理组与对照组", "可比性直觉"],
+                    "sections": sections, "quizPreview": list(result.get("quiz_preview") or [])[:3],
+                    "sources": list(result.get("evidence") or []), "originalReference": original_reference,
+                }
+                artifacts.append(self.intake.create_artifact("learning_pack", f"{topic}入门学习包", "draft", conversation_id, run["id"], learning_pack))
+            change_set = result.get("change_set")
+            if outcome in {"propose_write", "create_artifact"} and isinstance(change_set, dict) and change_set.get("id"):
+                writes = list(change_set.get("writes") or [])
+                artifacts.append(self.intake.create_artifact(
+                    "change_set", str(change_set.get("title") or "Change Set"), "awaiting_confirmation", conversation_id, run["id"],
+                    {"kind": "change-set", "changeSetId": change_set["id"], "createCount": sum(item.get("action") == "create" for item in writes), "updateCount": sum(item.get("action") == "update" for item in writes), "linkCount": 0, "conflictCount": 0, "riskLevel": "low", "summary": change_set.get("preview", "等待确认")},
+                ))
+        return artifacts
+
+    @staticmethod
+    def _assistant_response(run: dict[str, Any], artifacts: list[dict[str, Any]], outcome: Any) -> str:
+        if run.get("status") == "failed":
+            return str(run.get("error_message") or "任务处理失败")
+        if outcome.kind in {"answer_only", "answer_and_track", "suggest_action"}:
+            for result in (run.get("result") or {}).get("results", []):
+                answer = str(result.get("answer") or "").strip()
+                if answer:
+                    if outcome.kind == "suggest_action":
+                        return answer + "\n\n如果你希望，我可以在你明确确认后把它整理成学习任务或笔记提案。"
+                    return answer
+        return ExplicitWorkflowService._intake_summary(run, artifacts)
+
+    def _record_conversation_intelligence(
+        self, conversation_id: str, user_message_id: str, assistant_message_id: str,
+        user_message: str, assistant_message: str, outcome: Any,
+    ) -> dict[str, Any]:
+        if outcome.kind == "answer_only":
+            return {"tracked": False, "signals": [], "summary": None}
+        signals = extract_knowledge_signals(user_message)
+        stored = [self.store.upsert_conversation_signal(conversation_id, item.as_dict(), user_message_id) for item in signals]
+        previous = self.store.latest_conversation_summary(conversation_id)
+        summary_text = build_conversation_summary(
+            str((previous or {}).get("summary") or ""), user_message, assistant_message, signals,
+        )
+        summary = self.store.save_conversation_summary(
+            conversation_id, summary_text, [user_message_id, assistant_message_id],
+        )
+        primary_topic = next((item.topic for item in signals if item.signal_type == "topic"), "")
+        if primary_topic:
+            with self.store.lock:
+                self.store.connection.execute(
+                    "UPDATE conversations SET active_topic=?, updated_at=? WHERE id=?",
+                    (primary_topic, datetime.now().astimezone().isoformat(timespec="seconds"), conversation_id),
+                )
+                self.store.connection.commit()
+        directions = self.refresh_learning_directions() if stored else self.learning_directions()
+        return {"tracked": True, "signals": stored, "summary": summary, "directions": directions}
+
+    @staticmethod
+    def _requested_today_budget(message: str) -> int | None:
+        text = " ".join(str(message).split())
+        if not any(token in text for token in ("今天只有", "今日只有", "今天安排", "今日安排", "今天可用", "今日可用", "只剩", "调整为", "改成")):
+            return None
+        match = re.search(r"(\d{1,3})\s*分钟", text)
+        if not match:
+            return None
+        return max(5, min(360, int(match.group(1))))
+
+    @staticmethod
+    def _requested_today_constraints(message: str) -> dict[str, Any]:
+        text = " ".join(str(message).split())
+        if not any(token in text for token in ("今天", "今日")):
+            return {}
+        return {"date": date.today().isoformat(), "noFormula": True} if any(
+            token in text for token in ("不想看公式", "不要公式", "暂时不要公式", "先不看公式")
+        ) else {}
+
+    def _latest_write_status(self, conversation_id: str) -> str:
+        change_set_id = ""
+        artifacts = self.intake.list_artifacts(conversation_id=conversation_id, limit=200).get("items", [])
+        for item in artifacts:
+            if item.get("type") != "change_set":
+                continue
+            detail = self.intake.get_artifact(str(item["id"]))
+            change_set_id = str((detail.get("payload") or {}).get("changeSetId") or "")
+            if change_set_id:
+                break
+        if not change_set_id:
+            with self.store.lock:
+                rows = self.store.connection.execute(
+                    "SELECT cs.id, br.request_json FROM brain_change_sets cs "
+                    "JOIN brain_runs br ON br.id=cs.run_id ORDER BY cs.created_at DESC LIMIT 100"
+                ).fetchall()
+            for row in rows:
+                try:
+                    request = json.loads(row["request_json"] or "{}")
+                except json.JSONDecodeError:
+                    continue
+                if str((request.get("metadata") or {}).get("conversation_id") or "") == conversation_id:
+                    change_set_id = str(row["id"]); break
+        if not change_set_id:
+            return "当前会话还没有生成写入提案，也没有执行任何文件写入。"
+        record = self.store.get_brain_change_set(change_set_id)
+        targets = [str(item.get("path") or "") for item in record.get("writes", []) if item.get("path")]
+        target_text = "、".join(f"`{item}`" for item in targets) or "未记录目标"
+        state = str(record.get("state") or "proposed")
+        if state == "applied":
+            return f"最近的 Change Set `{change_set_id}` 已写入：{target_text}。"
+        if state == "proposed":
+            return f"最近的 Change Set `{change_set_id}` 仍在等待确认，尚未写入。拟写入目标：{target_text}。"
+        return f"最近的 Change Set `{change_set_id}` 状态为 `{state}`，没有可声称已完成的写入。目标：{target_text}。"
+
+    @staticmethod
+    def _intake_summary(run: dict[str, Any], artifacts: list[dict[str, Any]]) -> str:
+        if run.get("status") == "failed":
+            return str(run.get("error_message") or "任务处理失败")
+        labels = {"material": "资料任务", "capture_proposal": "保存提案", "research_bundle": "研究包", "learning_plan": "学习计划", "change_set": "Change Set", "knowledge_gap": "知识缺口", "learning_pack": "学习包", "quiz": "小测"}
+        names = [labels.get(item["type"], item["title"]) for item in artifacts]
+        return "已完成处理。" + (f"生成：{'、'.join(names)}。" if names else "未生成需要确认的写入。")
+
+    @staticmethod
+    def _conversation_title(message: str) -> str:
+        message = redact_secret_text(message)
+        if any(token in message for token in ("PDF", "论文", "教材", "材料")):
+            return "资料处理会话"
+        if any(token in message for token in ("保存", "存入", "记下来")):
+            return "Obsidian 保存提案"
+        if any(token in message for token in ("研究", "找资料", "检索")):
+            return "主题研究"
+        if any(token in message for token in ("计划", "安排学习")):
+            return "学习计划"
+        return (message.splitlines()[0][:32].strip() or "新会话")
+
+    @staticmethod
+    def _assistant_task_title(intent: str, message: str) -> str:
+        topic = re.sub(r"[，。！？!?].*$", "", message.strip()).strip()[:42]
+        labels = {
+            "learn_topic": "构建入门学习包", "ask_question": "回答当前问题",
+            "research_topic": "整理可信资料与学习路径", "create_study_plan": "生成学习计划",
+            "capture_text": "整理原文并生成保存提案", "organize_text": "整理原文并生成保存提案",
+            "import_material": "处理资料并生成学习提案", "continue_artifact_revision": "更新当前成果",
+        }
+        base = labels.get(intent, "处理当前任务")
+        return f"{base}：{topic}" if topic and intent in {"learn_topic", "research_topic"} else base
+
+   # Explicit workflow submission (legacy Brain path)
     # ------------------------------------------------------------------
     def submit_workflow(
         self, body: dict[str, Any], idempotency_key: str = "", *, mode: str | None = None,
@@ -345,7 +521,7 @@ class ExplicitWorkflowService:
                     artifact_group_id=artifact_group["id"] if artifact_group else None,
                     error_code=run.get("error_code"), recoverable=run_status == "failed",
                 )
-            response_text = self.agent._assistant_response(run, artifacts, outcome)
+            response_text = self._assistant_response(run, artifacts, outcome)
             if precise_intent.get("inheritedProposal"):
                 change_artifact = next((item for item in artifacts if item["type"] == "change_set"), None)
                 target = str(precise_intent.get("requestedDestination") or "")
@@ -374,7 +550,7 @@ class ExplicitWorkflowService:
                 task_thread["id"] if task_thread else None,
                 artifact_group["id"] if artifact_group else None,
             )
-            intelligence = self.agent._record_conversation_intelligence(
+            intelligence = self._record_conversation_intelligence(
                 conversation_id, message_row["id"], assistant_message["id"], message,
                 response_text, outcome,
             )

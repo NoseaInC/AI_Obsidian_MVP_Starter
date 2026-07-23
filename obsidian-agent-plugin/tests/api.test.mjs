@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
-import {transform} from "esbuild";
+import {build, transform} from "esbuild";
 
 test("API client only accepts localhost", () => {
   const source = readFileSync(new URL("../src/api.ts", import.meta.url), "utf8");
@@ -65,9 +65,11 @@ test("PDF import creates a visible job and refreshes the materials surface", () 
 });
 
 test("recommendation filtering, sorting and state counts are deterministic", async () => {
-  const source = readFileSync(new URL("../src/recommendations.ts", import.meta.url), "utf8");
-  const {code} = await transform(source, {loader: "ts", format: "esm", target: "es2020"});
-  const mod = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
+  const result = await build({
+    entryPoints: [new URL("../src/recommendations.ts", import.meta.url).pathname],
+    bundle: true, write: false, format: "esm", platform: "node", target: "es2020",
+  });
+  const mod = await import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString("base64")}`);
   const items = [
     {id:"a",title:"主线复习",kind:"review",estimatedMinutes:8,score:70,reason:"到期",domain:"统计",route:"mainline",dueState:"overdue"},
     {id:"b",title:"支线学习",kind:"learn",estimatedMinutes:5,score:80,reason:"下一步",domain:"Agent",route:"branch",dueState:"upcoming"},
@@ -81,11 +83,11 @@ test("recommendation filtering, sorting and state counts are deterministic", asy
 
 test("workspace contains chat-first shell and real interaction components", () => {
   const source = readFileSync(new URL("../src/views.ts", import.meta.url), "utf8");
-  for (const component of ["la-workspace","la-module-nav","la-chat-first","la-material-center","la-plan-focus","la-today-focus","la-unified-composer","la-artifact-card","la-action-bar"]) assert.match(source, new RegExp(component));
+  for (const component of ["la-workspace","la-module-nav","la-chat-first","la-material-center","la-plan-focus","la-today-focus","la-unified-composer","la-live-trace","la-live-trace__action-result","la-action-bar"]) assert.match(source, new RegExp(component));
   assert.doesNotMatch(source, /this\.navStat\(stats, "需要你确认"/);
   for (const action of ["later","tomorrow","weekend","favorite","not_interested"]) assert.match(source, new RegExp(action));
   assert.match(source, /requires_confirmation/);
-  assert.match(source, /\/intake\/submit/);
+  assert.doesNotMatch(source, /\/intake\/submit/);
   assert.match(source, /uploadAttachment/);
   assert.doesNotMatch(source, /la-tabs/);
   assert.doesNotMatch(source, /window\.confirm|window\.prompt|window\.alert/);
@@ -107,7 +109,7 @@ test("retired right sidebar is detached and can no longer be opened", () => {
 test("chat-first UI uses four outcome modules with confirmations kept in the assistant", () => {
   const views = readFileSync(new URL("../src/views.ts", import.meta.url), "utf8");
   const css = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
-  for (const surface of ["la-material-center","la-review-layout","la-plan-focus","la-today-focus","la-assistant-shell-v3","la-provider-drawer","la-artifact-card"]) assert.match(views + css, new RegExp(surface));
+  for (const surface of ["la-material-center","la-plan-focus","la-today-focus","la-assistant-shell-v3","la-provider-drawer","la-live-trace","la-live-trace__action-result"]) assert.match(views + css, new RegExp(surface));
   for (const field of ["Base URL","API Key","模型名称","任务模型路由","OpenAI-compatible","Custom"]) assert.match(views, new RegExp(field));
   for (const module of ["today", "sources", "plan", "assistant"]) assert.match(views, new RegExp(`id: "${module}"`));
   assert.doesNotMatch(views, /\{id: "review", label: "审核"/);
@@ -170,7 +172,7 @@ test("assistant UI uses the Pi runtime and inline governed confirmation", () => 
   const api = readFileSync(new URL("../src/api.ts", import.meta.url), "utf8");
   const css = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
   for (const mode of ["对话", "整理", "研究", "规划"]) assert.match(views, new RegExp(mode));
-  for (const component of ["la-chat-first", "la-live-trace", "renderInlineAgentConfirmation", "la-artifact-card"]) assert.match(views + css, new RegExp(component));
+  for (const component of ["la-chat-first", "la-live-trace", "renderInlineAgentConfirmation", "la-live-trace__action-result"]) assert.match(views + css, new RegExp(component));
   assert.match(views, /PiAgentRuntime/);
   assert.doesNotMatch(views, /PydanticAgentRuntime/);
   assert.match(views, /renderInlineAgentConfirmation/);
@@ -207,9 +209,9 @@ test("provider settings expose Keychain references and explicit model routes", (
   assert.doesNotMatch(views, /localStorage|sessionStorage/);
 });
 
-test("five-page integration includes research bundles, curriculum proposals and Brain quality gates", () => {
+test("four-surface integration includes research, curriculum, and Pi quality gates", () => {
   const views = readFileSync(new URL("../src/views.ts", import.meta.url), "utf8");
-  for (const value of ["研究包", "Research Bundle", "AI 补全", "周末计划", "主脑质量门", "Policy", "Verifier"]) assert.match(views, new RegExp(value));
+  for (const value of ["研究包", "Research Bundle", "AI 补全", "周末计划", "Action Result", "Harness 校验并可撤销", "reviewed/core"]) assert.match(views, new RegExp(value));
   assert.match(views, /\/research-bundles/);
   assert.match(views, /\/curriculum\/refresh/);
 });

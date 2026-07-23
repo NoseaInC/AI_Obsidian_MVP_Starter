@@ -315,6 +315,8 @@ class Handler(BaseHTTPRequestHandler):
                 conversation_id = self._identifier(path.removeprefix("/conversations/").removesuffix("/retain-summary"))
                 payload = self.service.retain_conversation_summary(conversation_id, body.get("confirmed") is True)
             elif path.startswith("/conversations/") and path.endswith("/messages"):
+                # DEPRECATED compatibility alias for explicit legacy workflows.
+                # Ordinary conversation turns stream through Pi runtime endpoints.
                 conversation_id = self._identifier(path.removeprefix("/conversations/").removesuffix("/messages"))
                 payload = self.service.explicit.submit_intake({**body, "conversation_id": conversation_id}, self.headers.get("Idempotency-Key", ""))
             elif path.startswith("/conversations/") and "/messages/" in path and path.endswith("/metadata"):

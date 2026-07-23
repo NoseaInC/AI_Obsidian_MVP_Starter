@@ -88,6 +88,17 @@ class RuntimeArchitectureBoundaryTests(unittest.TestCase):
             if isinstance(node, ast.FunctionDef) and node.name == "submit_intake":
                 self.fail("agent/core/service.py must not define submit_intake")
 
+    def test_legacy_intake_helpers_live_only_in_explicit_workflow_service(self) -> None:
+        service = (ROOT / "agent" / "core" / "service.py").read_text(encoding="utf-8")
+        explicit = (ROOT / "agent" / "core" / "explicit_workflow_service.py").read_text(encoding="utf-8")
+        for name in (
+            "_artifacts_for_run", "_assistant_response", "_record_conversation_intelligence",
+            "_requested_today_budget", "_requested_today_constraints", "_latest_write_status",
+            "_intake_summary", "_conversation_title", "_assistant_task_title",
+        ):
+            self.assertNotIn(f"def {name}", service)
+            self.assertIn(f"def {name}", explicit)
+
     def test_explicit_workflow_service_owns_legacy_paths(self) -> None:
         from agent.core.explicit_workflow_service import ExplicitWorkflowService
         for name in (

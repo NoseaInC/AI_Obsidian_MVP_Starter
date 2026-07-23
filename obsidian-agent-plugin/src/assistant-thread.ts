@@ -121,19 +121,6 @@ export interface LearningPackView {
   sources: Array<{title: string; path?: string; url?: string}>;
 }
 
-const INTENT_LABELS: Record<string, string> = {
-  ask_question: "回答你的问题",
-  learn_topic: "构建入门学习包",
-  research_topic: "整理可信资料与学习路径",
-  capture_text: "整理原文并生成保存提案",
-  organize_text: "整理原文并生成保存提案",
-  import_material: "处理资料并生成学习提案",
-  summarize_material: "处理资料并生成学习提案",
-  create_study_plan: "生成学习计划",
-  generate_quiz: "生成一份理解小测",
-  continue_artifact_revision: "更新当前成果",
-};
-
 const STATUS_MAP: Record<string, AssistantTaskStatus> = {
   created: "planning",
   understanding: "planning",
@@ -141,16 +128,11 @@ const STATUS_MAP: Record<string, AssistantTaskStatus> = {
   awaiting_authorization: "running",
   running: "running",
   verifying: "running",
-  awaiting_confirmation: "waiting_user",
+  waiting_user: "waiting_user",
   completed: "completed",
   failed: "failed",
   cancelled: "cancelled",
 };
-
-export function assistantIntentLabel(intent: string, topic = ""): string {
-  const base = INTENT_LABELS[intent] ?? "完成当前任务";
-  return topic && ["learn_topic", "research_topic"].includes(intent) ? `${base}：${topic}` : base;
-}
 
 export function humanizeAssistantError(code = "", message = "", networkAllowed = true): AssistantFailure {
   const normalized = code.toLocaleLowerCase();
@@ -214,7 +196,7 @@ export function humanizeAssistantError(code = "", message = "", networkAllowed =
 export function taskThreadFromRun(run: any, conversationId: string, userMessageId = "", topic = "", networkAllowed = true): AssistantTaskThread {
   const status = STATUS_MAP[String(run?.status ?? "running")] ?? "running";
   const rawStatus = String(run?.status ?? "running");
-  const stage = ({created: 0, understanding: 0, planning: 1, awaiting_authorization: 1, running: 2, verifying: 3, awaiting_confirmation: 4, completed: 5, failed: 3, cancelled: 2} as Record<string, number>)[rawStatus] ?? 2;
+  const stage = ({created: 0, understanding: 0, planning: 1, awaiting_authorization: 1, running: 2, verifying: 3, waiting_user: 4, completed: 5, failed: 3, cancelled: 2} as Record<string, number>)[rawStatus] ?? 2;
   const isFinalSuccess = ["completed", "waiting_user"].includes(status);
   const labels = [
     ["检查已有知识", "查找相关笔记和当前上下文"],
@@ -236,8 +218,8 @@ export function taskThreadFromRun(run: any, conversationId: string, userMessageI
     id: String(run?.task_thread?.id ?? run?.id ?? `task-${Date.now()}`),
     conversationId,
     userMessageId,
-    title: String(run?.task_thread?.title ?? assistantIntentLabel(String(run?.primary_intent ?? ""), topic)),
-    intent: String(run?.primary_intent ?? "unknown"),
+    title: String(run?.task_thread?.title ?? (topic ? `完成当前任务：${topic}` : "完成当前任务")),
+    intent: String(run?.taskType ?? "runtime_task"),
     status: run?.task_thread?.status ?? status,
     progress: Number(run?.task_thread?.progress ?? progress),
     steps: Array.isArray(run?.task_thread?.steps) && run.task_thread.steps.length
@@ -333,7 +315,7 @@ export function assistantInspectorChanges(artifacts: AssistantArtifact[]): Assis
     changes.set(key, {
       id: artifact.id,
       title: String(embedded?.title ?? artifact.title ?? "Change Set"),
-      status: String(artifact.status ?? embedded?.state ?? "awaiting_confirmation"),
+      status: String(artifact.status ?? embedded?.state ?? "pending"),
       path: path || previous?.path || "受控知识目标",
       summary: String(payload.summary ?? embedded?.preview ?? previous?.summary ?? "等待用户确认"),
       riskLevel: String(payload.riskLevel ?? payload.policy?.risk_level ?? previous?.riskLevel ?? "low"),
