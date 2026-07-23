@@ -14,16 +14,16 @@ import {
 export interface PiCompactionState {
   goal?: string | null;
   explicitConstraints?: string[];
-  conversationFocus?: string | null;
+  conversationFocus?: Record<string, unknown> | null;
   activeNote?: {path: string; name?: string} | null;
-  selection?: string | null;
-  attachments?: string[];
-  sourcesRead?: string[];
-  completedActions?: string[];
-  pendingActions?: string[];
-  failedTools?: string[];
-  activeWorkspace?: {workspaceId: string; projectPaths?: string[]} | null;
-  taskBranch?: {branchId: string; forkedFromSequence?: number | null} | null;
+  activeSelectionReference?: string | null;
+  attachments?: Array<Record<string, unknown>>;
+  sourcesRead?: Array<Record<string, unknown>>;
+  completedActions?: Array<Record<string, unknown>>;
+  pendingActions?: Array<Record<string, unknown>>;
+  failedTools?: Array<Record<string, unknown>>;
+  activeWorkspace?: {workspaceId: string; workspaceIds?: string[]; projectPaths?: string[]} | null;
+  taskBranch?: {branchId: string; parentRunId?: string | null; forkedFromSequence?: number | null; forkedFromEntryId?: string | null} | null;
   taskAuthorization?: unknown;
   currentLeafId?: string | null;
   branchId?: string | null;
@@ -39,6 +39,7 @@ export interface PiCompactionEntry {
   tokensBefore: number;
   tokensAfter: number;
   structuredState: PiCompactionState;
+  createdAt: string;
 }
 
 export interface PiCompactionResult {
@@ -63,18 +64,18 @@ export interface PiCompactionSources {
   messages: AgentMessage[];
   goal?: string | null;
   explicitConstraints?: string[];
-  focus?: string | null;
-  attachments?: string[];
-  sourcesRead?: string[];
-  completedActions?: string[];
-  pendingActions?: string[];
-  failedTools?: string[];
+  conversationFocus?: Record<string, unknown> | null;
+  attachments?: Array<Record<string, unknown>>;
+  sourcesRead?: Array<Record<string, unknown>>;
+  completedActions?: Array<Record<string, unknown>>;
+  pendingActions?: Array<Record<string, unknown>>;
+  failedTools?: Array<Record<string, unknown>>;
   actionIds?: string[];
   activeNote?: {path: string; name?: string} | null;
-  selection?: string | null;
-  activeWorkspace?: {workspaceId: string; projectPaths?: string[]} | null;
+  activeSelectionReference?: string | null;
+  activeWorkspace?: {workspaceId: string; workspaceIds?: string[]; projectPaths?: string[]} | null;
   taskAuthorization?: unknown;
-  taskBranch?: {branchId: string; forkedFromSequence?: number | null} | null;
+  taskBranch?: {branchId: string; parentRunId?: string | null; forkedFromSequence?: number | null; forkedFromEntryId?: string | null} | null;
   currentLeafId?: string | null;
   branchId?: string | null;
   undoState?: unknown;
@@ -146,6 +147,19 @@ export function hasUnresolvedToolCall(messages: AgentMessage[]): boolean {
   return false;
 }
 
+/** Typed pending questions are decision boundaries just like permissions. */
+export function hasPendingQuestion(messages: AgentMessage[]): boolean {
+  return messages.some(message => {
+    const raw = message as unknown as Record<string, unknown>;
+    if (raw.role !== "custom") return false;
+    if (!["question", "question_required", "pendingQuestion"].includes(String(raw.customType ?? ""))) return false;
+    const details = raw.details && typeof raw.details === "object"
+      ? raw.details as Record<string, unknown>
+      : {};
+    return !["answered", "resolved", "cancelled"].includes(String(details.status ?? "pending"));
+  });
+}
+
 /**
  * Find the oldest cut index so that dropping messages[0:cut] leaves a complete
  * prefix (never mid tool-pair) while keeping at least `keepRecentTokens` of the
@@ -168,9 +182,9 @@ export function buildCompactionState(sources: PiCompactionSources): PiCompaction
   return {
     goal: sources.goal ?? null,
     explicitConstraints: sources.explicitConstraints ?? [],
-    conversationFocus: sources.focus ?? null,
+    conversationFocus: sources.conversationFocus ?? null,
     activeNote: sources.activeNote ?? null,
-    selection: sources.selection ?? null,
+    activeSelectionReference: sources.activeSelectionReference ?? null,
     attachments: sources.attachments ?? [],
     sourcesRead: sources.sourcesRead ?? [],
     completedActions: sources.completedActions ?? [],
@@ -189,24 +203,24 @@ export function buildCompactionState(sources: PiCompactionSources): PiCompaction
 function summarize(old: AgentMessage[], state: PiCompactionState): string {
   const lines: string[] = [];
   if (state.goal) lines.push(`目标：${safeLine(state.goal, 240)}`);
-  if (state.conversationFocus) lines.push(`当前焦点：${safeLine(state.conversationFocus, 240)}`);
+  if (state.conversationFocus) lines.push(`当前焦点：${safeLine(JSON.stringify(state.conversationFocus), 400)}`);
   if (state.explicitConstraints && state.explicitConstraints.length) {
     lines.push(`硬性约束：${state.explicitConstraints.map(c => safeLine(c, 120)).join("；")}`);
   }
   if (state.activeNote) lines.push(`当前笔记：${state.activeNote.path}`);
-  if (state.selection) lines.push(`选中内容：${safeLine(state.selection, 200)}`);
+  if (state.activeSelectionReference) lines.push(`选区引用：${safeLine(state.activeSelectionReference, 200)}`);
   if (state.attachments && state.attachments.length) {
-    lines.push(`附件：${state.attachments.map(a => safeLine(a, 120)).join("，")}`);
+    lines.push(`附件引用：${state.attachments.map(a => safeLine(JSON.stringify(a), 160)).join("，")}`);
   }
   if (state.sourcesRead && state.sourcesRead.length) {
-    lines.push(`已读来源：${state.sourcesRead.map(s => safeLine(s, 120)).join("，")}`);
+    lines.push(`已读来源：${state.sourcesRead.map(s => safeLine(JSON.stringify(s), 160)).join("，")}`);
   }
   const completed = state.completedActions ?? [];
-  if (completed.length) lines.push(`已完成动作：${completed.map(a => safeLine(a, 120)).join("，")}`);
+  if (completed.length) lines.push(`已完成动作：${completed.map(a => safeLine(JSON.stringify(a), 160)).join("，")}`);
   const pending = state.pendingActions ?? [];
-  if (pending.length) lines.push(`待办动作：${pending.map(a => safeLine(a, 120)).join("，")}`);
+  if (pending.length) lines.push(`待办动作：${pending.map(a => safeLine(JSON.stringify(a), 160)).join("，")}`);
   if (state.failedTools && state.failedTools.length) {
-    lines.push(`失败工具：${state.failedTools.map(t => safeLine(t, 120)).join("，")}`);
+    lines.push(`失败工具：${state.failedTools.map(t => safeLine(JSON.stringify(t), 160)).join("，")}`);
   }
   if (state.activeWorkspace) {
     const paths = (state.activeWorkspace.projectPaths ?? []).join(", ");
@@ -263,6 +277,16 @@ export function compactAgentMessages(
       reason: "unresolved_tool_call",
     };
   }
+  if (hasPendingQuestion(messages)) {
+    return {
+      messages,
+      compacted: false,
+      tokensBefore,
+      keptTokens: tokensBefore,
+      summary: "",
+      reason: "pending_question",
+    };
+  }
   const cut = findSafeCut(messages, keepRecent);
   if (cut <= 0) {
     return {
@@ -293,13 +317,23 @@ export function compactAgentMessages(
 
   const compactedMessages = [summaryMessage, ...messages.slice(cut)];
   const tokensAfter = estimateContextTokens(compactedMessages).tokens;
+  const entryMetadata = (message: AgentMessage | undefined): Record<string, unknown> => {
+    const raw = message as unknown as Record<string, unknown> | undefined;
+    return raw?.metadata && typeof raw.metadata === "object"
+      ? raw.metadata as Record<string, unknown>
+      : {};
+  };
+  const cutMetadata = entryMetadata(old[old.length - 1]);
+  const keptMetadata = entryMetadata(messages[cut]);
+  const fallbackLeaf = String(state.currentLeafId ?? "");
   const entry: PiCompactionEntry = {
-    cutEntryId: `entry-${cut}`,
-    keptFromEntryId: `entry-${cut}`,
+    cutEntryId: String(cutMetadata.entryEndId ?? cutMetadata.entryId ?? fallbackLeaf),
+    keptFromEntryId: String(keptMetadata.entryStartId ?? keptMetadata.entryId ?? fallbackLeaf),
     summaryVersion: 1,
     tokensBefore,
     tokensAfter,
     structuredState: state,
+    createdAt: new Date().toISOString(),
   };
   return {
     messages: compactedMessages,

@@ -50,4 +50,16 @@
 
 ## R05 — 基于 Session Entry 的 Fork / Regenerate
 
+状态：已完成
+
+- 持久化边界：后端按 `runId + event sequence` 解析真实 Entry，沿 `parent_id` 投影；分支 Run 独立维护 `current_leaf_id`，首 Entry 精确挂到 `resolvedForkEntryId`。
+- Tool/Regenerate：Tool Pair 中间边界自动前移；重新生成保留回答前完整 Pair 与 `completedActionIds`，删除旧回答、后续 pending 和未来历史，不重放已提交 Action。
+- 上下文与授权：保留当前笔记/附件/Focus/Action 引用；新 Authorization 清空 allow_all、network、workspace、write/create/operation grants。插件重启后也可从持久化 source Run 分叉。
+- UI：重新生成按钮调用持久化 `runtime.fork(..., "regenerate")`；本地分支句柄与原持久化 conversation 分离，确保用户消息和新回答仍写入同一会话。
+- 目标测试：后端 session tree 15/15；前端 fork/lifecycle/projector/assistant 28/28 通过。
+- 完整门禁：Python compileall 与 231/231 tests、plugin 147/147 tests、typecheck、build、`./scripts/check.sh` 全部通过。
+- 提交：`54a27b7 fix: fork pi sessions from persisted entry boundaries`
+
+## R06 — Structured Compaction
+
 状态：进行中

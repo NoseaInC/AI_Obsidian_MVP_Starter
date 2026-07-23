@@ -46,6 +46,7 @@ export interface AgentConversationState {
   forkedFromSequence?: number;
   resolvedForkEntryId?: string;
   completedActionIds?: string[];
+  currentLeafId?: string;
 }
 
 export interface AgentInlineConfirmation {

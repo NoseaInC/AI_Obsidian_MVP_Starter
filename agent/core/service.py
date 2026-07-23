@@ -1955,13 +1955,17 @@ class AgentService:
         branch_id = str(body.get("branchId") or run.get("run_id") or "").strip()
         if not session_id:
             raise ValueError("pi_compaction_session_invalid")
-        self.store.save_compaction_checkpoint(
+        summary = str(body.get("summary") or "")
+        if not summary:
+            raise ValueError("pi_compaction_summary_invalid")
+        checkpoint = self.store.save_compaction_checkpoint(
             run_id=run_id,
             session_id=session_id,
             branch_id=branch_id,
             entry=entry,
+            summary=summary,
         )
-        return {"ok": True, "runId": run_id}
+        return {"ok": True, "runId": run_id, "checkpoint": checkpoint}
 
     def get_compaction_checkpoint(self, run_id: str) -> dict[str, Any]:
         run = self.store.get_pi_run(run_id)

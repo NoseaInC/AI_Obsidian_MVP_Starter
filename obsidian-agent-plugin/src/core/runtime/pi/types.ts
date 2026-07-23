@@ -1,5 +1,5 @@
 import type {AgentEvent, AgentTool} from "@earendil-works/pi-agent-core";
-import type {PiCompactionEntry} from "./PiCompaction";
+import type {PiCompactionEntry, PiCompactionState} from "./PiCompaction";
 
 export interface PiToolContract {
   name: string;
@@ -89,6 +89,7 @@ export type PiSessionProjection = {
   activeActions: Array<Record<string, unknown>>;
   pending: Record<string, unknown> | null;
   compaction: Record<string, unknown> | null;
+  compactionState?: PiCompactionState;
   schemaVersion: number;
   completedActionIds?: string[];
 };

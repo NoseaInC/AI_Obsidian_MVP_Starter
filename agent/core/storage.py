@@ -496,6 +496,8 @@ CREATE TABLE IF NOT EXISTS pi_compaction_checkpoints (
   tokens_before INTEGER NOT NULL,
   tokens_after INTEGER NOT NULL,
   state_json TEXT NOT NULL,
+  checkpoint_entry_id TEXT,
+  summary TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   PRIMARY KEY(run_id),
   FOREIGN KEY(run_id) REFERENCES pi_agent_runs(run_id) ON DELETE CASCADE
@@ -506,7 +508,7 @@ CREATE INDEX IF NOT EXISTS idx_pi_compaction_checkpoints_branch
 
 
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 
 def _now() -> str:
@@ -540,7 +542,16 @@ def _projection_safe(value: Any, *, depth: int = 0) -> Any:
             key = str(raw_key)
             normalized = key.lower().replace("-", "_")
             compact = normalized.replace("_", "")
-            if (
+            if normalized in {
+                "tokensbefore", "tokens_before", "tokensafter", "tokens_after",
+                "summaryversion", "summary_version",
+            } and isinstance(item, (int, float)):
+                result[key] = item
+            elif normalized in {"taskauthorization", "task_authorization"}:
+                # This exact field is a deliberately bounded authorization
+                # summary. Its nested secret-shaped keys are still redacted.
+                result[key] = _projection_safe(item, depth=depth + 1)
+            elif (
                 normalized in _PROJECTION_SECRET_KEYS
                 or compact in _PROJECTION_SECRET_KEYS
                 or SENSITIVE_KEY.search(key)
@@ -637,6 +648,18 @@ class StateStore:
                     "UPDATE pi_agent_runs SET current_leaf_id=? WHERE run_id=?",
                     (leaf["id"], run["run_id"]),
                 )
+        checkpoint_columns = {
+            row["name"]
+            for row in self.connection.execute("PRAGMA table_info(pi_compaction_checkpoints)")
+        }
+        if "checkpoint_entry_id" not in checkpoint_columns:
+            self.connection.execute(
+                "ALTER TABLE pi_compaction_checkpoints ADD COLUMN checkpoint_entry_id TEXT"
+            )
+        if "summary" not in checkpoint_columns:
+            self.connection.execute(
+                "ALTER TABLE pi_compaction_checkpoints ADD COLUMN summary TEXT NOT NULL DEFAULT ''"
+            )
 
     def create_pi_task_authorization(self, authorization: dict[str, Any]) -> dict[str, Any]:
         required = (
@@ -1097,6 +1120,8 @@ class StateStore:
         assistant_timestamp = ""
         assistant_run_id = ""
         assistant_turn_id = ""
+        assistant_entry_start_id = ""
+        assistant_entry_end_id = ""
         pending: dict[str, dict[str, Any]] = {}
         pending_order: list[str] = []
         active_pending_calls = active_pending_calls or set()
@@ -1116,6 +1141,7 @@ class StateStore:
 
         def flush_assistant() -> None:
             nonlocal assistant_content, assistant_timestamp, assistant_run_id, assistant_turn_id
+            nonlocal assistant_entry_start_id, assistant_entry_end_id
             if not assistant_content:
                 return
             messages.append({
@@ -1130,18 +1156,23 @@ class StateStore:
                     "branchId": branch_id,
                     "runId": assistant_run_id,
                     "turnId": assistant_turn_id,
+                    "entryStartId": assistant_entry_start_id,
+                    "entryEndId": assistant_entry_end_id,
                 },
             })
             assistant_content = []
             assistant_timestamp = ""
             assistant_run_id = ""
             assistant_turn_id = ""
+            assistant_entry_start_id = ""
+            assistant_entry_end_id = ""
 
         def append_tool_result(
             call_id: str,
             tool_name: str,
             payload: dict[str, Any],
             timestamp: str,
+            entry_id: str,
             *,
             interrupted: bool = False,
         ) -> None:
@@ -1177,7 +1208,12 @@ class StateStore:
                 "details": observation,
                 "isError": status in {"failed", "interrupted"},
                 "timestamp": timestamp or _now(),
-                "metadata": {"branchId": branch_id},
+                "metadata": {
+                    "branchId": branch_id,
+                    "entryId": entry_id,
+                    "entryStartId": entry_id,
+                    "entryEndId": entry_id,
+                },
             })
 
         def interrupt_pending() -> None:
@@ -1195,6 +1231,7 @@ class StateStore:
                     str(call["tool"]),
                     {},
                     str(call["timestamp"]),
+                    str(call.get("entryId") or ""),
                     interrupted=True,
                 )
             pending_order.clear()
@@ -1205,6 +1242,7 @@ class StateStore:
             timestamp = str(entry.get("timestamp") or _now())
             run_id = str(entry.get("runId") or "")
             turn_id = str(entry.get("turnId") or "")
+            entry_id = str(entry.get("id") or "")
 
             if entry_type == "task_authorization":
                 interrupt_pending()
@@ -1214,7 +1252,10 @@ class StateStore:
                         "role": "user",
                         "content": objective,
                         "timestamp": timestamp,
-                        "metadata": {"branchId": branch_id, "runId": run_id, "turnId": turn_id},
+                        "metadata": {
+                            "branchId": branch_id, "runId": run_id, "turnId": turn_id,
+                            "entryId": entry_id, "entryStartId": entry_id, "entryEndId": entry_id,
+                        },
                     })
                 continue
 
@@ -1228,6 +1269,8 @@ class StateStore:
                     assistant_timestamp = timestamp
                     assistant_run_id = run_id
                     assistant_turn_id = turn_id
+                    assistant_entry_start_id = entry_id
+                assistant_entry_end_id = entry_id
                 if assistant_content and assistant_content[-1].get("type") == "text":
                     assistant_content[-1]["text"] = str(assistant_content[-1].get("text") or "") + text
                 else:
@@ -1243,6 +1286,8 @@ class StateStore:
                     assistant_timestamp = timestamp
                     assistant_run_id = run_id
                     assistant_turn_id = turn_id
+                    assistant_entry_start_id = entry_id
+                assistant_entry_end_id = entry_id
                 arguments = payload.get("arguments")
                 if not isinstance(arguments, dict):
                     arguments = payload.get("input") if isinstance(payload.get("input"), dict) else {}
@@ -1252,7 +1297,7 @@ class StateStore:
                     "name": tool_name,
                     "arguments": _projection_safe(arguments),
                 })
-                pending[call_id] = {"tool": tool_name, "timestamp": timestamp}
+                pending[call_id] = {"tool": tool_name, "timestamp": timestamp, "entryId": entry_id}
                 pending_order.append(call_id)
                 continue
 
@@ -1264,7 +1309,7 @@ class StateStore:
                     # A result without the exact persisted call is unsafe context.
                     continue
                 flush_assistant()
-                append_tool_result(call_id, tool_name, payload, timestamp)
+                append_tool_result(call_id, tool_name, payload, timestamp, entry_id)
                 pending.pop(call_id, None)
                 pending_order = [item for item in pending_order if item != call_id]
                 continue
@@ -1280,6 +1325,7 @@ class StateStore:
                         "display": True,
                         "details": {"runId": run_id, "turnId": turn_id, "branchId": branch_id},
                         "timestamp": timestamp,
+                        "metadata": {"entryId": entry_id, "entryStartId": entry_id, "entryEndId": entry_id},
                     })
                 continue
 
@@ -1297,6 +1343,7 @@ class StateStore:
                         "display": False,
                         "details": action_ref,
                         "timestamp": timestamp,
+                        "metadata": {"entryId": entry_id, "entryStartId": entry_id, "entryEndId": entry_id},
                     })
                 continue
 
@@ -1307,6 +1354,7 @@ class StateStore:
                     "summary": str(payload.get("summary") or "")[:20_000],
                     "tokensBefore": int(payload.get("tokensBefore") or 0),
                     "timestamp": timestamp,
+                    "metadata": {"entryId": entry_id, "entryStartId": entry_id, "entryEndId": entry_id},
                 })
 
         interrupt_pending()
@@ -1342,17 +1390,25 @@ class StateStore:
             if not target_run_id and upto_sequence is not None and state_leaf in by_id:
                 target_run_id = str(by_id[state_leaf]["run_id"])
             if not selected_leaf and target_run_id:
-                candidates = [
-                    row for row in rows
-                    if str(row["run_id"]) == target_run_id
-                    and (
-                        upto_sequence is None
-                        or int(row["sequence"] or 0) == 0
-                        or int(row["sequence"] or 0) <= max(0, int(upto_sequence))
-                    )
-                ]
-                if candidates:
-                    selected_leaf = str(max(candidates, key=lambda row: order[str(row["id"])])["id"])
+                target_run = self.connection.execute(
+                    "SELECT current_leaf_id FROM pi_agent_runs WHERE run_id=?",
+                    (target_run_id,),
+                ).fetchone()
+                run_leaf = str(target_run["current_leaf_id"] or "") if target_run else ""
+                if upto_sequence is None and run_leaf in by_id:
+                    selected_leaf = run_leaf
+                else:
+                    candidates = [
+                        row for row in rows
+                        if str(row["run_id"]) == target_run_id
+                        and (
+                            upto_sequence is None
+                            or int(row["sequence"] or 0) == 0
+                            or int(row["sequence"] or 0) <= max(0, int(upto_sequence))
+                        )
+                    ]
+                    if candidates:
+                        selected_leaf = str(max(candidates, key=lambda row: order[str(row["id"])])["id"])
             if not selected_leaf:
                 selected_leaf = state_leaf
             if not selected_leaf and rows:
@@ -1410,11 +1466,21 @@ class StateStore:
             compaction_row = None
             if run_ids:
                 placeholders = ",".join("?" for _ in run_ids)
-                compaction_row = self.connection.execute(
+                compaction_candidates = self.connection.execute(
                     f"SELECT * FROM pi_compaction_checkpoints WHERE run_id IN ({placeholders}) "
-                    "ORDER BY created_at DESC LIMIT 1",
+                    "ORDER BY created_at DESC",
                     tuple(run_ids),
-                ).fetchone()
+                ).fetchall()
+                lineage_ids = {str(row["id"]) for row in lineage_rows}
+                compaction_row = next((
+                    row for row in compaction_candidates
+                    if str(row["checkpoint_entry_id"] or "") in lineage_ids
+                    and str(row["kept_from_entry_id"] or "") in lineage_ids
+                ), None)
+            authorization_row = self.connection.execute(
+                "SELECT * FROM task_authorizations WHERE run_id=? ORDER BY created_at DESC LIMIT 1",
+                (branch_id,),
+            ).fetchone() if branch_id else None
 
         focus = _projection_safe(self.get_conversation_focus(conversation_id) or {})
         lineage_calls = {
@@ -1457,6 +1523,11 @@ class StateStore:
                     "target": str(action.get("target") or "")[:1000],
                     "status": str(action.get("status") or ""),
                     "completedAt": action.get("completed_at"),
+                    "undoState": {
+                        "available": str(action.get("status") or "") == "completed",
+                        "snapshotCount": len(action.get("snapshots") or []),
+                        "changeCount": len(action.get("changes") or []),
+                    },
                 })
 
         compaction = None
@@ -1471,16 +1542,136 @@ class StateStore:
                 "tokensBefore": compaction_row["tokens_before"],
                 "tokensAfter": compaction_row["tokens_after"],
                 "structuredState": _projection_safe(json.loads(compaction_row["state_json"] or "{}")),
+                "checkpointEntryId": compaction_row["checkpoint_entry_id"],
+                "summary": str(compaction_row["summary"] or "")[:20_000],
                 "createdAt": compaction_row["created_at"],
             }
+        message_entries = projected_entries
+        if compaction:
+            checkpoint_id = str(compaction.get("checkpointEntryId") or "")
+            kept_id = str(compaction.get("keptFromEntryId") or "")
+            indexes = {str(item["id"]): index for index, item in enumerate(projected_entries)}
+            checkpoint_index = indexes.get(checkpoint_id)
+            kept_index = indexes.get(kept_id)
+            if checkpoint_index is not None and kept_index is not None and kept_index < checkpoint_index:
+                # A checkpoint is logically the prefix for the recent messages
+                # it retained, even though persistence necessarily happened
+                # after those entries were already durable.
+                message_entries = [
+                    projected_entries[checkpoint_index],
+                    *projected_entries[kept_index:checkpoint_index],
+                    *projected_entries[checkpoint_index + 1:],
+                ]
+        authorization = self._decode_task_authorization(authorization_row) if authorization_row else None
+        resource_scope = dict((authorization or {}).get("resourceScope") or {})
+        explicit_paths = list(resource_scope.get("explicitVaultPaths") or [])
+        active_note_path = str(focus.get("activeVaultNotePath") or "")
+        if not active_note_path and resource_scope.get("currentNote") is True and explicit_paths:
+            active_note_path = str(explicit_paths[0])
+        source_tools = {
+            "read_note_excerpt", "search_vault", "read_attachment_excerpt",
+            "search_public_web", "search_academic_sources", "fetch_public_url",
+            "read_workspace_file",
+        }
+        sources_read: list[dict[str, Any]] = []
+        failed_tools: list[dict[str, Any]] = []
+        for item in projected_entries:
+            if item["entryType"] != "tool_result":
+                continue
+            payload = item["payload"] if isinstance(item.get("payload"), dict) else {}
+            tool_name = str(payload.get("tool") or payload.get("name") or "")
+            status = str(payload.get("status") or "completed")
+            if tool_name in source_tools and status == "completed":
+                sources_read.append({
+                    "tool": tool_name,
+                    "observationReference": str(payload.get("observationReference") or ""),
+                    "observationHash": str(payload.get("observationHash") or ""),
+                    "summary": str(payload.get("summary") or "")[:500],
+                })
+            if status in {"failed", "blocked", "interrupted"}:
+                failed_tools.append({
+                    "tool": tool_name,
+                    "status": status,
+                    "code": str(payload.get("code") or "")[:200],
+                    "summary": str(payload.get("summary") or "")[:500],
+                })
+        completed_actions = [
+            item for item in active_actions if item.get("status") in {"completed", "applied"}
+        ]
+        pending_actions = [
+            item for item in active_actions if item.get("status") not in {"completed", "applied", "undone", "failed"}
+        ]
+        if pending:
+            pending_actions.append({
+                "toolCallId": str(pending.get("toolCallId") or ""),
+                "toolName": str(pending.get("toolName") or ""),
+                "status": str(pending.get("state") or "pending"),
+            })
+        task_authorization_summary = None
+        if authorization:
+            task_authorization_summary = {
+                "id": str(authorization.get("id") or ""),
+                "runId": str(authorization.get("runId") or ""),
+                "networkPolicy": str(authorization.get("networkPolicy") or "deny"),
+                "operationScope": list(authorization.get("operationScope") or []),
+                "resourceScope": {
+                    "currentNote": resource_scope.get("currentNote") is True,
+                    "explicitVaultPaths": explicit_paths[:50],
+                    "createRoots": list(resource_scope.get("createRoots") or [])[:20],
+                    "workspaceId": str(resource_scope.get("workspaceId") or ""),
+                    "workspaceIds": list(resource_scope.get("workspaceIds") or [])[:20],
+                    "projectPaths": list(resource_scope.get("projectPaths") or [])[:20],
+                    "writeScopeState": str(resource_scope.get("writeScopeState") or "unbound"),
+                },
+            }
         branch_run = dict(branch_row) if branch_row else None
+        compaction_state = {
+            "goal": str((authorization or {}).get("objective") or "")[:20_000] or None,
+            "explicitConstraints": [],
+            "conversationFocus": focus or None,
+            "activeNote": {"path": active_note_path} if active_note_path else None,
+            "activeSelectionReference": str(focus.get("activeSelectionReference") or "") or None,
+            "attachments": [
+                {
+                    "id": row["id"], "kind": row["kind"],
+                    "displayName": row["display_name"], "sha256": row["sha256"],
+                    "status": row["status"],
+                }
+                for row in attachment_rows
+            ],
+            "sourcesRead": sources_read[:100],
+            "completedActions": completed_actions,
+            "pendingActions": pending_actions,
+            "failedTools": failed_tools[:100],
+            "activeWorkspace": {
+                "workspaceId": str(resource_scope.get("workspaceId") or ""),
+                "workspaceIds": list(resource_scope.get("workspaceIds") or [])[:20],
+                "projectPaths": list(resource_scope.get("projectPaths") or [])[:20],
+            },
+            "taskBranch": {
+                "branchId": branch_id,
+                "parentRunId": str((branch_run or {}).get("parent_run_id") or "") or None,
+                "forkedFromSequence": (branch_run or {}).get("forked_from_sequence"),
+                "forkedFromEntryId": str((branch_run or {}).get("forked_from_entry_id") or "") or None,
+            },
+            "taskAuthorization": task_authorization_summary,
+            "currentLeafId": selected_leaf or None,
+            "branchId": branch_id,
+            "actionIds": action_ids,
+            "undoState": {
+                "actions": [
+                    {"id": item.get("id"), **dict(item.get("undoState") or {})}
+                    for item in active_actions
+                ],
+            },
+        }
         return {
             "sessionId": session_id,
             "leafId": selected_leaf or None,
             "branchId": branch_id,
             "entries": projected_entries,
             "messages": self._project_pi_messages(
-                projected_entries, branch_id, branch_run, active_pending_calls,
+                message_entries, branch_id, branch_run, active_pending_calls,
             ),
             "focus": focus,
             "attachments": [
@@ -1499,6 +1690,7 @@ class StateStore:
             "activeActions": active_actions,
             "pending": pending,
             "compaction": compaction,
+            "compactionState": _projection_safe(compaction_state),
             "schemaVersion": 1,
         }
 
@@ -1755,39 +1947,90 @@ class StateStore:
         session_id: str,
         branch_id: str,
         entry: dict[str, Any],
-    ) -> None:
+        summary: str,
+    ) -> dict[str, Any]:
         now = _now()
-        structured_state = entry.get("structuredState") or {}
+        structured_state = _projection_safe(entry.get("structuredState") or {})
+        encoded_state = json.dumps(structured_state, ensure_ascii=False)
+        if len(encoded_state.encode("utf-8")) > 256_000:
+            raise ValueError("pi_compaction_state_too_large")
+        safe_summary = str(_projection_safe(summary))[:20_000]
+        cut_entry_id = str(entry.get("cutEntryId") or "")
+        kept_from_entry_id = str(entry.get("keptFromEntryId") or "")
+        if not cut_entry_id or not kept_from_entry_id or not safe_summary:
+            raise ValueError("pi_compaction_boundary_invalid")
+        checkpoint_entry_id = f"pi-entry-checkpoint-{uuid.uuid4().hex}"
         with self.lock:
-            self.connection.execute(
-                """INSERT INTO pi_compaction_checkpoints(
-                     run_id, session_id, branch_id, cut_entry_id, kept_from_entry_id,
-                     summary_version, tokens_before, tokens_after, state_json, created_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(run_id) DO UPDATE SET
-                     session_id=excluded.session_id,
-                     branch_id=excluded.branch_id,
-                     cut_entry_id=excluded.cut_entry_id,
-                     kept_from_entry_id=excluded.kept_from_entry_id,
-                     summary_version=excluded.summary_version,
-                     tokens_before=excluded.tokens_before,
-                     tokens_after=excluded.tokens_after,
-                     state_json=excluded.state_json,
-                     created_at=excluded.created_at""",
-                (
-                    run_id,
-                    session_id,
-                    branch_id,
-                    str(entry.get("cutEntryId") or ""),
-                    str(entry.get("keptFromEntryId") or ""),
-                    int(entry.get("summaryVersion") or 1),
-                    int(entry.get("tokensBefore") or 0),
-                    int(entry.get("tokensAfter") or 0),
-                    json.dumps(structured_state, ensure_ascii=False),
+            run = self.connection.execute(
+                "SELECT * FROM pi_agent_runs WHERE run_id=?", (run_id,),
+            ).fetchone()
+            if not run or str(run["session_id"]) != session_id or branch_id != run_id:
+                raise ValueError("pi_compaction_lineage_mismatch")
+            cursor = str(run["current_leaf_id"] or "")
+            lineage: set[str] = set()
+            while cursor:
+                if cursor in lineage:
+                    raise RuntimeError("pi_session_lineage_cycle")
+                lineage.add(cursor)
+                row = self.connection.execute(
+                    "SELECT parent_id FROM pi_session_entries WHERE id=? AND session_id=?",
+                    (cursor, session_id),
+                ).fetchone()
+                if not row:
+                    raise RuntimeError("pi_session_lineage_broken")
+                cursor = str(row["parent_id"] or "")
+            if cut_entry_id not in lineage or kept_from_entry_id not in lineage:
+                raise ValueError("pi_compaction_boundary_not_in_lineage")
+            try:
+                self._append_pi_session_entry_locked(
+                    run,
+                    checkpoint_entry_id,
+                    "compaction",
+                    {
+                        "summary": safe_summary,
+                        "cutEntryId": cut_entry_id,
+                        "keptFromEntryId": kept_from_entry_id,
+                        "summaryVersion": int(entry.get("summaryVersion") or 1),
+                        "tokensBefore": int(entry.get("tokensBefore") or 0),
+                        "tokensAfter": int(entry.get("tokensAfter") or 0),
+                        "structuredState": structured_state,
+                        "createdAt": now,
+                    },
                     now,
-                ),
-            )
-            self.connection.commit()
+                )
+                self.connection.execute(
+                    """INSERT INTO pi_compaction_checkpoints(
+                         run_id, session_id, branch_id, cut_entry_id, kept_from_entry_id,
+                         summary_version, tokens_before, tokens_after, state_json,
+                         checkpoint_entry_id, summary, created_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(run_id) DO UPDATE SET
+                         session_id=excluded.session_id,
+                         branch_id=excluded.branch_id,
+                         cut_entry_id=excluded.cut_entry_id,
+                         kept_from_entry_id=excluded.kept_from_entry_id,
+                         summary_version=excluded.summary_version,
+                         tokens_before=excluded.tokens_before,
+                         tokens_after=excluded.tokens_after,
+                         state_json=excluded.state_json,
+                         checkpoint_entry_id=excluded.checkpoint_entry_id,
+                         summary=excluded.summary,
+                         created_at=excluded.created_at""",
+                    (
+                        run_id, session_id, branch_id, cut_entry_id, kept_from_entry_id,
+                        int(entry.get("summaryVersion") or 1),
+                        int(entry.get("tokensBefore") or 0),
+                        int(entry.get("tokensAfter") or 0), encoded_state,
+                        checkpoint_entry_id, safe_summary, now,
+                    ),
+                )
+                self.connection.commit()
+            except Exception:
+                self.connection.rollback()
+                raise
+        saved = self.get_compaction_checkpoint(run_id)
+        assert saved is not None
+        return saved
 
     def get_compaction_checkpoint(self, run_id: str) -> dict[str, Any] | None:
         with self.lock:
@@ -1807,6 +2050,8 @@ class StateStore:
             "tokensBefore": row["tokens_before"],
             "tokensAfter": row["tokens_after"],
             "structuredState": json.loads(row["state_json"]),
+            "checkpointEntryId": row["checkpoint_entry_id"],
+            "summary": row["summary"],
             "createdAt": row["created_at"],
         }
 

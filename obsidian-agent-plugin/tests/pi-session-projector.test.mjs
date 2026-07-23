@@ -109,8 +109,9 @@ test("reasoning blocks never enter restored context; controls and checkpoints do
   assert.doesNotMatch(JSON.stringify(restored), /private chain/);
   assert.equal(restored[0].content[0].text, "public answer");
   assert.equal(restored[1].customType, "steering");
-  assert.equal(restored[2].role, "compactionSummary");
-  assert.match(restored[2].summary, /continue/);
+  assert.equal(restored[2].role, "assistant");
+  assert.match(restored[2].content[0].text, /zhixu_runtime_checkpoint/);
+  assert.match(restored[2].content[0].text, /continue/);
 });
 
 process.on("exit", () => dispose().catch(() => {}));

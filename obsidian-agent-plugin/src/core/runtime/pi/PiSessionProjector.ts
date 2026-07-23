@@ -46,12 +46,13 @@ export function projectPiSessionMessages(projection: PiSessionProjection): Agent
     const raw = asRecord(rawValue);
     const role = String(raw.role ?? "");
     const at = timestamp(raw.timestamp);
+    const metadata = asRecord(raw.metadata);
     if (role === "user") {
       const content = typeof raw.content === "string"
         ? raw.content
         : textContent(raw.content);
       if ((typeof content === "string" && !content.trim()) || (Array.isArray(content) && !content.length)) continue;
-      messages.push({role: "user", content, timestamp: at} as AgentMessage);
+      messages.push({role: "user", content, timestamp: at, metadata} as AgentMessage);
       continue;
     }
 
@@ -86,6 +87,7 @@ export function projectPiSessionMessages(projection: PiSessionProjection): Agent
         usage: {...EMPTY_USAGE, cost: {...EMPTY_USAGE.cost}},
         stopReason: blocks.some(block => block.type === "toolCall") ? "toolUse" : "stop",
         timestamp: at,
+        metadata,
       } as AgentMessage);
       continue;
     }
@@ -105,6 +107,7 @@ export function projectPiSessionMessages(projection: PiSessionProjection): Agent
         details: asRecord(raw.details),
         isError: raw.isError === true,
         timestamp: at,
+        metadata,
       } as AgentMessage);
       pendingCalls.delete(callId);
       continue;
@@ -121,6 +124,7 @@ export function projectPiSessionMessages(projection: PiSessionProjection): Agent
         display: raw.display === true,
         details: asRecord(raw.details),
         timestamp: at,
+        metadata,
       } as AgentMessage);
       continue;
     }
@@ -131,17 +135,27 @@ export function projectPiSessionMessages(projection: PiSessionProjection): Agent
         summary: String(raw.summary ?? ""),
         fromId: String(raw.fromId ?? ""),
         timestamp: at,
+        metadata,
       } as AgentMessage);
       continue;
     }
 
     if (role === "compactionSummary") {
       hasCompaction = true;
+      const summary = String(raw.summary ?? "");
       messages.push({
-        role: "compactionSummary",
-        summary: String(raw.summary ?? ""),
-        tokensBefore: Number(raw.tokensBefore ?? 0),
+        role: "assistant",
+        content: [{
+          type: "text",
+          text: `<zhixu_runtime_checkpoint version="1">\n${summary}\n</zhixu_runtime_checkpoint>`,
+        }],
+        api: "zhixu-secure-proxy",
+        provider: "zhixu",
+        model: "restored-session",
+        usage: {...EMPTY_USAGE, cost: {...EMPTY_USAGE.cost}},
+        stopReason: "stop",
         timestamp: at,
+        metadata,
       } as AgentMessage);
     }
   }
@@ -170,11 +184,26 @@ export function projectPiSessionMessages(projection: PiSessionProjection): Agent
   if (!hasCompaction && projection.compaction) {
     const checkpoint = asRecord(projection.compaction);
     const state = asRecord(checkpoint.structuredState);
+    const summary = checkpoint.summary
+      ? String(checkpoint.summary)
+      : `Persisted structured checkpoint: ${JSON.stringify(state)}`;
     messages.push({
-      role: "compactionSummary",
-      summary: `Persisted structured checkpoint: ${JSON.stringify(state)}`,
-      tokensBefore: Number(checkpoint.tokensBefore ?? 0),
+      role: "assistant",
+      content: [{
+        type: "text",
+        text: `<zhixu_runtime_checkpoint version="1">\n${summary}\n</zhixu_runtime_checkpoint>`,
+      }],
+      api: "zhixu-secure-proxy",
+      provider: "zhixu",
+      model: "restored-session",
+      usage: {...EMPTY_USAGE, cost: {...EMPTY_USAGE.cost}},
+      stopReason: "stop",
       timestamp: timestamp(checkpoint.createdAt),
+      metadata: {
+        entryId: checkpoint.checkpointEntryId,
+        entryStartId: checkpoint.checkpointEntryId,
+        entryEndId: checkpoint.checkpointEntryId,
+      },
     } as AgentMessage);
   }
   return messages;
