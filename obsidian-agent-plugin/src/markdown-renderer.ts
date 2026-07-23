@@ -41,11 +41,13 @@ export class ProgressiveAssistantMarkdown {
   private timer = 0;
   private chain: Promise<void> = Promise.resolve();
   private disposed = false;
+  private selectionDeferredAt = 0;
 
   constructor(
     private renderer: ObsidianAssistantMarkdownRenderer,
     private container: HTMLElement,
     private cadenceMs = 90,
+    private maxSelectionDeferMs = 500,
   ) {}
 
   push(markdown: string): void {
@@ -59,11 +61,46 @@ export class ProgressiveAssistantMarkdown {
     }, this.cadenceMs);
   }
 
+  private selectionCommitDelay(): number {
+    const selection = this.container.ownerDocument.getSelection?.();
+    const selectingInside = Boolean(
+      selection
+      && !selection.isCollapsed
+      && selection.anchorNode
+      && this.container.contains(selection.anchorNode),
+    );
+    if (!selectingInside) {
+      this.selectionDeferredAt = 0;
+      return 0;
+    }
+    const now = Date.now();
+    if (!this.selectionDeferredAt) this.selectionDeferredAt = now;
+    const remaining = this.maxSelectionDeferMs - (now - this.selectionDeferredAt);
+    if (remaining <= 0) {
+      this.selectionDeferredAt = 0;
+      return 0;
+    }
+    return Math.min(50, remaining);
+  }
+
+  private schedule(delay = this.cadenceMs): void {
+    if (this.disposed || this.timer) return;
+    this.timer = window.setTimeout(() => {
+      this.timer = 0;
+      void this.queueLatest();
+    }, delay);
+  }
+
   private queueLatest(): Promise<void> {
     const revision = this.revision;
     const markdown = this.latest;
     this.chain = this.chain.then(async () => {
       if (this.disposed || revision < this.revision) return;
+      const selectionDelay = this.selectionCommitDelay();
+      if (selectionDelay) {
+        this.schedule(selectionDelay);
+        return;
+      }
       const committed = await this.renderer.renderAtomic(
         this.container,
         markdown,
@@ -71,13 +108,13 @@ export class ProgressiveAssistantMarkdown {
         undefined,
         () => !this.disposed && revision === this.revision,
       );
-      if (committed) this.committedRevision = revision;
+      if (committed) {
+        this.committedRevision = revision;
+        this.selectionDeferredAt = 0;
+      }
     }).finally(() => {
       if (!this.disposed && this.committedRevision < this.revision && !this.timer) {
-        this.timer = window.setTimeout(() => {
-          this.timer = 0;
-          void this.queueLatest();
-        }, this.cadenceMs);
+        this.schedule(this.selectionCommitDelay() || this.cadenceMs);
       }
     });
     return this.chain;
@@ -88,6 +125,13 @@ export class ProgressiveAssistantMarkdown {
     if (this.timer) { window.clearTimeout(this.timer); this.timer = 0; }
     while (!this.disposed && this.committedRevision < this.revision) {
       await this.queueLatest();
+      if (this.committedRevision < this.revision) {
+        const delay = this.selectionCommitDelay();
+        if (delay) {
+          await new Promise<void>(resolve => window.setTimeout(resolve, delay));
+        }
+        if (this.timer) { window.clearTimeout(this.timer); this.timer = 0; }
+      }
     }
     if (this.timer) { window.clearTimeout(this.timer); this.timer = 0; }
   }

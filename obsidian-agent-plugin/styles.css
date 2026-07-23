@@ -4994,6 +4994,21 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
 }
 .la-assistant-shell-v5 .la-message-actions button:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
 .la-assistant-shell-v5 .la-message-actions svg { width: 13px; height: 13px; }
+.la-message-copy,
+.la-message-markdown,
+.la-message-markdown.markdown-rendered,
+.la-native-markdown,
+.la-study-assistant-message {
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
+}
+.la-message-actions,
+.la-message-actions button,
+.la-message-avatar {
+  -webkit-user-select: none;
+  user-select: none;
+}
 .la-message-attachment { display: inline-block; margin: 8px 5px 0 0; padding: 4px 7px; border-radius: 5px; background: color-mix(in srgb, var(--background-secondary) 62%, transparent); color: var(--text-muted); font-size: 9px; }
 .la-message--streaming .la-message-markdown { min-height: 26px; }
 .la-stream-caret { color: var(--text-muted); white-space: pre-wrap; }

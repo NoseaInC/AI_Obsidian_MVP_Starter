@@ -74,6 +74,16 @@ The Harness now treats a concrete proposal independently from brittle write keyw
 - The screenshot's failed turn was retried from the live error card after restart. Run `run-2f45f3eab68a4d4ab17a369d63fcdec3` completed after 24 real Tool calls and rendered the researched answer; the prior `PermissionError` did not recur.
 - D-046 reasoning display is restored in the installed build: exact provider `thinking_*` blocks render separately and collapsibly, while tool trace and final answer remain distinct. A real UI probe exposed and fixed a separate long-conversation bug: `PiStallGuard` now resets per Run instead of expiring with the conversation. The complete offline gate passes 40 ingestion/review tests, 147 Runtime tests and 76 plugin tests plus typecheck/build/install. Installed/build hashes match (`main.js` `bce9f1da5165d7736065d3557e4181b7e7d33d04cc96b45f87ca59ce947d527d`, `styles.css` `0777f20a598830d8e6b1264973650b1ed5a7ef2dbce1feec450203f71077fcc7`). Final Obsidian reload/live provider rendering remains pending only because the Mac locked during the UI gate.
 
+## Latest Assistant copy closure
+
+- Assistant answers are now selectable and copyable as exact source Markdown
+  during and after streaming. Clipboard failure falls back to a temporary
+  textarea; Progressive Markdown pauses DOM replacement for an active selection
+  for at most 500 ms and never loses the latest revision. Answer copy excludes
+  Tool Trace, metadata and status-only provider reasoning.
+- Latest offline gate: 40/40 ingestion/review, 240/240 Python and 174/174 plugin
+  tests, plus strict TypeScript typecheck and production build.
+
 ## P0 / P1
 
 - None known.

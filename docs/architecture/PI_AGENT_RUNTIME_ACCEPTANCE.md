@@ -24,7 +24,8 @@ Latest `./scripts/check.sh` result:
 
 - 40/40 ingestion/review tests;
 - 240/240 Python Agent/Runtime/security tests;
-- 165/165 plugin tests;
+- 174/174 plugin tests, including exact-Markdown copy, Clipboard fallback and
+  selection-safe progressive rendering;
 - strict TypeScript typecheck and production build passed.
 
 This is still code-level, transaction-level and deterministic Runtime

@@ -21,6 +21,22 @@ and external side effects remain interruptible. The first real Dragonnet
 `apply-prepared` gate is unchanged. The current repair build has not yet been
 validated by a real DeepSeek turn plus an actual Obsidian reload.
 
+## Assistant copy and selection closure
+
+- Completed and streaming Assistant messages expose a keyboard-focusable
+  `复制回答` action that resolves the latest raw Markdown at click time. It never
+  derives content from rendered DOM, Tool Observations, metadata or reasoning
+  status.
+- Copy prefers the Clipboard API and falls back to a temporary hidden textarea;
+  the fallback is always removed, copied text is never logged or persisted, and
+  success/failure is visible through Obsidian Notices.
+- Assistant Markdown explicitly permits text selection. Progressive rendering
+  defers atomic DOM replacement while the user has a selection inside the
+  message, then commits the latest revision when selection ends or after a
+  bounded 500 ms delay.
+- Empty streaming output keeps the action disabled; partial, cancelled and
+  failed runs retain copy access to content already received.
+
 ## Pi runtime production-semantic closure
 
 - Completed Tool Results now persist a secret-free `modelObservation` capped at
@@ -40,7 +56,7 @@ validated by a real DeepSeek turn plus an actual Obsidian reload.
   and stream-protocol failures retain distinct terminal codes. Only the hard
   request timer emits `model_request_deadline_exceeded`.
 - Latest offline gates passed: 40/40 ingestion/review tests, 240/240 Python
-  tests, 165/165 plugin tests, strict TypeScript typecheck, production build and
+  tests, 174/174 plugin tests, strict TypeScript typecheck, production build and
   `./scripts/check.sh`.
 - These are code/transaction/deterministic Runtime results. No real key was
   read, no real provider was called and no running Obsidian process was

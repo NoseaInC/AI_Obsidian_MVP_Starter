@@ -63,6 +63,7 @@ import {
   isExplicitWorkflowPending,
 } from "./explicit-workflow-ui";
 import {runPiAssistantTurn, type PiAssistantTurnInput} from "./run-pi-assistant-turn";
+import {copyTextFrom} from "./clipboard";
 
 export const MAIN_VIEW = "learning-agent-main";
 export const SIDEBAR_VIEW = "zhixu-sidebar-v2";
@@ -2397,6 +2398,17 @@ export class LearningAgentMainView extends ItemView {
         const assistantCopy = assistant.createDiv({cls: "la-message-copy"});
         const markdown = assistantCopy.createDiv({cls: "la-message-markdown"});
         markdown.createSpan({cls: "la-stream-caret", text: "正在连接已选模型…"});
+        const assistantMeta = assistantCopy.createDiv({
+          cls: "la-message-meta la-message-meta--assistant",
+        });
+        const assistantTimestamp = assistantMeta.createEl("small");
+        const assistantActions = assistantMeta.createDiv({cls: "la-message-actions"});
+        const liveCopyControl = this.renderCopyAction(
+          assistantActions,
+          "复制回答",
+          () => liveRun.content,
+          "已复制回答",
+        );
         const confirmationHost = messages.createDiv({cls: "la-inline-confirmation-host"});
         this.assistantLiveConfirmationEls.set(this.conversationId, confirmationHost);
         confirmationHost.hidden = true;
@@ -2455,6 +2467,7 @@ export class LearningAgentMainView extends ItemView {
           }
 
           this.assistantLiveRun = liveRun;
+          liveCopyControl.sync();
 
           // Re-attach live elements when switching back to this conversation
           // after they were detached by a refresh() during background processing.
@@ -2568,8 +2581,11 @@ export class LearningAgentMainView extends ItemView {
           _traceRunId: liveRun.runId,
           _traceModel: liveRun.model,
         };
-        assistantCopy.createEl("small", {text: completedMessage.createdAt ? new Date(completedMessage.createdAt).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) : ""});
-        this.renderAssistantMessageActions(assistantCopy, completedMessage, {content});
+        assistantTimestamp.setText(completedMessage.createdAt
+          ? new Date(completedMessage.createdAt).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})
+          : "");
+        liveCopyControl.sync();
+        this.renderAssistantRegenerateAction(assistantActions, completedMessage, {content});
         if (!regenerateMessageId) {
           this.assistantMessages.push({id: `local-user-${Date.now()}`, role: "user", content, createdAt: new Date().toISOString()});
           this.assistantMessages.push(completedMessage);
@@ -2916,7 +2932,12 @@ export class LearningAgentMainView extends ItemView {
     }
     if (conversation?.id) {
       const footer = parent.createDiv({cls: "la-assistant-context__footer"}); footer.createSpan({text: `会话 ${String(conversation.id).slice(-8)}`});
-      iconButton(footer, "copy", "复制会话 ID", () => void navigator.clipboard.writeText(String(conversation.id)));
+      this.renderCopyAction(
+        footer,
+        "复制会话 ID",
+        () => String(conversation.id),
+        "已复制会话 ID",
+      );
     }
   }
 
@@ -2978,7 +2999,12 @@ export class LearningAgentMainView extends ItemView {
     meta.createEl("small", {text: message.createdAt ? new Date(message.createdAt).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) : ""});
     if (message.role === "user") {
       const actions = meta.createDiv({cls: "la-message-actions"});
-      iconButton(actions, "copy", "复制消息", () => void navigator.clipboard.writeText(String(message.content ?? "")));
+      this.renderCopyAction(
+        actions,
+        "复制消息",
+        () => String(message.content ?? ""),
+        "已复制消息",
+      );
       iconButton(actions, "pencil", "编辑后重发", () => {
         const composer = this.containerEl.querySelector<HTMLTextAreaElement>('textarea[aria-label="知序统一输入"]');
         if (!composer) return;
@@ -2991,6 +3017,44 @@ export class LearningAgentMainView extends ItemView {
       return;
     }
     this.renderAssistantMessageActions(meta, message, previousUserMessage);
+  }
+
+  private renderCopyAction(
+    parent: HTMLElement,
+    label: string,
+    source: () => string,
+    successMessage: string,
+  ): {button: HTMLButtonElement; sync: () => void} {
+    let restoreTimer = 0;
+    let button: HTMLButtonElement;
+    const restore = (): void => {
+      setIcon(button, "copy");
+      button.setAttribute("aria-label", label);
+      button.title = label;
+    };
+    const perform = async (): Promise<void> => {
+      try {
+        await copyTextFrom(source);
+        setIcon(button, "check");
+        button.setAttribute("aria-label", "已复制");
+        button.title = "已复制";
+        new Notice(successMessage);
+        if (restoreTimer) window.clearTimeout(restoreTimer);
+        restoreTimer = window.setTimeout(restore, 1500);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "clipboard_copy_failed";
+        const detail = code === "clipboard_text_empty"
+          ? "没有可复制的内容"
+          : "系统剪贴板不可用";
+        new Notice(`复制失败：${detail}`);
+      }
+    };
+    button = iconButton(parent, "copy", label, () => void perform());
+    const sync = (): void => {
+      button.disabled = source().length === 0;
+    };
+    sync();
+    return {button, sync};
   }
 
   private renderProviderReasoning(
@@ -3013,7 +3077,20 @@ export class LearningAgentMainView extends ItemView {
 
   private renderAssistantMessageActions(copy: HTMLElement, message: any, previousUserMessage: any = null): void {
     const actions = copy.createDiv({cls: "la-message-actions"});
-    iconButton(actions, "copy", "复制回答", () => void navigator.clipboard.writeText(String(message.content ?? "")));
+    this.renderCopyAction(
+      actions,
+      "复制回答",
+      () => String(message.content ?? ""),
+      "已复制回答",
+    );
+    this.renderAssistantRegenerateAction(actions, message, previousUserMessage);
+  }
+
+  private renderAssistantRegenerateAction(
+    actions: HTMLElement,
+    message: any,
+    previousUserMessage: any = null,
+  ): void {
     const previousContent = String(previousUserMessage?.content ?? "");
     const regenerateRunId = persistedAssistantTrace(message)?.runId ?? String(message._traceRunId ?? "");
     const governedWrite = /(保存|写入|存入\s*Obsidian|更新(?:到|进|当前)|修改(?:当前)?笔记|应用修改|整理到)/i.test(previousContent);
