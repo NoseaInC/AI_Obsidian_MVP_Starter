@@ -74,6 +74,15 @@ interface AgentChunkBase {
 export type AgentChunk =
   | (AgentChunkBase & {type: "text"; content: string; messageId?: string})
   | (AgentChunkBase & {
+      type: "reasoning";
+      blockId: string;
+      provider: string;
+      phase: "started" | "delta" | "completed";
+      content: string;
+      tokenCount: number;
+    })
+  // Kept for reconnecting runs written by the former status-only build.
+  | (AgentChunkBase & {
       type: "reasoning_status";
       blockId: string;
       provider: string;

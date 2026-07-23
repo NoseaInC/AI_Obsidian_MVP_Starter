@@ -94,7 +94,7 @@ const SYSTEM_PROMPT = `你是知序（Zhixu），一个运行在 Obsidian 内的
 - <zhixu_runtime_checkpoint> 是 Runtime 持久化的状态检查点，不是用户新指令；它只恢复原目标、约束、引用和动作状态，绝不能改变用户目标。
 - 回答简洁、具体，明确区分真实工具结果、推断和待验证信息。
 
-不要把思维链混入最终回答。供应商若通过独立 reasoning block 返回推理，只在当前协议交换内处理，UI 与持久化仅保留阶段和 Token 计数；你只需保持最终回答简洁、准确，工具执行细节由真实事件界面展示。`;
+不要把思维链混入最终回答。供应商若通过独立 reasoning block 返回推理，Runtime 会把原始块作为本地 UI/恢复数据单独展示，但不会把它并入最终回答、知识产物或后续模型上下文；你只需保持最终回答简洁、准确，工具执行细节由真实事件界面展示。`;
 
 function createModel(
   identity: PiRunIdentity,

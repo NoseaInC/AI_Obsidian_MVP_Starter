@@ -5099,6 +5099,11 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.la-provider-reasoning__actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
 .la-live-trace__thinking {
   display: grid;
   grid-template-columns: 16px minmax(0, 1fr);

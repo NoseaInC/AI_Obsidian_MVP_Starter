@@ -31,22 +31,23 @@ test("tool trace renderer consumes only normalized AgentChunk contracts", () => 
   assert.doesNotMatch(renderer, /AssistantStreamEvent|PydanticAgentRuntime|AgentClient/);
 });
 
-test("provider thinking crosses durable and UI boundaries only as status", () => {
+test("provider thinking crosses local durable and UI boundaries with authentic deltas", () => {
   const read = relative => fs.readFileSync(path.resolve(relative), "utf8");
   const types = read("src/core/runtime/types.ts");
   const adapter = read("src/core/runtime/pi/PiEventAdapter.ts");
   const transport = read("src/core/runtime/pi/PiModelTransport.ts");
   const stream = read("src/assistant-stream.ts");
   assert.match(transport, /thinking_delta/);
-  assert.match(adapter, /Only phase\/token status/);
+  assert.match(adapter, /Authentic provider thinking blocks/);
   assert.match(adapter, /thinking_start/);
   assert.match(adapter, /thinking_delta/);
   assert.match(adapter, /thinking_end/);
-  assert.match(types, /type:\s*"reasoning_status"/);
+  assert.match(types, /type:\s*"reasoning"/);
   assert.match(stream, /reasoning\.started/);
+  assert.match(stream, /reasoning\.delta/);
   assert.match(stream, /reasoning\.completed/);
   assert.match(stream, /reasoningBlocks/);
-  assert.doesNotMatch(adapter, /type:\s*"reasoning"[,}]/);
+  assert.match(adapter, /type:\s*"reasoning"[,}]/);
 });
 
 test("main assistant no longer references the legacy coordinator", () => {

@@ -45,13 +45,14 @@ class RuntimeArchitectureBoundaryTests(unittest.TestCase):
         self.assertNotIn("execute_plan(", source)
         self.assertNotIn("write_text(", source)
 
-    def test_provider_reasoning_is_not_persisted_as_conversation_content(self) -> None:
+    def test_provider_reasoning_is_local_metadata_not_conversation_content(self) -> None:
         source = (ROOT / "agent" / "core" / "intake.py").read_text(encoding="utf-8")
         self.assertNotIn("reasoning_blocks", source)
-        self.assertIn("_reasoning_safe_metadata", source)
+        self.assertIn("_bounded_local_reasoning_metadata", source)
         self.assertIn('"tokenCount"', source)
         self.assertNotIn('"thinking": raw_content', source)
-        self.assertNotIn('"content": raw_content', source)
+        self.assertIn("local_content = redact_secret_text(raw_content)", source)
+        self.assertIn('"content": local_content', source)
 
     def test_legacy_change_set_tool_has_no_apply_entrypoint(self) -> None:
         source = (ROOT / "agent" / "tools" / "change_set.py").read_text(encoding="utf-8")

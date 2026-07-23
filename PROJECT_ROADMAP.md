@@ -120,9 +120,11 @@ real DeepSeek plus Obsidian reload smoke remains before mainline recommendation.
 - Task-scoped reversible Markdown changes apply directly with snapshot, hash verification, Action Result, Diff and conflict-safe Undo.
 - Session Tree, Fork, Steering, Follow-up, cancellation, turn-aware compaction, stall protection and durable reconnect survive restarts.
 - Hybrid Vault retrieval, capability probing and isolated developer workspaces are production tools with conservative policy fallbacks.
-- Provider private reasoning is never a public event, ordinary message, Markdown field or DOM element.
+- Provider reasoning is a bounded local Run/UI recovery artifact with a
+  collapsible view and independent copy; it is never a public event, final
+  answer/knowledge Markdown field or future model-context message.
 
-Acceptance: architecture gates prove no PydanticAI/Brain loop or prose router remains; all Python/plugin/type/build/security tests pass; real Keychain-backed DeepSeek scenarios A–H exercise read, retrieval, direct reversible write/undo, plan-only, developer execution, Steering and Follow-up without exposing a key or private reasoning.
+Acceptance: architecture gates prove no PydanticAI/Brain loop or prose router remains; all Python/plugin/type/build/security tests pass; real Keychain-backed DeepSeek scenarios A–H exercise read, retrieval, direct reversible write/undo, plan-only, developer execution, Steering and Follow-up without exposing a key or leaking provider reasoning outside its explicit local UI/recovery boundary.
 
 ## Deferred backlog
 

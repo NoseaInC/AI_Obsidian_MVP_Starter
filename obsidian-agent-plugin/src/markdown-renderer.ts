@@ -63,11 +63,16 @@ export class ProgressiveAssistantMarkdown {
 
   private selectionCommitDelay(): number {
     const selection = this.container.ownerDocument.getSelection?.();
+    const anchorInside = Boolean(
+      selection?.anchorNode && this.container.contains(selection.anchorNode),
+    );
+    const focusInside = Boolean(
+      selection?.focusNode && this.container.contains(selection.focusNode),
+    );
     const selectingInside = Boolean(
       selection
       && !selection.isCollapsed
-      && selection.anchorNode
-      && this.container.contains(selection.anchorNode),
+      && (anchorInside || focusInside),
     );
     if (!selectingInside) {
       this.selectionDeferredAt = 0;

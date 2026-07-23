@@ -19,6 +19,7 @@ export type AssistantStreamEventType =
   | "message.delta"
   | "message.completed"
   | "reasoning.started"
+  | "reasoning.delta"
   | "reasoning.completed"
   | "proposal.created"
   | "proposal.rejected"
@@ -110,6 +111,7 @@ export interface AssistantLiveRun {
   reasoningBlocks: Array<{
     id: string;
     provider: string;
+    content: string;
     tokenCount: number;
     status: "streaming" | "completed";
   }>;
@@ -161,6 +163,23 @@ export interface PersistedAssistantTrace {
   vaultAction?: Record<string, unknown> | null;
 }
 
+const MAX_LOCAL_REASONING_CHARS = 200_000;
+
+function boundedLocalReasoning(value: unknown): string {
+  return String(value ?? "").slice(0, MAX_LOCAL_REASONING_CHARS);
+}
+
+function boundedLocalReasoningBlocks(
+  blocks: AssistantLiveRun["reasoningBlocks"],
+): AssistantLiveRun["reasoningBlocks"] {
+  let remaining = MAX_LOCAL_REASONING_CHARS;
+  return blocks.slice(0, 16).map(block => {
+    const content = boundedLocalReasoning(block.content).slice(0, remaining);
+    remaining -= content.length;
+    return {...block, content};
+  });
+}
+
 export function initialAssistantLiveRun(): AssistantLiveRun {
   return {
     runId: "",
@@ -199,8 +218,12 @@ export function buildAssistantMessageMetadata(
       runId: run.runId,
       model: run.model,
       status: run.status,
-      reasoningBlocks: run.reasoningBlocks
-        .map(block => ({...block, status: "completed"})),
+      reasoningBlocks: boundedLocalReasoningBlocks(
+        run.reasoningBlocks.map(block => ({
+          ...block,
+          status: "completed",
+        })),
+      ),
       context: run.context,
       steps: run.steps.map(step => ({...step})),
       plannerRound: run.plannerRound,
@@ -220,14 +243,22 @@ export function persistedAssistantTrace(message: Record<string, any>): Persisted
   const raw = message?.metadata?.piTrace;
   if (!raw || typeof raw !== "object" || raw.schemaVersion !== 1) return null;
   if (!Array.isArray(raw.steps) || !Array.isArray(raw.toolCalls) || !Array.isArray(raw.reasoningBlocks)) return null;
+  let reasoningCharsRemaining = MAX_LOCAL_REASONING_CHARS;
   return {
     ...raw,
-    reasoningBlocks: raw.reasoningBlocks.map((block: any, index: number) => ({
-      id: String(block?.id ?? `provider-reasoning-${index}`),
-      provider: String(block?.provider ?? "provider"),
-      tokenCount: Math.max(0, Number(block?.tokenCount ?? 0)),
-      status: block?.status === "streaming" ? "streaming" : "completed",
-    })),
+    reasoningBlocks: raw.reasoningBlocks.slice(0, 16).map((block: any, index: number) => {
+      const content = boundedLocalReasoning(
+        block?.content ?? block?.reasoningContent ?? block?.thinking,
+      ).slice(0, reasoningCharsRemaining);
+      reasoningCharsRemaining -= content.length;
+      return {
+        id: String(block?.id ?? `provider-reasoning-${index}`),
+        provider: String(block?.provider ?? "provider"),
+        content,
+        tokenCount: Math.max(0, Number(block?.tokenCount ?? 0)),
+        status: block?.status === "streaming" ? "streaming" : "completed",
+      };
+    }),
   } as PersistedAssistantTrace;
 }
 
@@ -340,6 +371,7 @@ export function reduceAssistantStream(
     next.content += String(event.delta ?? "");
   } else if (
     event.type === "reasoning.started" ||
+    event.type === "reasoning.delta" ||
     event.type === "reasoning.completed"
   ) {
     const id = String(event.blockId ?? "provider-reasoning");
@@ -347,12 +379,16 @@ export function reduceAssistantStream(
     const existing = index >= 0 ? next.reasoningBlocks[index] : {
       id,
       provider: String(event.provider ?? "provider"),
+      content: "",
       tokenCount: 0,
       status: "streaming" as const,
     };
     const block = {
       ...existing,
       provider: String(event.provider ?? existing.provider),
+      content: event.type === "reasoning.delta"
+        ? boundedLocalReasoning(existing.content + String(event.delta ?? ""))
+        : existing.content,
       tokenCount: Math.max(existing.tokenCount, Number(event.tokenCount ?? 0)),
       status: event.type === "reasoning.completed" ? "completed" as const : existing.status,
     };
@@ -398,12 +434,22 @@ export function reduceAssistantStream(
       : next.completedMessage;
     const storedReasoning = event.message?.reasoningBlocks;
     if (Array.isArray(storedReasoning) && storedReasoning.length) {
-      next.reasoningBlocks = storedReasoning.map((block: any, index: number) => ({
-        id: String(block.id ?? `provider-reasoning-${index + 1}`),
-        provider: String(block.provider ?? "provider"),
-        tokenCount: Math.max(0, Number(block.tokenCount ?? 0)),
-        status: "completed" as const,
-      }));
+      next.reasoningBlocks = storedReasoning.map((block: any, index: number) => {
+        const id = String(block.id ?? `provider-reasoning-${index + 1}`);
+        const existing = next.reasoningBlocks.find(item => item.id === id);
+        return {
+          id,
+          provider: String(block.provider ?? existing?.provider ?? "provider"),
+          content: boundedLocalReasoning(
+            block.content ?? block.reasoningContent ?? block.thinking ?? existing?.content,
+          ),
+          tokenCount: Math.max(
+            Number(existing?.tokenCount ?? 0),
+            Number(block.tokenCount ?? 0),
+          ),
+          status: "completed" as const,
+        };
+      });
     }
     if (!next.content && typeof event.message?.content === "string") {
       next.content = event.message.content;
@@ -516,6 +562,14 @@ export function agentChunkToAssistantEvent(chunk: AgentChunk): AssistantStreamEv
     conversationId: chunk.conversationId,
   };
   if (chunk.type === "text") return {...base, type: "message.delta", delta: chunk.content, messageId: chunk.messageId};
+  if (chunk.type === "reasoning") return {
+    ...base,
+    type: `reasoning.${chunk.phase}` as "reasoning.started" | "reasoning.delta" | "reasoning.completed",
+    blockId: chunk.blockId,
+    provider: chunk.provider,
+    delta: chunk.phase === "delta" ? chunk.content : undefined,
+    tokenCount: chunk.tokenCount,
+  };
   if (chunk.type === "reasoning_status") return {
     ...base,
     type: `reasoning.${chunk.phase}` as "reasoning.started" | "reasoning.completed",

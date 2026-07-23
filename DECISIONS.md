@@ -206,17 +206,21 @@ Pi Agent Core and Pi AI own the model/tool loop, Session Tree, Steering, Follow-
 
 Provider-neutral runtime identifiers such as `configured-assistant-model` never cross the secure model-proxy boundary as provider model names. The proxy resolves them through the selected Profile and emits the protocol's canonical `error` event for provider failures. The TypeScript transport treats timeout and EOF without `done` or `error` as failure, so every started turn reaches exactly one terminal client state. UI setup is single-flight and crash recovery expires orphaned Pi Runs; neither a provider rejection nor a plugin restart may leave a permanently running task.
 
-## D-046 — Provider reasoning prose never crosses a durable or UI boundary
+## D-046 — Provider reasoning is local UI/recovery data, separate from the answer
 
 When a configured provider returns a dedicated `reasoning_content` block, the
-secure proxy and Pi transport may use its ordered start/delta/end events only
-inside the current protocol exchange. The Agent event boundary converts that
-stream to `reasoning_status` with `started|completed` and a bounded Token count.
-Reasoning prose is never written to SQLite or conversation metadata, returned
-by reconnect, rendered in the DOM, copied into Markdown or restored to future
-model context. Startup migration removes prose stored by older builds. The UI
-may show only neutral status such as “正在思考” or “思考已完成”; it must not infer,
-summarize or fabricate reasoning from final text, tools or runtime stages.
+secure proxy, Pi transport and Agent event boundary preserve its authentic
+ordered start/delta/end events. The original deltas are bounded, secret-redacted
+and stored only in the local Run/event store and local conversation UI metadata,
+so reconnect and plugin restart can restore a collapsible reasoning block. The
+UI renders provider text as plain text and exposes a dedicated “复制思考” action;
+“复制回答” still copies only the final source Markdown.
+
+Provider reasoning is never inferred from final text, tools or runtime stages,
+never merged into the final answer or knowledge Markdown, and never restored to
+future model context. Ordinary blocks are preserved exactly; oversized event
+deltas and metadata blocks are bounded. Prose already erased by a status-only
+build cannot be reconstructed, so those older records remain status-only.
 
 ## D-047 — Large content is paged or moved locally, never serialized through the model twice
 

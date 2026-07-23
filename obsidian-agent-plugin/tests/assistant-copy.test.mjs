@@ -98,6 +98,24 @@ test("failed Clipboard API uses a hidden textarea and always removes it", async 
   let selected = false;
   let removed = false;
   let execCalls = 0;
+  let previousFocusRestored = false;
+  let selectionCleared = 0;
+  const restoredRanges = [];
+  const clonedRange = {id: "cloned"};
+  const previousActiveElement = {
+    focus(options) {
+      previousFocusRestored = options?.preventScroll === true;
+    },
+  };
+  const previousSelection = {
+    rangeCount: 1,
+    getRangeAt(index) {
+      assert.equal(index, 0);
+      return {cloneRange: () => clonedRange};
+    },
+    removeAllRanges() { selectionCleared += 1; },
+    addRange(range) { restoredRanges.push(range); },
+  };
   const style = {
     values: {},
     setProperty(name, value) { this.values[name] = value; },
@@ -111,6 +129,8 @@ test("failed Clipboard API uses a hidden textarea and always removes it", async 
     remove() { removed = true; },
   };
   const fakeDocument = {
+    activeElement: previousActiveElement,
+    getSelection: () => previousSelection,
     body: {appendChild(node) { appended = node; }},
     createElement(name) {
       assert.equal(name, "textarea");
@@ -135,6 +155,9 @@ test("failed Clipboard API uses a hidden textarea and always removes it", async 
   assert.equal(selected, true);
   assert.equal(execCalls, 1);
   assert.equal(removed, true);
+  assert.equal(previousFocusRestored, true);
+  assert.equal(selectionCleared, 1);
+  assert.deepEqual(restoredRanges, [clonedRange]);
 });
 
 test("empty content fails explicitly without touching the clipboard", async () => {
@@ -179,15 +202,17 @@ test("progressive rendering defers replacement during selection and commits the 
     clearTimeout: timer => clearTimeout(timer),
   };
   let selecting = true;
-  const anchorNode = {};
+  const anchorNode = {outside: true};
+  const focusNode = {inside: true};
   const container = {
     ownerDocument: {
       getSelection: () => ({
         isCollapsed: !selecting,
         anchorNode,
+        focusNode,
       }),
     },
-    contains: node => node === anchorNode,
+    contains: node => node === focusNode,
   };
   const commits = [];
   const renderer = {
@@ -219,7 +244,7 @@ test("progressive rendering cannot remain paused beyond its selection budget", a
   const anchorNode = {};
   const container = {
     ownerDocument: {
-      getSelection: () => ({isCollapsed: false, anchorNode}),
+      getSelection: () => ({isCollapsed: false, anchorNode, focusNode: anchorNode}),
     },
     contains: node => node === anchorNode,
   };
@@ -239,13 +264,15 @@ test("progressive rendering cannot remain paused beyond its selection budget", a
   });
 });
 
-test("reasoning privacy remains status-only and answer copy cannot include it", async () => {
+test("reasoning has an independent copy action while answer copy remains answer-only", async () => {
   const [views, stream] = await Promise.all([
     readFile(new URL("../src/views.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/assistant-stream.ts", import.meta.url), "utf8"),
   ]);
-  assert.match(views, /供应商推理原文不会发送到 UI 或持久化/);
-  assert.doesNotMatch(stream, /reasoningBlocks:[\s\S]{0,200}content:/);
+  assert.match(views, /保存在本地用于恢复，不会并入最终回答或未来模型上下文/);
+  assert.match(stream, /reasoningBlocks:[\s\S]{0,220}content:\s*string/);
   assert.match(views, /\(\) => String\(message\.content \?\? ""\)/);
-  assert.doesNotMatch(views, /复制思考|复制回答与思考/);
+  assert.match(views, /"复制思考"/);
+  assert.match(views, /visible\.map\(block => String\(block\.content \?\? ""\)\)/);
+  assert.doesNotMatch(views, /复制回答与思考/);
 });

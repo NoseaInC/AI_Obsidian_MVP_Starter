@@ -2688,7 +2688,7 @@ export class LearningAgentMainView extends ItemView {
     details.createEl("summary", {text: "推理与执行过程"});
     details.createDiv({
       cls: "la-live-trace__disclaimer",
-      text: "供应商推理原文不会发送到 UI 或持久化；这里只显示阶段与 Token 计数。",
+      text: "这里只展示供应商真实返回的思考内容；它保存在本地用于恢复，不会并入最终回答或未来模型上下文。",
     });
     this.renderProviderReasoning(details, run.reasoningBlocks, providerReasoningOpen);
     const thinking = details.createDiv({cls: "la-live-trace__thinking"});
@@ -3059,7 +3059,7 @@ export class LearningAgentMainView extends ItemView {
 
   private renderProviderReasoning(
     parent: HTMLElement,
-    blocks: Array<{id?: string; provider?: string; tokenCount?: number; status?: string}>,
+    blocks: Array<{id?: string; provider?: string; content?: string; tokenCount?: number; status?: string}>,
     open: boolean,
   ): void {
     const visible = blocks.filter(block => block && typeof block === "object");
@@ -3068,11 +3068,27 @@ export class LearningAgentMainView extends ItemView {
     details.open = open;
     const summary = details.createEl("summary");
     setIcon(summary.createSpan({cls: "la-provider-reasoning__icon"}), "brain-circuit");
-    summary.createSpan({text: "思考状态"});
+    summary.createSpan({text: "模型思考"});
     const streaming = visible.some(block => block.status === "streaming");
     summary.createEl("small", {
       text: streaming ? "正在思考" : "思考已完成",
     });
+    const body = details.createDiv({cls: "la-provider-reasoning__body"});
+    const contentBlocks = visible
+      .map(block => String(block.content ?? ""))
+      .filter(Boolean);
+    if (contentBlocks.length) {
+      for (const content of contentBlocks) body.createEl("pre", {text: content});
+      const actions = body.createDiv({cls: "la-provider-reasoning__actions"});
+      this.renderCopyAction(
+        actions,
+        "复制思考",
+        () => visible.map(block => String(block.content ?? "")).filter(Boolean).join("\n\n"),
+        "已复制思考",
+      );
+    } else {
+      body.createEl("small", {text: "该历史记录只保留了思考状态，没有可恢复的原文。"});
+    }
   }
 
   private renderAssistantMessageActions(copy: HTMLElement, message: any, previousUserMessage: any = null): void {

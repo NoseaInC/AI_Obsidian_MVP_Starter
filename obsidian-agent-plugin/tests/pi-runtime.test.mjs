@@ -104,7 +104,7 @@ test("Pi owns an observation-driven multi-turn tool loop", async () => {
   }
 });
 
-test("Pi restores durable history but emits and persists only reasoning status", async () => {
+test("Pi restores durable history and persists provider reasoning outside model context", async () => {
   const {module, dispose} = await loadRuntime();
   let restoredContext = "";
   const persisted = [];
@@ -145,12 +145,12 @@ test("Pi restores durable history but emits and persists only reasoning status",
     assert.match(restoredContext, /旧回答/);
     assert.doesNotMatch(restoredContext, /供应商原始推理/);
     assert.equal(chunks.filter(item => item.type === "text").map(item => item.content).join(""), "恢复成功");
-    const reasoning = chunks.filter(item => item.type === "reasoning_status");
-    assert.deepEqual(reasoning.map(item => item.phase), ["started", "completed"]);
+    const reasoning = chunks.filter(item => item.type === "reasoning");
+    assert.deepEqual(reasoning.map(item => item.phase), ["started", "delta", "completed"]);
     assert.ok(reasoning.at(-1).tokenCount > 0);
-    assert.equal(reasoning.some(item => "content" in item), false);
-    assert.doesNotMatch(JSON.stringify(chunks), /供应商原始推理/);
-    assert.doesNotMatch(JSON.stringify(persisted), /供应商原始推理/);
+    assert.equal(reasoning.filter(item => item.phase === "delta").map(item => item.content).join(""), "供应商原始推理");
+    assert.match(JSON.stringify(chunks), /供应商原始推理/);
+    assert.match(JSON.stringify(persisted), /供应商原始推理/);
     runtime.cleanup();
   } finally {
     await dispose();

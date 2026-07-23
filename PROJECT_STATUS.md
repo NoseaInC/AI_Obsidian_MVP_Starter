@@ -45,10 +45,11 @@ validated by a real DeepSeek turn plus an actual Obsidian reload.
   The same bound applies to reconnect events, and schema 16 backfills old
   Session shells from historical local Tool Result events before scrubbing
   those events.
-- Provider reasoning deltas remain only in the current provider/Pi protocol
-  exchange. SQLite, reconnect, conversation metadata and UI receive only
-  `reasoning_status` phase/token records. Startup migration irreversibly removes
-  reasoning prose written by earlier builds.
+- Authentic provider reasoning deltas now cross the local Run/UI boundary as
+  ordered `reasoning` events. SQLite, reconnect and bounded local conversation
+  metadata preserve them for collapsible display and independent copy, while
+  Session Projection still excludes them from every future model request.
+  Reasoning already erased by the former status-only migration is not recoverable.
 - `pi_agent_runs` now stores `profile_id`, `selected_model` and
   `provider_adapter_version`; a cold-start Fork reconstructs all three instead
   of falling back to an empty Profile.
@@ -99,10 +100,11 @@ validated by a real DeepSeek turn plus an actual Obsidian reload.
 - Capability probes cache facts without keys and conservatively resolve Tool Calling, streaming, parallelism, strict schema, usage and reasoning options.
 - Developer workspaces use isolated Git worktrees, structured commands, a minimal environment and a deny-by-default network/shell policy.
 - Conversation turns and final answers use stable message IDs, are persisted idempotently and hydrate Pi after a plugin/runtime restart.
-- Provider-returned thinking text stays inside the live provider/Pi exchange.
-  Durable/UI boundaries expose only ordered `reasoning_status` phase and Token
-  counts; no original reasoning prose enters SQLite, conversation metadata,
-  Markdown, reconnect payloads or DOM.
+- Provider-returned thinking text is kept as a separate local-only UI/recovery
+  artifact. Ordered deltas survive SQLite, reconnect and bounded conversation
+  metadata, render in a collapsible plain-text block and have an independent
+  copy action. They never enter the final answer, knowledge Markdown or future
+  model context.
 - Pi stall budgets now reset at the start of every Run instead of inheriting the age of a long-lived conversation. This closes the real `stall_guard_elapsed_time_limit` failure that previously rejected the first model request after a conversation had remained open for more than 30 minutes.
 - Pi model dispatch now resolves the provider-neutral `configured-assistant-model` placeholder to the selected Profile's real `defaultModel`. Provider rejections, premature NDJSON EOF and 45-second no-activity stalls always terminate the Run with a recoverable error instead of leaving “正在连接已选模型…” spinning forever. Assistant submit setup is single-flight, clears the submitted composer immediately and keeps the in-flight Stop control usable; Runtime restart also fails and releases orphaned Pi Runs.
 - Assistant Auto mode now resolves an enabled configured Profile before constructing the Pi Turn, and the model proxy has a single-configured-Profile fallback when routing is temporarily empty. Startup validation/profile failures stay inside the versioned model stream, legacy `run.failed` is terminal, and `agent_end` no longer emits a false success before an error. The installed Obsidian build was restarted and a real Keychain-backed UI turn completed with the exact answer “知序实时链路正常”; full offline checks passed (40 ingestion/review tests, 155 Agent tests and 76 plugin tests, plus typecheck/build).
@@ -242,7 +244,10 @@ reasoning visibility follows the narrower D-046 contract.
 - Real installed-Obsidian acceptance on 2026-07-19 passed a configured `deepseek-v4-pro` web turn. The model called actual search/fetch tools, returned three Pydantic official documentation sources and populated the Sources Inspector; no Change Set or Vault write was created.
 - Assistant UI V7 removes the crowded action header. The header now contains only the conversation title; model and network state live in the composer, and all secondary actions are grouped under the composer `+` menu.
 - A real installed `deepseek-v4-pro` mixed-write regression passed: one new knowledge draft and one protected MOC update became a single confirmable Change Set whose protected operation was redirected to a local update suggestion. The same Run is intentionally paused at inline confirmation; neither candidate file was applied and the MOC was not modified.
-- Provider reasoning display was restored under D-046: only an actual provider `reasoning_content` / Pi `thinking_*` block is shown, independently from the final answer and real Tool Trace. It is collapsible and absent when the provider returns none.
+- Provider reasoning display is implemented under D-046: only an actual provider
+  `reasoning_content` / Pi `thinking_*` block is shown, independently from the
+  final answer and real Tool Trace. It is collapsible, independently copyable,
+  locally recoverable and absent when the provider returns none.
 - Assistant reasoning now has an explicit `Auto / 深度` runtime mode in the composer model menu. Auto keeps the provider default; DeepSeek Deep sends `thinking=enabled` plus `reasoning_effort=max`, raises the per-turn budget to at least 8192 tokens, compacts oversized history by complete request/response pairs, and adds evidence/edge-case/final-verification instructions.
 - A real Keychain-backed `deepseek-v4-pro` temporary-Vault smoke on 2026-07-19 completed with `reasoning_effort=max`: 5,395 streamed reasoning characters, 4,362 answer characters and two real tool calls. It ended `run.completed`, produced no API error and wrote zero Markdown files. The smoke output recorded only counts/status, never the key or reasoning text.
 - The rebuilt plugin was installed and reloaded in Obsidian 1.12.7. The live model popover exposes the Deep switch and the composer reports `Auto · 深度` after activation. Build/installed hashes match: `main.js` `5f7936000ff0609c7284844baf6661015c20fb7adbac041fedf082841e44dd1d`; `styles.css` `cf9bb0581fe87d6012ac1c68b3705c69dcaaf3c4ea753eab56a15144baf011f5`.

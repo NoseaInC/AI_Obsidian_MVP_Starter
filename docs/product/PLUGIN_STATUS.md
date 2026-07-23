@@ -78,9 +78,14 @@ The Harness now treats a concrete proposal independently from brittle write keyw
 
 - Assistant answers are now selectable and copyable as exact source Markdown
   during and after streaming. Clipboard failure falls back to a temporary
-  textarea; Progressive Markdown pauses DOM replacement for an active selection
+  textarea and restores the previous focus and selection; Progressive Markdown
+  recognizes either end of a cross-boundary selection, pauses DOM replacement
   for at most 500 ms and never loses the latest revision. Answer copy excludes
-  Tool Trace, metadata and status-only provider reasoning.
+  Tool Trace, metadata and provider reasoning.
+- Authentic provider reasoning deltas are now preserved in bounded local
+  Run/message storage, restored after reconnect or restart, rendered in a
+  collapsible plain-text block and copied only through “复制思考”. They remain
+  excluded from final-answer copy, knowledge Markdown and future model context.
 - Latest offline gate: 40/40 ingestion/review, 240/240 Python and 174/174 plugin
   tests, plus strict TypeScript typecheck and production build.
 

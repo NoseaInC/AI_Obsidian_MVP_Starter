@@ -4,8 +4,9 @@ import type {PiRunIdentity} from "./types";
 
 /**
  * Projects Pi lifecycle events into the UI protocol in their real order.
- * Provider thinking text remains inside the current Pi protocol exchange.
- * Only phase/token status crosses the durable/UI AgentChunk boundary.
+ * Authentic provider thinking blocks cross the local durable/UI boundary so
+ * the user can inspect and restore them. Session projection still excludes
+ * these chunks from future model requests.
  */
 export class PiEventAdapter {
   private sequence = 0;
@@ -33,11 +34,21 @@ export class PiEventAdapter {
       ) {
         const contentIndex = Number(update.contentIndex ?? 0);
         if (update.type === "thinking_delta") {
+          const content = String(update.delta ?? "");
+          const chars = (this.reasoningChars.get(contentIndex) ?? 0) + content.length;
           this.reasoningChars.set(
             contentIndex,
-            (this.reasoningChars.get(contentIndex) ?? 0) + String(update.delta ?? "").length,
+            chars,
           );
-          return [];
+          return [{
+            ...base(),
+            type: "reasoning",
+            blockId: `provider-reasoning-${contentIndex}`,
+            provider: this.identity.model || "provider",
+            phase: "delta",
+            content,
+            tokenCount: Math.ceil(chars / 4),
+          }];
         }
         const phase = update.type === "thinking_end" ? "completed" : "started";
         const tokenCount = phase === "completed"
@@ -47,10 +58,11 @@ export class PiEventAdapter {
         else this.reasoningChars.delete(contentIndex);
         return [{
           ...base(),
-          type: "reasoning_status",
+          type: "reasoning",
           blockId: `provider-reasoning-${contentIndex}`,
           provider: this.identity.model || "provider",
           phase,
+          content: "",
           tokenCount,
         }];
       }

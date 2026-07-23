@@ -61,11 +61,12 @@ test("aborted turn retains produced content", async () => {
   dispose();
 });
 
-test("reasoning status is projected without provider prose", async () => {
+test("provider reasoning blocks are projected with authentic local prose", async () => {
   const {module: {projectSessionTree}, dispose} = await loadSessionTree();
   const tree = projectSessionTree([
-    {type: "reasoning_status", runId: "r1", turnId: "t1", phase: "started", tokenCount: 0},
-    {type: "reasoning_status", runId: "r1", turnId: "t1", phase: "completed", tokenCount: 23},
+    {type: "reasoning", runId: "r1", turnId: "t1", blockId: "reason-1", provider: "deepseek-reasoner", phase: "started", tokenCount: 0},
+    {type: "reasoning", runId: "r1", turnId: "t1", blockId: "reason-1", provider: "deepseek-reasoner", phase: "delta", content: "让我先梳理。", tokenCount: 4},
+    {type: "reasoning", runId: "r1", turnId: "t1", blockId: "reason-1", provider: "deepseek-reasoner", phase: "completed", tokenCount: 23},
     {type: "text", runId: "r1", turnId: "t1", content: "结论。"},
     {type: "done", runId: "r1", turnId: "t1", finishReason: "stop"},
   ]);
@@ -73,7 +74,13 @@ test("reasoning status is projected without provider prose", async () => {
     {phase: "started", tokenCount: 0},
     {phase: "completed", tokenCount: 23},
   ]);
-  assert.doesNotMatch(JSON.stringify(tree), /让我先梳理/);
+  assert.deepEqual(tree.turns[0].reasoningBlocks, [{
+    id: "reason-1",
+    provider: "deepseek-reasoner",
+    content: "让我先梳理。",
+    tokenCount: 23,
+    status: "completed",
+  }]);
   dispose();
 });
 

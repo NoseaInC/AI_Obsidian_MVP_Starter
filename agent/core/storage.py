@@ -574,6 +574,7 @@ _REASONING_EVENT_TYPES = {
     "reasoning", "reasoning_status", "thinking", "thinking_start",
     "thinking_delta", "thinking_end",
 }
+_LOCAL_REASONING_EVENT_MAX_BYTES = 64 * 1024
 
 
 def _model_observation_safe(
@@ -687,23 +688,31 @@ def _bounded_model_observation(tool_name: str, value: Any) -> dict[str, Any]:
     }
 
 
-def _reasoning_status_event(event: dict[str, Any]) -> dict[str, Any]:
-    """Strip provider reasoning text before any durable event boundary."""
+def _durable_reasoning_event(event: dict[str, Any]) -> dict[str, Any]:
+    """Keep authentic local reasoning while bounding accidental oversized deltas."""
     event_type = str(event.get("type") or "")
     if event_type not in _REASONING_EVENT_TYPES and not event_type.startswith("reasoning."):
         return dict(event)
     raw_phase = str(event.get("phase") or "")
-    phase = (
-        "completed"
-        if event_type in {"thinking_end"} or event_type.endswith(".completed") or raw_phase == "completed"
-        else "started"
-    )
-    raw_text = str(
+    if event_type == "thinking_delta" or event_type.endswith(".delta") or raw_phase == "delta":
+        phase = "delta"
+    elif event_type == "thinking_end" or event_type.endswith(".completed") or raw_phase == "completed":
+        phase = "completed"
+    else:
+        phase = "started"
+    raw_text = redact_secret_text(str(
         event.get("content")
         or event.get("delta")
         or event.get("thinking")
         or ""
-    )
+    ))
+    encoded = raw_text.encode("utf-8", errors="replace")
+    if len(encoded) > _LOCAL_REASONING_EVENT_MAX_BYTES:
+        digest = hashlib.sha256(encoded).hexdigest()
+        raw_text = (
+            encoded[:_LOCAL_REASONING_EVENT_MAX_BYTES].decode("utf-8", errors="ignore")
+            + f"\n[truncated sha256={digest}]"
+        )
     explicit_tokens = event.get("tokenCount")
     try:
         token_count = max(0, int(explicit_tokens or 0))
@@ -717,17 +726,18 @@ def _reasoning_status_event(event: dict[str, Any]) -> dict[str, Any]:
         **({"conversationId": event["conversationId"]} if "conversationId" in event else {}),
         **({"sequence": event["sequence"]} if "sequence" in event else {}),
         **({"seq": event["seq"]} if "seq" in event else {}),
-        "type": "reasoning_status",
+        "type": "reasoning",
         "blockId": str(event.get("blockId") or "provider-reasoning"),
         "provider": str(event.get("provider") or "provider"),
         "phase": phase,
+        "content": raw_text,
         "tokenCount": token_count,
     }
 
 
 def _durable_pi_event(event: dict[str, Any]) -> dict[str, Any]:
     """Normalize every privacy-sensitive payload before SQLite/reconnect."""
-    normalized = _reasoning_status_event(event)
+    normalized = _durable_reasoning_event(event)
     event_type = str(normalized.get("type") or "")
     if event_type == "tool_use":
         tool_name = str(normalized.get("name") or "")
@@ -869,8 +879,8 @@ class StateStore:
             self.connection.execute(
                 "ALTER TABLE pi_compaction_checkpoints ADD COLUMN summary TEXT NOT NULL DEFAULT ''"
             )
-        # Older builds durably stored provider reasoning deltas. Rewrite those
-        # rows in place so reconnect cannot retrieve the original text.
+        # Normalize older reasoning variants while preserving any local prose
+        # that has not already been removed by a status-only build.
         event_rows = self.connection.execute(
             "SELECT id, run_id, sequence, payload_json FROM pi_agent_events"
         ).fetchall()
@@ -900,7 +910,7 @@ class StateStore:
                 payload = json.loads(row["payload_json"] or "{}")
             except json.JSONDecodeError:
                 continue
-            normalized = _reasoning_status_event(payload)
+            normalized = _durable_reasoning_event(payload)
             if str(row["entry_type"]) == "tool_result" and not isinstance(
                 normalized.get("modelObservation"), dict,
             ):
@@ -1721,7 +1731,7 @@ class StateStore:
                     "reasoning", "reasoning_status", "thinking", "thinking_start",
                     "thinking_delta", "thinking_end",
                 }:
-                    # Provider reasoning status is UI-only and never model context.
+                    # Provider reasoning is local UI/recovery data, never model context.
                     continue
                 projected_entries.append({
                     "id": str(row["id"]),

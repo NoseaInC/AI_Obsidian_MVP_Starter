@@ -120,10 +120,14 @@ errors preserve authentication, rate-limit, model-not-found, context-limit,
 provider and stream-protocol categories; only the actual hard timer is a request
 deadline.
 
-Provider reasoning prose is ephemeral. It may exist in memory while Pi consumes
-the current provider stream, but the durable/UI event is only
-`reasoning_status(started|completed, tokenCount)`. Reconnect, Session Projection,
-conversation metadata and DOM never receive the original delta text.
+Provider reasoning prose is a local UI/recovery artifact. Pi emits ordered
+`reasoning(started|delta|completed, content, tokenCount)` events; the local Run
+store, reconnect path and bounded conversation metadata retain authentic
+deltas, and the DOM renders them as a collapsible plain-text block with a
+separate copy action. Session Projection filters all reasoning variants before
+building model messages, so the prose never enters later model context, final
+answer Markdown or knowledge artifacts. Older status-only records remain
+status-only because previously erased prose cannot be reconstructed.
 
 ## Compaction
 

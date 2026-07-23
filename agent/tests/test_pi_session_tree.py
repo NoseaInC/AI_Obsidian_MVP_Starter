@@ -110,10 +110,11 @@ class PiSessionTreeTests(unittest.TestCase):
         updated = self.service.update_message_metadata(
             "conversation-tree", "pi-assistant-run-tree-1", metadata,
         )
-        self.assertNotIn("本地推理", json.dumps(updated["metadata"], ensure_ascii=False))
+        self.assertIn("本地推理", json.dumps(updated["metadata"], ensure_ascii=False))
         self.assertEqual(updated["metadata"]["piTrace"]["reasoningBlocks"], [{
             "id": "provider-reasoning-0",
             "provider": "provider",
+            "content": "本地推理",
             "tokenCount": 1,
             "status": "completed",
         }])
@@ -270,8 +271,8 @@ class PiSessionTreeTests(unittest.TestCase):
         self.assertNotIn("private reasoning", encoded)
         replay = json.dumps(self.service.pi_run_events("run-tree-1", 0), ensure_ascii=False)
         self.assertNotIn(secret, replay)
-        self.assertNotIn("private reasoning", replay)
-        self.assertIn("reasoning_status", replay)
+        self.assertIn("private reasoning", replay)
+        self.assertIn('"type": "reasoning"', replay)
         assistant = next(item for item in projected["messages"] if item["role"] == "assistant")
         self.assertEqual(assistant["content"][0]["arguments"]["apiKey"], "[redacted]")
         self.assertEqual(assistant["content"][0]["arguments"]["accessToken"], "[redacted]")
@@ -350,8 +351,8 @@ class PiSessionTreeTests(unittest.TestCase):
             "pi-model-proxy-v1",
         )
 
-    def test_startup_migration_erases_historical_reasoning_payloads(self) -> None:
-        secret_reasoning = "historical private chain"
+    def test_startup_migration_preserves_historical_local_reasoning_payloads(self) -> None:
+        historical_reasoning = "historical provider reasoning"
         with self.store.lock:
             self.store.connection.execute(
                 """INSERT INTO pi_agent_events(
@@ -368,7 +369,7 @@ class PiSessionTreeTests(unittest.TestCase):
                         "sequence": 77,
                         "type": "reasoning",
                         "phase": "delta",
-                        "content": secret_reasoning,
+                        "content": historical_reasoning,
                     }),
                     "2026-07-23T00:00:00+08:00",
                 ),
@@ -385,7 +386,7 @@ class PiSessionTreeTests(unittest.TestCase):
                     "run-tree-1",
                     "turn-tree-1",
                     77,
-                    json.dumps({"type": "thinking_delta", "thinking": secret_reasoning}),
+                    json.dumps({"type": "thinking_delta", "thinking": historical_reasoning}),
                 ),
             )
             self.store.connection.execute(
@@ -446,8 +447,8 @@ class PiSessionTreeTests(unittest.TestCase):
                     "UNION ALL SELECT payload_json FROM pi_session_entries"
                 ).fetchall()
             )
-        self.assertNotIn(secret_reasoning, raw)
-        self.assertIn("reasoning_status", raw)
+        self.assertIn(historical_reasoning, raw)
+        self.assertIn('"type": "reasoning"', raw)
         with self.store.lock:
             migrated = self.store.connection.execute(
                 "SELECT payload_json FROM pi_session_entries WHERE id='legacy-tool-entry'"

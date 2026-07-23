@@ -29,6 +29,14 @@ export async function copyText(text: string): Promise<void> {
     throw new Error("clipboard_unavailable");
   }
 
+  const previousActiveElement = ownerDocument.activeElement;
+  const previousSelection = ownerDocument.getSelection?.();
+  const previousRanges: Range[] = [];
+  if (previousSelection) {
+    for (let index = 0; index < previousSelection.rangeCount; index += 1) {
+      previousRanges.push(previousSelection.getRangeAt(index).cloneRange());
+    }
+  }
   const textarea = ownerDocument.createElement("textarea");
   textarea.value = text;
   textarea.setAttribute("readonly", "");
@@ -50,6 +58,18 @@ export async function copyText(text: string): Promise<void> {
     }
   } finally {
     textarea.remove();
+    const focus = (previousActiveElement as HTMLElement | null)?.focus;
+    if (typeof focus === "function") {
+      try {
+        focus.call(previousActiveElement, {preventScroll: true});
+      } catch {
+        focus.call(previousActiveElement);
+      }
+    }
+    if (previousSelection && previousRanges.length) {
+      previousSelection.removeAllRanges();
+      for (const range of previousRanges) previousSelection.addRange(range);
+    }
   }
 }
 

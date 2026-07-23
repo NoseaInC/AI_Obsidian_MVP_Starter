@@ -6,7 +6,7 @@
  * rebuilds a complete, serializable session tree: every turn (including
  * partial / aborted / error assistant turns), each turn's tool calls
  * (blocked / running / failed), each tool's result (error / partial), the
- * reasoning status (never provider prose), accumulated usage, and stop reason.
+ * locally returned provider reasoning blocks, accumulated usage, and stop reason.
  */
 
 export type SessionTreeEvent = {
@@ -17,6 +17,8 @@ export type SessionTreeEvent = {
   content?: unknown;
   phase?: unknown;
   tokenCount?: unknown;
+  blockId?: string;
+  provider?: string;
   id?: string;
   name?: string;
   args?: unknown;
@@ -50,6 +52,13 @@ export type SessionTreeTurn = {
   status: "running" | "completed" | "failed" | "cancelled" | "partial";
   assistant: string;
   reasoningStatus: Array<{phase: "started" | "completed"; tokenCount: number}>;
+  reasoningBlocks: Array<{
+    id: string;
+    provider: string;
+    content: string;
+    tokenCount: number;
+    status: "streaming" | "completed";
+  }>;
   toolCalls: SessionTreeToolCall[];
   toolResults: SessionTreeToolResult[];
   usage: {promptTokens: number; completionTokens: number; totalTokens: number};
@@ -86,6 +95,7 @@ export function projectSessionTree(events: Array<SessionTreeEvent>): SessionTree
         status: "running",
         assistant: "",
         reasoningStatus: [],
+        reasoningBlocks: [],
         toolCalls: [],
         toolResults: [],
         usage: {promptTokens: 0, completionTokens: 0, totalTokens: 0},
@@ -99,11 +109,36 @@ export function projectSessionTree(events: Array<SessionTreeEvent>): SessionTree
     const type = String(event.type || "");
     if (type === "text") {
       turn.assistant += safeString(event.content);
-    } else if (type === "reasoning_status") {
-      turn.reasoningStatus.push({
-        phase: event.phase === "completed" ? "completed" : "started",
-        tokenCount: Math.max(0, Number(event.tokenCount) || 0),
-      });
+    } else if (type === "reasoning" || type === "reasoning_status") {
+      const phase = event.phase === "completed"
+        ? "completed"
+        : event.phase === "delta"
+          ? "delta"
+          : "started";
+      const tokenCount = Math.max(0, Number(event.tokenCount) || 0);
+      if (phase !== "delta") {
+        turn.reasoningStatus.push({phase, tokenCount});
+      }
+      const id = String(event.blockId || "provider-reasoning");
+      const index = turn.reasoningBlocks.findIndex(block => block.id === id);
+      const previous = index >= 0 ? turn.reasoningBlocks[index] : {
+        id,
+        provider: String(event.provider || "provider"),
+        content: "",
+        tokenCount: 0,
+        status: "streaming" as const,
+      };
+      const block = {
+        ...previous,
+        provider: String(event.provider || previous.provider),
+        content: phase === "delta"
+          ? (previous.content + safeString(event.content)).slice(0, 200_000)
+          : previous.content,
+        tokenCount: Math.max(previous.tokenCount, tokenCount),
+        status: phase === "completed" ? "completed" as const : previous.status,
+      };
+      if (index >= 0) turn.reasoningBlocks[index] = block;
+      else turn.reasoningBlocks.push(block);
     } else if (type === "tool_call_start" || type === "tool_call") {
       turn.toolCalls.push({
         id: String(event.id || ""),
@@ -139,7 +174,7 @@ export function projectSessionTree(events: Array<SessionTreeEvent>): SessionTree
   for (const turn of turns.values()) {
     if (turn.status === "running") {
       turn.status =
-        turn.assistant || turn.toolCalls.length || turn.reasoningStatus.length ? "partial" : "running";
+        turn.assistant || turn.toolCalls.length || turn.reasoningBlocks.length ? "partial" : "running";
     }
   }
 
