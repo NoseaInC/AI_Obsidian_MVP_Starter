@@ -347,7 +347,7 @@ test("assistant production surface uses Pi model proxy, stop and three inspector
   assert.match(css, /\.la-live-trace__thinking/);
   assert.match(css, /\.la-provider-reasoning/);
   assert.match(views, /renderProviderReasoning/);
-  assert.match(views, /复制思考/);
+  assert.doesNotMatch(views, /复制思考/);
   assert.match(views, /支持深度推理协议/);
   assert.match(views, /assistantReasoningMode:\s*"auto"\s*\|\s*"deep"/);
   assert.match(views, /reasoning_mode:\s*this\.assistantReasoningMode/);

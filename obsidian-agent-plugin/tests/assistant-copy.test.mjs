@@ -264,7 +264,7 @@ test("progressive rendering cannot remain paused beyond its selection budget", a
   });
 });
 
-test("reasoning has an independent copy action while answer copy remains answer-only", async () => {
+test("reasoning content is rendered without an inline copy button; answer copy remains answer-only", async () => {
   const [views, stream] = await Promise.all([
     readFile(new URL("../src/views.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/assistant-stream.ts", import.meta.url), "utf8"),
@@ -272,7 +272,7 @@ test("reasoning has an independent copy action while answer copy remains answer-
   assert.match(views, /保存在本地用于恢复，不会并入最终回答或未来模型上下文/);
   assert.match(stream, /reasoningBlocks:[\s\S]{0,220}content:\s*string/);
   assert.match(views, /\(\) => String\(message\.content \?\? ""\)/);
-  assert.match(views, /"复制思考"/);
-  assert.match(views, /visible\.map\(block => String\(block\.content \?\? ""\)\)/);
+  assert.doesNotMatch(views, /"复制思考"/);
+  assert.match(views, /\.map\s*\(\s*block\s*=>\s*String\s*\(\s*block\s*\.\s*content\s*\?\?\s*""\s*\)\s*\)/);
   assert.doesNotMatch(views, /复制回答与思考/);
 });
