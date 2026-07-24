@@ -602,20 +602,30 @@ export class LearningAgentMainView extends ItemView {
     const identity = nav.createDiv({cls: "la-nav-identity"});
     const mark = identity.createDiv({cls: "la-nav-identity__mark"});
     setIcon(mark, "book-open-check");
-    const copy = identity.createDiv();
+    const copy = identity.createDiv({cls: "la-nav-identity__copy"});
     copy.createEl("strong", {text: "知序"});
-    copy.createEl("small", {text: this.dashboard ? "在线 · 协议 v1" : "正在连接本地服务"});
+    const sub = copy.createDiv({cls: "la-nav-identity__sub"});
+    const statusDot = sub.createSpan({cls: `la-nav-identity__status ${this.dashboard ? "is-online" : "is-offline"}`});
+    statusDot.setAttribute("aria-label", this.dashboard ? "在线" : "正在连接");
+    sub.createSpan({text: this.dashboard ? "v1" : "连接中"});
+    const menuTrigger = identity.createSpan({cls: "la-nav-identity__menu"});
+    setIcon(menuTrigger, "more-horizontal");
+    menuTrigger.setAttribute("aria-label", "模块菜单");
 
     if (this.tab === "assistant") {
       const actions = nav.createDiv({cls: "la-conversation-actions"});
-      const create = actions.createEl("button"); setIcon(create.createSpan(), "plus"); create.createSpan({text: "新会话"}); create.createEl("kbd", {text: "⌘K"});
+      const create = actions.createEl("button", {cls: "la-conversation-actions__create"});
+      setIcon(create.createSpan({cls: "la-conversation-actions__create-icon"}), "plus");
+      create.createSpan({text: "新会话"});
+      create.createEl("kbd", {text: "⌘K"});
       create.onclick = async () => {
         const response = await this.client.post<any>("/conversations", {title: "新会话"});
         if (this.conversationId) this.assistantLiveRuns.set(this.conversationId, this.assistantLiveRun);
         this.conversationId = String(response.conversation.id); this.assistantMessages = [];
         this.pendingAttachments = []; this.assistantDraft = ""; this.assistantRegenerateMessageId = ""; this.assistantRegenerateRunId = ""; this.assistantLiveRun = initialAssistantLiveRun(); this.assistantVisibleMessageLimit = 160; await this.refresh();
       };
-      const search = actions.createDiv({cls: "la-conversation-search"}); setIcon(search.createSpan(), "search");
+      const search = actions.createDiv({cls: "la-conversation-search"});
+      setIcon(search.createSpan({cls: "la-conversation-search__icon"}), "search");
       const searchInput = search.createEl("input", {attr: {placeholder: "搜索对话", "aria-label": "搜索历史会话"}});
       searchInput.value = this.assistantConversationQuery;
       const recent = nav.createDiv({cls: "la-conversation-list"});
@@ -660,7 +670,7 @@ export class LearningAgentMainView extends ItemView {
     for (const item of MODULES) {
       const element = modules.createEl("button", {
         cls: `la-module-nav__item ${item.id === this.tab ? "is-active" : ""}`,
-        attr: {"aria-current": item.id === this.tab ? "page" : "false", title: item.label},
+        attr: {"aria-current": item.id === this.tab ? "page" : "false"},
       });
       setIcon(element.createSpan({cls: "la-module-nav__icon"}), item.icon);
       element.createSpan({text: item.label, cls: "la-module-nav__label"});
