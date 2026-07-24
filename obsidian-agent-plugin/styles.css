@@ -29,7 +29,43 @@
   --strong-color: var(--text-normal);
   --em-color: var(--text-normal);
   color: var(--la-text);
+  font-family: var(--zhixu-ui-font, var(--font-interface));
   font-size: 14px;
+}
+
+/* Long-form reading surfaces may use a font independent of plugin chrome. */
+.la-app :is(
+  .la-message-markdown,
+  .la-native-markdown,
+  .la-study-assistant-message
+) {
+  font-family: var(--zhixu-reading-font, var(--font-text));
+  font-size: var(--zhixu-reading-size, 15px);
+  line-height: var(--zhixu-reading-line-height, 1.7);
+  letter-spacing: 0.005em;
+}
+
+/* Preserve a stable monospace stack for code regardless of reading font. */
+.la-app :is(
+  .la-message-markdown,
+  .la-native-markdown,
+  .la-study-assistant-message
+) :is(code, pre, kbd, samp) {
+  font-family: var(--font-monospace);
+}
+
+/* UI controls and message actions remain interface typography. */
+.la-app :is(
+  button,
+  input,
+  textarea,
+  select,
+  .la-message-meta,
+  .la-message-actions,
+  .la-live-trace,
+  .la-provider-reasoning > summary
+) {
+  font-family: var(--zhixu-ui-font, var(--font-interface));
 }
 
 .la-main-host,

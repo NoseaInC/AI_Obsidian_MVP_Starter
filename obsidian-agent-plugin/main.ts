@@ -3,9 +3,18 @@ import {AgentClient} from "./src/api";
 import {AgentProcessManager, RuntimeSettings} from "./src/process-manager";
 import {LearningAgentMainView, LEGACY_SIDEBAR_VIEW, MAIN_VIEW, SIDEBAR_VIEW} from "./src/views";
 import {inlineEditExtension} from "./src/features/inline-edit/InlineEditController";
+import {
+  applyZhixuAppearance,
+  clearZhixuAppearance,
+  DEFAULT_APPEARANCE_SETTINGS,
+  type ZhixuAppearanceSettings,
+  type ZhixuFontPreset,
+} from "./src/appearance";
 
 type MainTab = "today" | "sources" | "plan" | "assistant";
-interface LearningAgentSettings extends RuntimeSettings {
+interface LearningAgentSettings
+  extends RuntimeSettings,
+    ZhixuAppearanceSettings {
   behaviorPersonalization: boolean;
   recordLearningDuration: boolean;
   useQuizResults: boolean;
@@ -18,10 +27,23 @@ interface LearningAgentSettings extends RuntimeSettings {
   behaviorTrackingPaused: boolean;
 }
 const DEFAULT_SETTINGS: LearningAgentSettings = {
-  port: 8765, pythonPath: "", autoStart: true, stopOnUnload: true,
-  behaviorPersonalization: true, recordLearningDuration: true, useQuizResults: true,
-  useRecommendationFeedback: true, useAssistantSummaries: false, useRecentMaterials: true,
-  dailyKnowledgeCount: 1, trustedResearch: true, openWebResearch: false, behaviorTrackingPaused: false,
+  port: 8765,
+  pythonPath: "",
+  autoStart: true,
+  stopOnUnload: true,
+
+  behaviorPersonalization: true,
+  recordLearningDuration: true,
+  useQuizResults: true,
+  useRecommendationFeedback: true,
+  useAssistantSummaries: false,
+  useRecentMaterials: true,
+  dailyKnowledgeCount: 1,
+  trustedResearch: true,
+  openWebResearch: false,
+  behaviorTrackingPaused: false,
+
+  ...DEFAULT_APPEARANCE_SETTINGS,
 };
 
 class LearningDataConfirmModal extends Modal {
@@ -70,6 +92,136 @@ class AgentSettingsTab extends PluginSettingTab {
       .addButton(control=>control.setButtonText("打开模型设置").onClick(async()=>{await this.plugin.openMain("assistant");}));
     new Setting(containerEl).setName("Vault 自治权限").setDesc("查看可读写范围、保护边界和自治等级；快照、审计与 Undo 始终启用。")
       .addButton(control => control.setButtonText("查看权限").onClick(() => new AutonomyPermissionModal(this.app, this.plugin.client).open()));
+
+    const saveAppearance = async (): Promise<void> => {
+      await this.plugin.saveSettings();
+      this.plugin.applyAppearanceSettings();
+    };
+
+    containerEl.createEl("h3", {text: "外观"});
+
+    new Setting(containerEl)
+      .setName("界面字体")
+      .setDesc("用于导航、按钮、状态、输入框和设置界面。字体需要先安装到操作系统。")
+      .addDropdown(control => {
+        control
+          .addOption("obsidian", "跟随 Obsidian")
+          .addOption("harmonyos-sans-sc", "HarmonyOS Sans SC")
+          .addOption("lxgw-wenkai", "LXGW WenKai")
+          .addOption("custom", "自定义字体")
+          .setValue(this.plugin.settings.uiFontPreset)
+          .onChange(async value => {
+            this.plugin.settings.uiFontPreset = value as ZhixuFontPreset;
+            await saveAppearance();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("自定义界面字体")
+      .setDesc("仅在界面字体选择\u201C自定义字体\u201D时生效。只填写一个系统字体名称。")
+      .addText(control => {
+        control
+          .setPlaceholder("例如：PingFang SC")
+          .setValue(this.plugin.settings.uiFontCustom)
+          .onChange(async value => {
+            this.plugin.settings.uiFontCustom = value;
+            await saveAppearance();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("回答与阅读字体")
+      .setDesc("用于 AI 回答、Markdown 内容和学习助手正文。")
+      .addDropdown(control => {
+        control
+          .addOption("obsidian", "跟随 Obsidian")
+          .addOption("harmonyos-sans-sc", "HarmonyOS Sans SC")
+          .addOption("lxgw-wenkai", "LXGW WenKai / 霞鹜文楷")
+          .addOption("custom", "自定义字体")
+          .setValue(this.plugin.settings.readingFontPreset)
+          .onChange(async value => {
+            this.plugin.settings.readingFontPreset = value as ZhixuFontPreset;
+            await saveAppearance();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("自定义阅读字体")
+      .setDesc("仅在回答与阅读字体选择\u201C自定义字体\u201D时生效。")
+      .addText(control => {
+        control
+          .setPlaceholder("例如：Source Han Sans SC")
+          .setValue(this.plugin.settings.readingFontCustom)
+          .onChange(async value => {
+            this.plugin.settings.readingFontCustom = value;
+            await saveAppearance();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("回答字号")
+      .setDesc(`${this.plugin.settings.readingFontSize}px`)
+      .addSlider(control => {
+        control
+          .setLimits(13, 19, 0.5)
+          .setValue(this.plugin.settings.readingFontSize)
+          .setDynamicTooltip()
+          .onChange(async value => {
+            this.plugin.settings.readingFontSize = value;
+            await saveAppearance();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("回答行高")
+      .setDesc(String(this.plugin.settings.readingLineHeight))
+      .addSlider(control => {
+        control
+          .setLimits(1.4, 2, 0.05)
+          .setValue(this.plugin.settings.readingLineHeight)
+          .setDynamicTooltip()
+          .onChange(async value => {
+            this.plugin.settings.readingLineHeight =
+              Math.round(value * 100) / 100;
+            await saveAppearance();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("舒适阅读预设")
+      .setDesc("界面使用 HarmonyOS Sans SC，回答使用霞鹜文楷。")
+      .addButton(control => {
+        control
+          .setButtonText("应用预设")
+          .setCta()
+          .onClick(async () => {
+            this.plugin.settings.uiFontPreset = "harmonyos-sans-sc";
+            this.plugin.settings.uiFontCustom = "";
+            this.plugin.settings.readingFontPreset = "lxgw-wenkai";
+            this.plugin.settings.readingFontCustom = "";
+            this.plugin.settings.readingFontSize = 15.5;
+            this.plugin.settings.readingLineHeight = 1.75;
+
+            await saveAppearance();
+            new Notice("已应用知序舒适阅读预设");
+            this.display();
+          });
+      })
+      .addButton(control => {
+        control
+          .setButtonText("恢复默认")
+          .onClick(async () => {
+            Object.assign(
+              this.plugin.settings,
+              DEFAULT_APPEARANCE_SETTINGS,
+            );
+
+            await saveAppearance();
+            new Notice("知序字体已恢复为跟随 Obsidian");
+            this.display();
+          });
+      });
+
     containerEl.createEl("h3", {text: "学习行为与推荐"});
     new Setting(containerEl).setName("启用行为个性化").setDesc("仅记录结构化学习事件，不记录按键、完整笔记、完整对话或 Prompt。")
       .addToggle(control => control.setValue(this.plugin.settings.behaviorPersonalization).onChange(async value => { this.plugin.settings.behaviorPersonalization = value; await this.plugin.saveSettings(); }));
@@ -223,8 +375,21 @@ class AutonomyPermissionModal extends Modal {
 
 export default class LearningAgentPlugin extends Plugin {
   client = new AgentClient(); settings: LearningAgentSettings = {...DEFAULT_SETTINGS}; manager: AgentProcessManager | null = null;
+
+  applyAppearanceSettings(): void {
+    applyZhixuAppearance(document.body.style, this.settings);
+  }
+
   async onload() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()); const adapter = this.app.vault.adapter;
+    this.settings = Object.assign(
+      {},
+      DEFAULT_SETTINGS,
+      await this.loadData(),
+    );
+
+    this.applyAppearanceSettings();
+
+    const adapter = this.app.vault.adapter;
     if (adapter instanceof FileSystemAdapter) { this.manager = new AgentProcessManager(adapter.getBasePath(), this.settings, () => {}); this.client.configure(this.manager.baseUrl, this.manager.sessionToken); this.client.configureRuntimeUpgradeHandler(request => this.manager!.activateRuntimeUpgrade(request)); void this.manager.ensureRunning().then(async () => { for (const leaf of this.app.workspace.getLeavesOfType(MAIN_VIEW)) if (leaf.view instanceof LearningAgentMainView) await leaf.view.refresh(); const autonomy = await this.client.get<any>("/autonomy"); if (!autonomy.permissionSummaryAcknowledged) new AutonomyPermissionModal(this.app, this.client).open(); }).catch(error => new Notice(`Agent 启动失败：${error.message}`)); }
     else new Notice("知序 仅支持本地桌面 Vault");
     this.addSettingTab(new AgentSettingsTab(this.app, this));
@@ -299,7 +464,16 @@ export default class LearningAgentPlugin extends Plugin {
   }
   async saveSettings() { await this.saveData(this.settings); }
   async onunload() {
-    for (const leaf of this.app.workspace.getLeavesOfType(MAIN_VIEW)) if (leaf.view instanceof LearningAgentMainView) await leaf.view.flushLearningEvents();
-    if (this.settings.stopOnUnload) await this.manager?.stop();
+    for (const leaf of this.app.workspace.getLeavesOfType(MAIN_VIEW)) {
+      if (leaf.view instanceof LearningAgentMainView) {
+        await leaf.view.flushLearningEvents();
+      }
+    }
+
+    clearZhixuAppearance(document.body.style);
+
+    if (this.settings.stopOnUnload) {
+      await this.manager?.stop();
+    }
   }
 }
