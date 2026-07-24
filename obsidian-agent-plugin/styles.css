@@ -5108,10 +5108,8 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   align-items: center;
   gap: 4px;
   margin-bottom: 4px;
-  padding: 8px 8px 8px 11px;
-  border: 1px solid transparent;
-  border-left-width: 3px;
-  border-left-color: transparent;
+  padding: 8px 8px 8px 12px;
+  border: none;
   border-radius: 9px;
   background: transparent;
   color: var(--text-normal);
@@ -5120,22 +5118,20 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   cursor: pointer;
   position: relative;
   transition: background-color var(--la-duration-fast) var(--la-ease-out),
-    border-color var(--la-duration-fast) var(--la-ease-out),
-    transform var(--la-duration-fast) var(--la-ease-out);
+    box-shadow var(--la-duration-fast) var(--la-ease-out);
 }
 
 .la-conversation-row:hover {
   background: var(--background-modifier-hover);
-  border-color: color-mix(in srgb, var(--la-purple) 18%, transparent);
 }
 .la-conversation-row.is-active {
-  background: color-mix(in srgb, var(--la-purple) 12%, var(--background-primary));
-  border-color: color-mix(in srgb, var(--la-purple) 28%, transparent);
-  border-left-color: var(--la-purple);
+  background: color-mix(in srgb, var(--la-purple) 10%, var(--background-primary));
+  box-shadow: inset 3px 0 0 var(--la-purple),
+    inset -1px 0 0 color-mix(in srgb, var(--la-purple) 25%, transparent);
 }
 .la-conversation-row:focus-visible {
-  outline: none;
-  border-color: var(--interactive-accent);
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: -1px;
 }
 
 .la-conversation-row > div { min-width: 0; }
