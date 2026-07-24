@@ -199,38 +199,10 @@ export function renderInlineAgentConfirmation(
   const setBusy = (value: boolean) => {
     busy = value;
     confirmButton.disabled = value;
-    rejectButton.disabled = value;
+    rejectButton && (rejectButton.disabled = value);
     diffButton && (diffButton.disabled = value);
     scopeButton && (scopeButton.disabled = value);
   };
-
-  let diffButton: HTMLButtonElement | undefined;
-  if (handlers.openDiff && confirmation.proposal_id) {
-    diffButton = actions.createEl("button", {
-      cls: "la-button la-button--ghost",
-    });
-    const diffIcon = diffButton.createSpan({cls: "la-button__icon"});
-    setIcon(diffIcon, "git-compare-arrows");
-    diffButton.appendChild(document.createTextNode("查看变化"));
-  }
-
-  const rejectButton = actions.createEl("button", {
-    cls: "la-button la-button--ghost la-button--danger",
-  });
-  const rejectIcon = rejectButton.createSpan({cls: "la-button__icon"});
-  setIcon(rejectIcon, "x");
-  rejectButton.appendChild(document.createTextNode(isPermission ? "不允许，继续" : "取消"));
-  rejectButton.addEventListener("click", async () => {
-    if (busy || disposed) return;
-    setBusy(true);
-    try {
-      await handlers.reject(confirmation.run_id);
-      card.addClass("is-resolved");
-      card.dataset.state = "rejected";
-    } finally {
-      setBusy(false);
-    }
-  });
 
   const confirmButton = actions.createEl("button", {
     cls: "la-button la-button--primary",
@@ -267,18 +239,86 @@ export function renderInlineAgentConfirmation(
     }
   });
 
+  const popoverHost = actions.createDiv({cls: "la-split-button"});
+  const trigger = popoverHost.createEl("button", {
+    cls: "la-button la-button--secondary la-split-button__trigger",
+    attr: {"aria-label": "更多授权选项", "aria-haspopup": "menu", "aria-expanded": "false"},
+  });
+  const triggerIcon = trigger.createSpan({cls: "la-button__icon"});
+  setIcon(triggerIcon, "chevron-down");
+  trigger.createSpan({text: "更多"});
+  const popover = popoverHost.createDiv({cls: "la-split-button__popover", attr: {role: "menu"}});
+  popover.hidden = true;
+
+  let diffButton: HTMLButtonElement | undefined;
+  let rejectButton: HTMLButtonElement | undefined;
+
+  const closePopover = (): void => {
+    popover.hidden = true;
+    trigger.setAttribute("aria-expanded", "false");
+    card.removeClass("is-popover-open");
+  };
+  const togglePopover = (): void => {
+    if (popover.hidden) {
+      popover.hidden = false;
+      trigger.setAttribute("aria-expanded", "true");
+      card.addClass("is-popover-open");
+    } else {
+      closePopover();
+    }
+  };
+  trigger.addEventListener("click", event => {
+    event.stopPropagation();
+    togglePopover();
+  });
+
+  if (handlers.openDiff && confirmation.proposal_id) {
+    diffButton = popover.createEl("button", {
+      cls: "la-split-button__item",
+      attr: {role: "menuitem"},
+    });
+    const diffIcon = diffButton.createSpan({cls: "la-split-button__item-icon"});
+    setIcon(diffIcon, "git-compare-arrows");
+    diffButton.createSpan({text: "查看变化"});
+    diffButton.addEventListener("click", () => {
+      if (busy || disposed) return;
+      closePopover();
+      void handlers.openDiff?.(confirmation.proposal_id);
+    });
+  }
+
+  rejectButton = popover.createEl("button", {
+    cls: "la-split-button__item la-split-button__item--danger",
+    attr: {role: "menuitem"},
+  });
+  const rejectIcon = rejectButton.createSpan({cls: "la-split-button__item-icon"});
+  setIcon(rejectIcon, "x");
+  rejectButton.createSpan({text: isPermission ? "不允许，继续" : "取消"});
+  rejectButton.addEventListener("click", async () => {
+    if (busy || disposed) return;
+    setBusy(true);
+    try {
+      await handlers.reject(confirmation.run_id);
+      card.addClass("is-resolved");
+      card.dataset.state = "rejected";
+    } finally {
+      setBusy(false);
+    }
+  });
+
   const scope = confirmation.scope_candidates?.[0];
   if (scope) {
-    scopeButton = actions.createEl("button", {
-      cls: "la-button la-button--secondary",
+    scopeButton = popover.createEl("button", {
+      cls: "la-split-button__item",
+      attr: {role: "menuitem"},
     });
-    const scopeIcon = scopeButton.createSpan({cls: "la-button__icon"});
+    const scopeIcon = scopeButton.createSpan({cls: "la-split-button__item-icon"});
     if (isPermission && scope === "__all__") {
       setIcon(scopeIcon, "shield-check");
-      scopeButton.appendChild(document.createTextNode("当前任务全部允许"));
+      scopeButton.createSpan({text: "当前任务全部允许"});
     } else {
       setIcon(scopeIcon, "folder-open");
-      scopeButton.appendChild(document.createTextNode(`本会话允许在 ${scope} 新建`));
+      scopeButton.createSpan({text: `本会话允许在 ${scope} 新建`});
     }
     scopeButton.addEventListener("click", async () => {
       if (busy || disposed) return;
@@ -293,8 +333,17 @@ export function renderInlineAgentConfirmation(
     });
   }
 
+  const onDocumentClick = (event: MouseEvent): void => {
+    if (popover.hidden) return;
+    const target = event.target as Node | null;
+    if (!target || popoverHost.contains(target)) return;
+    closePopover();
+  };
+  document.addEventListener("click", onDocumentClick);
+
   return () => {
     disposed = true;
+    document.removeEventListener("click", onDocumentClick);
     card.remove();
   };
 }

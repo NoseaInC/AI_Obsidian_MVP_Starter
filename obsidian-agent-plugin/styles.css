@@ -5652,8 +5652,10 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
 .la-inline-agent-confirmation__actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 7px;
   margin-top: 8px;
+  position: relative;
 }
 
 .la-inline-agent-confirmation__actions .la-button {
@@ -5669,11 +5671,84 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   width: 14px;
   height: 14px;
 }
-.la-inline-agent-confirmation__actions .la-button--danger {
+
+.la-split-button {
+  position: relative;
+  display: inline-flex;
+}
+.la-split-button__trigger .la-button__icon svg {
+  width: 12px;
+  height: 12px;
+}
+.la-split-button.is-open .la-split-button__trigger,
+.la-inline-agent-confirmation.is-popover-open .la-split-button__trigger {
+  background: color-mix(in srgb, var(--interactive-accent) 18%, var(--background-modifier-hover));
+  border-color: color-mix(in srgb, var(--interactive-accent) 45%, var(--background-modifier-border));
+  color: var(--text-normal);
+}
+
+.la-split-button__popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 50;
+  min-width: 180px;
+  padding: 4px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--background-modifier-box-shadow) 80%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.la-split-button__popover[hidden] { display: none; }
+
+.la-split-button__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-normal);
+  text-align: left;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--la-duration-fast) ease;
+}
+.la-split-button__item:hover {
+  background: color-mix(in srgb, var(--interactive-accent) 10%, var(--background-secondary));
+}
+.la-split-button__item:focus-visible {
+  outline: none;
+  background: color-mix(in srgb, var(--interactive-accent) 18%, transparent);
+}
+.la-split-button__item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.la-split-button__item-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.la-split-button__item-icon svg {
+  width: 14px;
+  height: 14px;
+}
+.la-split-button__item--danger {
   color: var(--text-muted);
 }
-.la-inline-agent-confirmation__actions .la-button--danger:hover {
+.la-split-button__item--danger:hover {
   color: var(--color-red);
+  background: color-mix(in srgb, var(--color-red) 10%, transparent);
+}
+.la-split-button__item--danger .la-split-button__item-icon {
+  color: inherit;
 }
 
 .la-inline-agent-confirmation.is-resolved {
