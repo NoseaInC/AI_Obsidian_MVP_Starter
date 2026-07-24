@@ -2623,16 +2623,132 @@ export class LearningAgentMainView extends ItemView {
         const failure = humanizeAssistantError(String(error.code ?? error.message ?? ""), String(error.message ?? ""), true);
         const errorCode = String(error.code ?? "").trim();
         const errorMessage = String(error.message ?? "").trim();
+        const isContextLengthError =
+          String(failure.technicalCode ?? "") === "model_context_length_exceeded" ||
+          errorCode === "model_context_length_exceeded";
         if (!input.value.trim() && submittedDraft) {
           input.value = submittedDraft;
           this.assistantDraft = submittedDraft;
         }
-        const failed = messages.createDiv({cls: "la-assistant-recovery"});
-        setIcon(failed.createSpan({cls: "la-assistant-recovery__icon"}), "circle-alert");
-        const copy = failed.createDiv(); copy.createEl("strong", {text: failure.title}); copy.createEl("p", {text: failure.message});
+        const failed = messages.createDiv({
+          cls: `la-assistant-recovery${isContextLengthError ? " la-assistant-recovery--context-length" : ""}`,
+        });
+        const iconWrap = failed.createSpan({cls: "la-assistant-recovery__icon"});
+        setIcon(iconWrap, isContextLengthError ? "history" : "circle-alert");
+        iconWrap.setAttribute("aria-hidden", "true");
+        const copy = failed.createDiv({cls: "la-assistant-recovery__copy"});
+        const head = copy.createDiv({cls: "la-assistant-recovery__head"});
+        head.createEl("strong", {
+          text: isContextLengthError ? "当前会话历史过长" : failure.title,
+        });
+        head.createSpan({
+          cls: "la-assistant-recovery__risk",
+          text: isContextLengthError ? "需压缩上下文" : "需手动恢复",
+        });
+        copy.createEl("p", {
+          cls: "la-assistant-recovery__message",
+          text: isContextLengthError
+            ? "历史消息已超出当前模型的上下文上限。系统可以先压缩本会话历史再继续，压缩只影响本地对话，不会删除已审核的知识笔记。"
+            : failure.message,
+        });
+
         const actions = copy.createDiv({cls: "la-assistant-recovery__actions"});
-        button(actions, "重试", () => sendMessage(), "mod-cta");
-        button(actions, "切换模型", () => { this.assistantDrawerOpen = true; drawer.addClass("is-open"); shell.addClass("has-drawer"); });
+
+        let compactButton: HTMLButtonElement | undefined;
+        if (isContextLengthError) {
+          compactButton = actions.createEl("button", {
+            cls: "la-button la-button--primary la-assistant-recovery__compact",
+          });
+          const compactIcon = compactButton.createSpan({cls: "la-button__icon"});
+          setIcon(compactIcon, "shrink");
+          compactButton.appendChild(document.createTextNode("压缩并重试"));
+        }
+
+        const splitButton = actions.createDiv({cls: "la-split-button"});
+        const trigger = splitButton.createEl("button", {
+          cls: "la-button la-button--secondary la-split-button__trigger",
+          attr: {"aria-label": "更多恢复选项", "aria-haspopup": "menu", "aria-expanded": "false"},
+        });
+        const triggerIcon = trigger.createSpan({cls: "la-button__icon"});
+        setIcon(triggerIcon, "chevron-down");
+        trigger.createSpan({text: "更多"});
+        const popover = splitButton.createDiv({cls: "la-split-button__popover", attr: {role: "menu"}});
+        popover.hidden = true;
+
+        const closePopover = (): void => {
+          popover.hidden = true;
+          trigger.setAttribute("aria-expanded", "false");
+          failed.removeClass("is-popover-open");
+        };
+        trigger.addEventListener("click", event => {
+          event.stopPropagation();
+          if (popover.hidden) {
+            popover.hidden = false;
+            trigger.setAttribute("aria-expanded", "true");
+            failed.addClass("is-popover-open");
+          } else {
+            closePopover();
+          }
+        });
+
+        const retryItem = popover.createEl("button", {
+          cls: "la-split-button__item",
+          attr: {role: "menuitem"},
+        });
+        const retryItemIcon = retryItem.createSpan({cls: "la-split-button__item-icon"});
+        setIcon(retryItemIcon, "refresh-cw");
+        retryItem.createSpan({text: isContextLengthError ? "直接重试" : "重试"});
+        retryItem.addEventListener("click", () => {
+          closePopover();
+          void sendMessage();
+        });
+
+        const switchItem = popover.createEl("button", {
+          cls: "la-split-button__item",
+          attr: {role: "menuitem"},
+        });
+        const switchItemIcon = switchItem.createSpan({cls: "la-split-button__item-icon"});
+        setIcon(switchItemIcon, "arrow-right-left");
+        switchItem.createSpan({text: "切换模型"});
+        switchItem.addEventListener("click", () => {
+          closePopover();
+          this.assistantDrawerOpen = true;
+          drawer.addClass("is-open");
+          shell.addClass("has-drawer");
+        });
+
+        const onDocumentClickRecovery = (event: MouseEvent): void => {
+          if (popover.hidden) return;
+          const target = event.target as Node | null;
+          if (!target || splitButton.contains(target)) return;
+          closePopover();
+        };
+        document.addEventListener("click", onDocumentClickRecovery);
+
+        if (compactButton) {
+          const setCompactBusy = (busy: boolean, label: string): void => {
+            compactButton!.disabled = busy;
+            compactButton!.setText(label);
+          };
+          compactButton.addEventListener("click", async () => {
+            if (compactButton!.disabled) return;
+            setCompactBusy(true, "压缩中…");
+            try {
+              await this.agentRuntime.compact(liveRun.runId);
+              compactButton!.addClass("is-success");
+              setCompactBusy(false, "已压缩，重试中…");
+              void sendMessage();
+            } catch (compactError) {
+              setCompactBusy(false, "压缩失败，重试…");
+              const message = compactError instanceof Error ? compactError.message : String(compactError);
+              let errorNode = copy.querySelector<HTMLElement>(".la-assistant-recovery__error");
+              if (!errorNode) errorNode = copy.createDiv({cls: "la-assistant-recovery__error"});
+              errorNode.setText(`压缩失败：${message}`);
+              void sendMessage();
+            }
+          });
+        }
+
         const technical = copy.createEl("details", {cls: "la-technical"});
         technical.createEl("summary", {text: "技术详情"});
         const technicalCode = String(failure.technicalCode ?? errorCode ?? "assistant_error");
