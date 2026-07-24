@@ -12,6 +12,11 @@
   --la-radius-lg: 12px;
   --la-duration-fast: 120ms;
   --la-duration-normal: 180ms;
+  --la-duration-slow: 300ms;
+  /* Strong custom easing — built-in ease / ease-out are too weak for UI. */
+  --la-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --la-ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --la-popover-origin: top right;
   --la-border: var(--background-modifier-border);
   --la-border-hover: var(--background-modifier-border-hover);
   --la-surface: var(--background-primary);
@@ -5163,7 +5168,7 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   min-height: 24px;
   margin-top: 4px;
   opacity: .48;
-  transition: opacity var(--la-duration-fast) ease;
+  transition: opacity var(--la-duration-fast) var(--la-ease-out);
 }
 .la-assistant-shell-v5 .la-message--user .la-message-actions { justify-content: flex-end; }
 .la-assistant-shell-v5 .la-message:hover .la-message-actions,
@@ -5333,7 +5338,7 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   color: var(--text-faint);
   display: inline-flex;
   align-items: center;
-  transition: transform var(--la-duration-fast) ease,
+  transition: transform var(--la-duration-fast) var(--la-ease-out),
     color var(--la-duration-fast) ease;
 }
 .la-provider-reasoning__chevron svg {
@@ -6637,7 +6642,7 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   line-height: 0;
   box-shadow: none !important;
   overflow: hidden;
-  transition: filter var(--la-duration-fast) ease, transform var(--la-duration-fast) ease;
+  transition: filter var(--la-duration-fast) ease, transform var(--la-duration-fast) var(--la-ease-out);
 }
 
 .la-assistant-shell-v8 .la-composer-tools > button.la-composer-submit:not(.is-running),
@@ -6855,7 +6860,7 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   border-radius: 50%;
   background: var(--background-primary);
   box-shadow: 0 1px 3px color-mix(in srgb, var(--background-modifier-box-shadow) 30%, transparent);
-  transition: transform var(--la-duration-fast) ease;
+  transition: transform var(--la-duration-fast) var(--la-ease-out);
 }
 
 .la-assistant-shell-v8 .la-model-switch.is-on {
@@ -6984,4 +6989,61 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   margin-top: 4px;
   padding: 0 5px;
   background: transparent;
+}
+
+/* ─── Design Engineering Polish ───
+   Applied from Emil Kowalski's 10 Non-Negotiable Standards.
+   Standard 3: strong custom easing. Standard 5: button feedback & popover origin.
+   Standard 8: prefers-reduced-motion.
+   Standard 9: asymmetric press (fast release, slow deliberate). */
+
+/* ---- button press feedback (Standard 5) ---- */
+.la-app :is(
+  .la-button,
+  .la-split-button__item,
+  .la-inline-agent-confirmation__actions button,
+  .la-assistant-recovery__actions button
+):active {
+  transform: scale(0.97);
+  transition: transform 100ms var(--la-ease-out);
+}
+
+/* ---- popover origin: scale from trigger (Standard 5) ---- */
+.la-split-button__popover {
+  transform-origin: var(--la-popover-origin);
+}
+.la-assistant-shell-v8 .la-model-popover {
+  transform-origin: var(--la-popover-origin);
+}
+
+/* ---- popover entrance: not-from-nothing (Standard 5) ---- */
+.la-split-button__popover:not([hidden]) {
+  animation: la-popover-enter 180ms var(--la-ease-out) both;
+}
+@keyframes la-popover-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* ---- reduced-motion: pulse / spin (Standard 8) ---- */
+@media (prefers-reduced-motion: reduce) {
+  .la-provider-reasoning__status.is-streaming .la-provider-reasoning__status-dot {
+    animation: none;
+    opacity: 1;
+    transform: scale(1);
+    box-shadow: none;
+  }
+  .la-inline-agent-confirmation__status.is-streaming .la-inline-agent-confirmation__status-dot {
+    animation: none;
+    opacity: 1;
+  }
+  .la-split-button__popover:not([hidden]) {
+    animation-duration: 0ms;
+  }
 }
