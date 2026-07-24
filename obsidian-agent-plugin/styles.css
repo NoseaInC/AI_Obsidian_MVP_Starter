@@ -5109,11 +5109,11 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   gap: 4px;
   margin-bottom: 4px;
   padding: 8px 8px 8px 11px;
-  border: 1px solid color-mix(in srgb, var(--background-modifier-border) 70%, transparent);
+  border: 1px solid transparent;
   border-left-width: 3px;
   border-left-color: transparent;
   border-radius: 9px;
-  background: color-mix(in srgb, var(--background-secondary) 30%, transparent);
+  background: transparent;
   color: var(--text-normal);
   box-shadow: none;
   text-align: left;
@@ -5125,12 +5125,12 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
 }
 
 .la-conversation-row:hover {
-  background: color-mix(in srgb, var(--background-modifier-hover) 60%, var(--background-secondary));
-  border-color: color-mix(in srgb, var(--la-purple) 22%, transparent);
+  background: var(--background-modifier-hover);
+  border-color: color-mix(in srgb, var(--la-purple) 18%, transparent);
 }
 .la-conversation-row.is-active {
-  background: color-mix(in srgb, var(--la-purple) 12%, var(--background-secondary));
-  border-color: color-mix(in srgb, var(--la-purple) 30%, transparent);
+  background: color-mix(in srgb, var(--la-purple) 12%, var(--background-primary));
+  border-color: color-mix(in srgb, var(--la-purple) 28%, transparent);
   border-left-color: var(--la-purple);
 }
 .la-conversation-row:focus-visible {
