@@ -5136,7 +5136,6 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
 .la-conversation-row:focus-visible {
   outline: none;
   border-color: var(--interactive-accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 22%, transparent);
 }
 
 .la-conversation-row > div { min-width: 0; }
