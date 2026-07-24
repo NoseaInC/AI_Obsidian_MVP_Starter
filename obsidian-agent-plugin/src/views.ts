@@ -2267,11 +2267,12 @@ export class LearningAgentMainView extends ItemView {
     };
     const contextMeter = composerTools.createSpan({cls: "la-context-meter", attr: {"aria-label": "上下文用量"}});
     const paintContextMeter = (): void => {
-      if (!this.agentRuntime || !this.conversationId) {
+      const runId = this.assistantLiveRun?.runId;
+      if (!this.agentRuntime || !runId) {
         contextMeter.hidden = true;
         return;
       }
-      const stats = this.agentRuntime.getSessionContextStats(this.conversationId);
+      const stats = this.agentRuntime.getSessionContextStats(runId);
       const usage = stats ? stats.estimatedTokens : 0;
       const limit = stats ? stats.contextWindow : 0;
       if (!limit) { contextMeter.hidden = true; return; }
