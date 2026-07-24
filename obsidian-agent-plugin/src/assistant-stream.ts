@@ -146,6 +146,7 @@ export interface AssistantLiveRun {
   }>;
   error?: {
     code: string;
+    reason?: string;
     partial: boolean;
   };
 }
@@ -483,6 +484,7 @@ export function reduceAssistantStream(
     );
     next.error = {
       code: String(event.code ?? "assistant_stream_failed"),
+      reason: typeof event.reason === "string" ? event.reason : undefined,
       partial: Boolean(event.partial),
     };
   }

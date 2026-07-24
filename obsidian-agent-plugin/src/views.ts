@@ -2561,7 +2561,15 @@ export class LearningAgentMainView extends ItemView {
         }
 
         this.assistantLiveRun = liveRun;
-        if (this.assistantLiveRun.status === "failed") throw new Error(this.assistantLiveRun.error?.code ?? "assistant_stream_failed");
+        if (this.assistantLiveRun.status === "failed") {
+          const failureCode = this.assistantLiveRun.error?.code ?? "assistant_stream_failed";
+          const failureReason = this.assistantLiveRun.error?.reason;
+          const failure = failureReason && failureReason !== failureCode
+            ? new Error(failureReason)
+            : new Error(failureCode);
+          (failure as Error & {code?: string}).code = failureCode;
+          throw failure;
+        }
         if (this.assistantLiveRun.content) await progressiveMarkdown.flush(this.assistantLiveRun.content);
         assistant.removeClass("la-message--streaming");
         const completedMessageBase = this.assistantLiveRun.completedMessage ?? {
@@ -2613,6 +2621,7 @@ export class LearningAgentMainView extends ItemView {
         if (this.conversationId !== runConversationId) return;
         this.assistantLiveRun = liveRun;
         const failure = humanizeAssistantError(String(error.code ?? error.message ?? ""), String(error.message ?? ""), true);
+        const errorCode = String(error.code ?? "").trim();
         const errorMessage = String(error.message ?? "").trim();
         if (!input.value.trim() && submittedDraft) {
           input.value = submittedDraft;
@@ -2626,8 +2635,11 @@ export class LearningAgentMainView extends ItemView {
         button(actions, "切换模型", () => { this.assistantDrawerOpen = true; drawer.addClass("is-open"); shell.addClass("has-drawer"); });
         const technical = copy.createEl("details", {cls: "la-technical"});
         technical.createEl("summary", {text: "技术详情"});
-        const technicalLines: string[] = [String(failure.technicalCode ?? "assistant_error")];
-        if (errorMessage) technicalLines.push(errorMessage);
+        const technicalCode = String(failure.technicalCode ?? errorCode ?? "assistant_error");
+        const technicalLines: string[] = [technicalCode];
+        if (errorMessage && errorMessage !== technicalCode) {
+          technicalLines.push(errorMessage);
+        }
         technical.createEl("code", {text: technicalLines.join("\n")});
       } finally {
         progressiveMarkdown?.dispose();
