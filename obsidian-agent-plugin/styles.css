@@ -6291,10 +6291,6 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   background: var(--background-primary);
 }
 
-.la-workspace--assistant .la-conversation-row.is-active {
-  background: color-mix(in srgb, var(--interactive-accent) 10%, var(--background-primary));
-  box-shadow: inset 2px 0 0 var(--interactive-accent);
-}
 
 @container (max-width: 1420px) {
   .la-assistant-shell-v6 { grid-template-columns: minmax(0, 1fr); }
