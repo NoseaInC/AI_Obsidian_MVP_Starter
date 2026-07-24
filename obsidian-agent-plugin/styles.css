@@ -5117,18 +5117,40 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   text-align: left;
   cursor: pointer;
   position: relative;
-  transition: background-color var(--la-duration-fast) var(--la-ease-out),
-    box-shadow var(--la-duration-fast) var(--la-ease-out);
+  overflow: hidden;
+  transition: background-color var(--la-duration-fast) var(--la-ease-out);
+}
+
+.la-conversation-row::after {
+  content: "";
+  position: absolute;
+  inset: 6px auto 6px 0;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--la-purple);
+  opacity: 0;
+  transform: scaleY(0);
+  transform-origin: center;
+  transition: opacity var(--la-duration-normal) var(--la-ease-out),
+    transform var(--la-duration-normal) var(--la-ease-out);
 }
 
 .la-conversation-row:hover {
   background: var(--background-modifier-hover);
 }
+.la-conversation-row:hover::after {
+  opacity: 0.3;
+  transform: scaleY(0.6);
+}
+
 .la-conversation-row.is-active {
   background: color-mix(in srgb, var(--la-purple) 10%, var(--background-primary));
-  box-shadow: inset 3px 0 0 var(--la-purple),
-    inset -1px 0 0 color-mix(in srgb, var(--la-purple) 25%, transparent);
 }
+.la-conversation-row.is-active::after {
+  opacity: 1;
+  transform: scaleY(1);
+}
+
 .la-conversation-row:focus-visible {
   outline: 2px solid var(--interactive-accent);
   outline-offset: -1px;
