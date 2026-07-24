@@ -3091,13 +3091,6 @@ export class LearningAgentMainView extends ItemView {
       .filter(Boolean);
     if (contentBlocks.length) {
       for (const content of contentBlocks) body.createEl("pre", {text: content});
-      const actions = body.createDiv({cls: "la-provider-reasoning__actions"});
-      this.renderCopyAction(
-        actions,
-        "复制思考",
-        () => visible.map(block => String(block.content ?? "")).filter(Boolean).join("\n\n"),
-        "已复制思考",
-      );
     } else {
       body.createEl("small", {text: "该历史记录只保留了思考状态，没有可恢复的原文。"});
     }
