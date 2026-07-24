@@ -2219,7 +2219,7 @@ export class LearningAgentMainView extends ItemView {
       const reasoningSwitch = reasoningRow.createSpan({cls: `la-model-switch ${this.assistantReasoningMode === "deep" ? "is-on" : ""}`, attr: {"aria-hidden": "true"}}); reasoningSwitch.createSpan();
       reasoningRow.onclick = () => {
         this.assistantReasoningMode = this.assistantReasoningMode === "deep" ? "auto" : "deep";
-        paintModelTrigger(); rebuildModelPopover();
+        paintModelTrigger(); rebuildModelPopover(); paintContextMeter();
       };
       const autoRow = modelPopover.createEl("button", {cls: "la-model-popover__auto", attr: {type: "button", role: "option", "aria-selected": String(this.assistantModelAuto)}});
       const autoIcon = autoRow.createSpan({cls: "la-model-icon"}); setIcon(autoIcon, "sparkles");
@@ -2227,7 +2227,7 @@ export class LearningAgentMainView extends ItemView {
       const autoSwitch = autoRow.createSpan({cls: `la-model-switch ${this.assistantModelAuto ? "is-on" : ""}`, attr: {"aria-hidden": "true"}}); autoSwitch.createSpan();
       autoRow.onclick = () => {
         this.assistantModelAuto = !this.assistantModelAuto;
-        paintModelTrigger(); rebuildModelPopover();
+        paintModelTrigger(); rebuildModelPopover(); paintContextMeter();
       };
       const list = modelPopover.createDiv({cls: "la-model-popover__list"});
       if (!enabledProfiles.length) list.createDiv({cls: "la-model-popover__empty", text: "尚未配置可用模型"});
@@ -2265,6 +2265,31 @@ export class LearningAgentMainView extends ItemView {
     modelPicker.onkeydown = event => {
       if (event.key === "Escape") { closeModelPopover(); modelTrigger.focus(); }
     };
+    const contextMeter = composerTools.createSpan({cls: "la-context-meter", attr: {"aria-label": "上下文用量"}});
+    const paintContextMeter = (): void => {
+      if (!this.agentRuntime || !this.conversationId) {
+        contextMeter.hidden = true;
+        return;
+      }
+      const stats = this.agentRuntime.getSessionContextStats(this.conversationId);
+      const usage = stats ? stats.estimatedTokens : 0;
+      const limit = stats ? stats.contextWindow : 0;
+      if (!limit) { contextMeter.hidden = true; return; }
+      contextMeter.hidden = false;
+      const pct = Math.min(usage / limit, 1);
+      const pctBasis = Math.max(pct * 100, 0.3);
+      const level = pct > 0.85 ? "critical" : pct > 0.6 ? "warn" : "normal";
+      contextMeter.className = `la-context-meter la-context-meter--${level}`;
+      contextMeter.setAttribute("aria-label", `上下文 ${usage.toLocaleString()} / ${limit.toLocaleString()} (${Math.round(pct * 100)}%)`);
+      contextMeter.setAttribute("title", `上下文用量 ${(pct * 100).toFixed(1)}% · ${usage.toLocaleString()} / ${limit.toLocaleString()} tokens`);
+      contextMeter.empty();
+      const bar = contextMeter.createSpan({cls: "la-context-meter__bar"});
+      bar.style.setProperty("--ctx-pct", String(pctBasis));
+      const label = contextMeter.createSpan({cls: "la-context-meter__label"});
+      const fmtK = (n: number): string => n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
+      label.setText(`${fmtK(usage)}/${fmtK(limit)}`);
+    };
+    paintContextMeter();
     const send = iconButton(composerTools, "arrow-up", "发送", () => void sendMessage());
     send.addClass("la-composer-submit");
     const paintSendButton = (running: boolean): void => {
@@ -2764,6 +2789,7 @@ export class LearningAgentMainView extends ItemView {
         send.disabled = false;
         input.disabled = awaitingInlineConfirmation;
         paintSendButton(false);
+        paintContextMeter();
         input.setAttribute("placeholder", "今天帮你做些什么？  @ 引用对话文件，/ 调用技能与指令");
         if (!awaitingInlineConfirmation) input.focus();
       }

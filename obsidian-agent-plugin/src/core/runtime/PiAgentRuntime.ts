@@ -1,4 +1,4 @@
-import {Agent, type AgentMessage} from "@earendil-works/pi-agent-core";
+import {Agent, type AgentMessage, estimateContextTokens} from "@earendil-works/pi-agent-core";
 import type {Model} from "@earendil-works/pi-ai";
 import type {AgentRuntime} from "./AgentRuntime";
 import type {
@@ -971,6 +971,16 @@ export class PiAgentRuntime implements AgentRuntime {
       type: "notice",
       code,
       content,
+    };
+  }
+
+  getSessionContextStats(runId: string): {contextWindow: number; estimatedTokens: number} | null {
+    const session = this.runIndex.get(runId);
+    if (!session) return null;
+    const messages = session.agent.state.messages ?? [];
+    return {
+      contextWindow: session.modelLimits.contextWindow,
+      estimatedTokens: estimateContextTokens(messages).tokens,
     };
   }
 
