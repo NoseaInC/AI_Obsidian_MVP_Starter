@@ -5207,15 +5207,15 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   }
 }
 .la-provider-reasoning__body {
-  padding: 4px 12px 10px 33px;
+  padding: 8px 12px 12px 12px;
   border-top: 1px solid color-mix(in srgb, var(--la-purple) 12%, transparent);
 }
 .la-provider-reasoning__body pre {
-  margin: 8px 0 0;
-  padding: 8px 10px;
+  margin: 0;
+  padding: 0;
   border: 0;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--background-secondary) 70%, transparent);
+  border-radius: 0;
+  background: transparent;
   color: var(--text-muted);
   font: inherit;
   font-size: 9.5px;
