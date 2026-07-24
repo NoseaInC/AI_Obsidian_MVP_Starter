@@ -5110,6 +5110,8 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   margin-bottom: 4px;
   padding: 8px 8px 8px 11px;
   border: 1px solid color-mix(in srgb, var(--background-modifier-border) 70%, transparent);
+  border-left-width: 3px;
+  border-left-color: transparent;
   border-radius: 9px;
   background: color-mix(in srgb, var(--background-secondary) 30%, transparent);
   color: var(--text-normal);
@@ -5122,38 +5124,15 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
     transform var(--la-duration-fast) var(--la-ease-out);
 }
 
-.la-conversation-row::before {
-  content: "";
-  position: absolute;
-  inset: 4px auto 4px 0;
-  width: 3px;
-  border-radius: 999px;
-  background: var(--la-purple);
-  opacity: 0;
-  transform: scaleY(0);
-  transform-origin: center;
-  transition: opacity var(--la-duration-fast) var(--la-ease-out),
-    transform var(--la-duration-fast) var(--la-ease-out);
-}
-
 .la-conversation-row:hover {
   background: color-mix(in srgb, var(--background-modifier-hover) 60%, var(--background-secondary));
-  border-color: var(--background-modifier-border-hover);
+  border-color: color-mix(in srgb, var(--la-purple) 22%, transparent);
 }
-.la-conversation-row:hover::before {
-  opacity: 0.35;
-  transform: scaleY(0.6);
-}
-
 .la-conversation-row.is-active {
   background: color-mix(in srgb, var(--la-purple) 12%, var(--background-secondary));
   border-color: color-mix(in srgb, var(--la-purple) 30%, transparent);
+  border-left-color: var(--la-purple);
 }
-.la-conversation-row.is-active::before {
-  opacity: 1;
-  transform: scaleY(1);
-}
-
 .la-conversation-row:focus-visible {
   outline: none;
   border-color: var(--interactive-accent);
