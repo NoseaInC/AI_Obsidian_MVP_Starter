@@ -475,6 +475,7 @@ export class LearningAgentMainView extends ItemView {
   private assistantDrawerOpen = false;
   private assistantMode: "auto" | "organize" | "research" | "plan" = "auto";
   private assistantRun: any = null;
+  private navCollapsed = localStorage.getItem("zhixu-nav-collapsed") === "true";
   private conversationId = "";
   private assistantMessages: any[] = [];
   private conversationMessageCache = new Map<string, Record<string, any>[]>();
@@ -611,6 +612,24 @@ export class LearningAgentMainView extends ItemView {
     const menuTrigger = identity.createSpan({cls: "la-nav-identity__menu"});
     setIcon(menuTrigger, "more-horizontal");
     menuTrigger.setAttribute("aria-label", "模块菜单");
+
+    // Collapse toggle button
+    const collapseBtn = identity.createEl("button", {
+      cls: "la-nav-collapse-btn",
+      attr: {"aria-label": this.navCollapsed ? "展开侧栏" : "折叠侧栏"}
+    });
+    setIcon(collapseBtn, this.navCollapsed ? "panel-left" : "panel-left-close");
+    collapseBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.navCollapsed = !this.navCollapsed;
+      localStorage.setItem("zhixu-nav-collapsed", String(this.navCollapsed));
+      parent.classList.toggle("la-workspace--nav-collapsed", this.navCollapsed);
+      setIcon(collapseBtn, this.navCollapsed ? "panel-left" : "panel-left-close");
+      collapseBtn.setAttribute("aria-label", this.navCollapsed ? "展开侧栏" : "折叠侧栏");
+    });
+
+    // Apply collapsed state after DOM ready
+    if (this.navCollapsed) parent.classList.add("la-workspace--nav-collapsed");
 
     if (this.tab === "assistant") {
       const actions = nav.createDiv({cls: "la-conversation-actions"});
