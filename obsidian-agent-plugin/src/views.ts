@@ -3066,13 +3066,25 @@ export class LearningAgentMainView extends ItemView {
     if (!visible.length) return;
     const details = parent.createEl("details", {cls: "la-provider-reasoning"});
     details.open = open;
-    const summary = details.createEl("summary");
-    setIcon(summary.createSpan({cls: "la-provider-reasoning__icon"}), "brain-circuit");
-    summary.createSpan({text: "模型思考"});
     const streaming = visible.some(block => block.status === "streaming");
-    summary.createEl("small", {
+    details.addClass(streaming ? "is-streaming" : "is-done");
+    const summary = details.createEl("summary");
+    const head = summary.createDiv({cls: "la-provider-reasoning__head"});
+    const titleGroup = head.createDiv({cls: "la-provider-reasoning__title-group"});
+    setIcon(titleGroup.createSpan({cls: "la-provider-reasoning__icon"}), "brain-circuit");
+    titleGroup.createSpan({cls: "la-provider-reasoning__title", text: "模型思考"});
+    const status = head.createSpan({
+      cls: streaming
+        ? "la-provider-reasoning__status is-streaming"
+        : "la-provider-reasoning__status is-done",
+    });
+    status.createSpan({cls: "la-provider-reasoning__status-dot"});
+    status.createSpan({
+      cls: "la-provider-reasoning__status-text",
       text: streaming ? "正在思考" : "思考已完成",
     });
+    const chevron = head.createSpan({cls: "la-provider-reasoning__chevron"});
+    setIcon(chevron, "chevron-right");
     const body = details.createDiv({cls: "la-provider-reasoning__body"});
     const contentBlocks = visible
       .map(block => String(block.content ?? ""))
