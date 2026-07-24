@@ -1,3 +1,5 @@
+import {setIcon} from "obsidian";
+
 export interface InlineAgentConfirmation {
   run_id: string;
   kind: "write" | "question" | "permission";
@@ -21,43 +23,67 @@ export interface InlineConfirmationHandlers {
   openDiff?: (proposalId: string) => Promise<void>;
 }
 
+const RISK_META: Record<"low" | "medium" | "high", {label: string; icon: string}> = {
+  low: {label: "低风险", icon: "shield-check"},
+  medium: {label: "中风险", icon: "shield-alert"},
+  high: {label: "高风险", icon: "shield-x"},
+};
+
+const PERMISSION_ICON = "lock-keyhole";
+const QUESTION_ICON = "message-circle-question";
+
 export function renderInlineAgentConfirmation(
   container: HTMLElement,
   confirmation: InlineAgentConfirmation,
   handlers: InlineConfirmationHandlers,
 ): () => void {
+  const isQuestion = confirmation.kind === "question";
+  const isPermission = confirmation.kind === "permission";
   const card = container.createDiv({
-    cls: "la-inline-agent-confirmation",
+    cls: `la-inline-agent-confirmation la-inline-agent-confirmation--${confirmation.kind} is-risk-${confirmation.risk_level}`,
   });
   card.setAttribute("role", "group");
   card.setAttribute(
     "aria-label",
-    confirmation.kind === "question" ? "知序需要用户回答" : "知序 Harness 请求一次操作授权",
+    isQuestion ? "知序需要用户回答" : "知序 Harness 请求一次操作授权",
   );
 
-  const icon = card.createDiv({
+  const iconWrap = card.createDiv({
     cls: "la-inline-agent-confirmation__icon",
-    text: "✦",
   });
-  icon.setAttribute("aria-hidden", "true");
+  setIcon(iconWrap, isQuestion ? QUESTION_ICON : PERMISSION_ICON);
+  iconWrap.setAttribute("aria-hidden", "true");
 
   const body = card.createDiv({
     cls: "la-inline-agent-confirmation__body",
   });
-  body.createDiv({
+
+  const head = body.createDiv({cls: "la-inline-agent-confirmation__head"});
+  head.createDiv({
     cls: "la-inline-agent-confirmation__title",
     text: confirmation.title,
   });
-  body.createDiv({
-    cls: "la-inline-agent-confirmation__tool",
-    text: `Harness · ${confirmation.tool_name ?? "commit_vault_change"}`,
+  const riskMeta = RISK_META[confirmation.risk_level] ?? RISK_META.medium;
+  const riskBadge = head.createDiv({
+    cls: `la-inline-agent-confirmation__risk la-inline-agent-confirmation__risk--${confirmation.risk_level}`,
   });
+  const riskBadgeIcon = riskBadge.createSpan({cls: "la-inline-agent-confirmation__risk-icon"});
+  setIcon(riskBadgeIcon, riskMeta.icon);
+  riskBadge.createSpan({cls: "la-inline-agent-confirmation__risk-label", text: riskMeta.label});
+
+  const toolPill = body.createDiv({cls: "la-inline-agent-confirmation__tool"});
+  toolPill.createSpan({cls: "la-inline-agent-confirmation__tool-label", text: "Harness"});
+  toolPill.createSpan({
+    cls: "la-inline-agent-confirmation__tool-name",
+    text: confirmation.tool_name ?? (isPermission ? "受控工具" : "commit_vault_change"),
+  });
+
   body.createDiv({
     cls: "la-inline-agent-confirmation__summary",
     text: confirmation.summary,
   });
 
-  if (confirmation.kind === "question") {
+  if (isQuestion) {
     body.createDiv({
       cls: "la-inline-agent-confirmation__question",
       text: confirmation.question,
@@ -98,8 +124,10 @@ export function renderInlineAgentConfirmation(
       });
       const answerButton = actions.createEl("button", {
         cls: "la-button la-button--primary",
-        text: "回答并继续",
       });
+      const answerButtonIcon = answerButton.createSpan({cls: "la-button__icon"});
+      setIcon(answerButtonIcon, "send-horizontal");
+      answerButton.createSpan({text: "回答并继续"});
       controls.push(answerButton);
       answerButton.addEventListener("click", () => void submit(answerInput?.value ?? ""));
       answerInput.addEventListener("keydown", event => {
@@ -111,9 +139,11 @@ export function renderInlineAgentConfirmation(
       answerInput.focus();
     }
     const cancel = actions.createEl("button", {
-      cls: "la-button la-button--ghost",
-      text: "取消任务",
+      cls: "la-button la-button--ghost la-button--danger",
     });
+    const cancelIcon = cancel.createSpan({cls: "la-button__icon"});
+    setIcon(cancelIcon, "x");
+    cancel.createSpan({text: "取消任务"});
     controls.push(cancel);
     cancel.addEventListener("click", async () => {
       if (busy || disposed) return;
@@ -129,11 +159,11 @@ export function renderInlineAgentConfirmation(
   const meta = body.createDiv({
     cls: "la-inline-agent-confirmation__meta",
   });
-  meta.setText(confirmation.kind === "permission"
-    ? `权限请求 · ${confirmation.tool_name ?? "受控工具"} · ${confirmation.writes.length} 项 · 仅当前任务`
-    : `${confirmation.writes.length} 个文件变更 · ${
-        confirmation.risk_level === "high" ? "高风险操作" : "仅本次授权"
-      }`);
+  meta.setText(
+    isPermission
+      ? `权限请求 · ${confirmation.writes.length} 项 · 仅当前任务`
+      : `${confirmation.writes.length} 个文件变更 · ${confirmation.risk_level === "high" ? "高风险操作" : "仅本次授权"}`,
+  );
   if (confirmation.writes.length) {
     const files = body.createEl("ul", {
       cls: "la-inline-agent-confirmation__files",
@@ -142,11 +172,19 @@ export function renderInlineAgentConfirmation(
       const source = String(write.source_path ?? write.from ?? "").trim();
       const destination = String(write.target_path ?? write.destination_path ?? write.to ?? "").trim();
       const path = String(write.path ?? "").trim();
-      files.createEl("li", {
-        text: source && destination
-          ? `${String(write.action ?? "move")} · ${source} → ${destination}`
-          : `${String(write.action ?? "update")} · ${path}`,
-      });
+      const action = String(write.action ?? (destination ? "move" : "update"));
+      const item = files.createEl("li", {cls: `la-inline-agent-confirmation__file la-inline-agent-confirmation__file--${action}`});
+      const itemIcon = item.createSpan({cls: "la-inline-agent-confirmation__file-icon"});
+      setIcon(itemIcon, destination ? "file-input" : "file-pen-line");
+      const itemAction = item.createSpan({cls: "la-inline-agent-confirmation__file-action", text: action});
+      const itemPath = item.createSpan({cls: "la-inline-agent-confirmation__file-path"});
+      if (source && destination) {
+        itemPath.createSpan({text: source});
+        itemPath.createSpan({cls: "la-inline-agent-confirmation__file-arrow", text: "→"});
+        itemPath.createSpan({text: destination});
+      } else {
+        itemPath.createSpan({text: path});
+      }
     }
   }
 
@@ -169,20 +207,19 @@ export function renderInlineAgentConfirmation(
   let diffButton: HTMLButtonElement | undefined;
   if (handlers.openDiff && confirmation.proposal_id) {
     diffButton = actions.createEl("button", {
-      cls: "la-button la-button--secondary",
-      text: "查看变化",
+      cls: "la-button la-button--ghost",
     });
-    diffButton.addEventListener("click", () => {
-      if (!busy && !disposed) {
-        void handlers.openDiff?.(confirmation.proposal_id);
-      }
-    });
+    const diffIcon = diffButton.createSpan({cls: "la-button__icon"});
+    setIcon(diffIcon, "git-compare-arrows");
+    diffButton.appendChild(document.createTextNode("查看变化"));
   }
 
   const rejectButton = actions.createEl("button", {
-    cls: "la-button la-button--ghost",
-    text: confirmation.kind === "permission" ? "不允许，继续" : "取消",
+    cls: "la-button la-button--ghost la-button--danger",
   });
+  const rejectIcon = rejectButton.createSpan({cls: "la-button__icon"});
+  setIcon(rejectIcon, "x");
+  rejectButton.appendChild(document.createTextNode(isPermission ? "不允许，继续" : "取消"));
   rejectButton.addEventListener("click", async () => {
     if (busy || disposed) return;
     setBusy(true);
@@ -197,19 +234,30 @@ export function renderInlineAgentConfirmation(
 
   const confirmButton = actions.createEl("button", {
     cls: "la-button la-button--primary",
-    text: "允许本次",
   });
+  const confirmIcon = confirmButton.createSpan({cls: "la-button__icon"});
+  setIcon(confirmIcon, "check");
+  confirmButton.appendChild(document.createTextNode("允许本次"));
+  const updateConfirmButton = (label: string): void => {
+    const textNode = Array.from(confirmButton.childNodes).find(node => node.nodeType === Node.TEXT_NODE) as Text | undefined;
+    if (textNode) {
+      textNode.textContent = label;
+    } else {
+      confirmButton.appendChild(document.createTextNode(label));
+    }
+  };
+
   confirmButton.addEventListener("click", async () => {
     if (busy || disposed) return;
     setBusy(true);
-    confirmButton.setText("执行中…");
+    updateConfirmButton("执行中…");
     try {
       await handlers.confirm(confirmation.run_id);
       card.addClass("is-resolved");
       card.dataset.state = "confirmed";
-      confirmButton.setText("已确认");
+      updateConfirmButton("已确认");
     } catch (error) {
-      confirmButton.setText("重试确认");
+      updateConfirmButton("重试确认");
       const message = error instanceof Error ? error.message : String(error);
       let errorNode = body.querySelector<HTMLElement>(".la-inline-agent-confirmation__error");
       if (!errorNode) errorNode = body.createDiv({cls: "la-inline-agent-confirmation__error"});
@@ -223,10 +271,15 @@ export function renderInlineAgentConfirmation(
   if (scope) {
     scopeButton = actions.createEl("button", {
       cls: "la-button la-button--secondary",
-      text: confirmation.kind === "permission" && scope === "__all__"
-        ? "当前任务全部允许"
-        : `本会话允许在 ${scope} 新建`,
     });
+    const scopeIcon = scopeButton.createSpan({cls: "la-button__icon"});
+    if (isPermission && scope === "__all__") {
+      setIcon(scopeIcon, "shield-check");
+      scopeButton.appendChild(document.createTextNode("当前任务全部允许"));
+    } else {
+      setIcon(scopeIcon, "folder-open");
+      scopeButton.appendChild(document.createTextNode(`本会话允许在 ${scope} 新建`));
+    }
     scopeButton.addEventListener("click", async () => {
       if (busy || disposed) return;
       setBusy(true);
