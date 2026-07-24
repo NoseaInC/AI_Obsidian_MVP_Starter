@@ -1,4 +1,10 @@
-/* 知序 UI V3 — all selectors are scoped to the plugin surface. */
+/* ═══════════════════════════════════════════════════════════════════════════
+   知序 UI V4 — emilkowalski/skills 设计系统
+   Principles: opacity+transform only, never ease-in, ≤300ms UI,
+   spatial consistency, press feedback, shadow-over-border.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Design Tokens ──────────────────────────────────────────────────────── */
 .la-app,
 .la-modal {
   --la-space-1: 4px;
@@ -10,12 +16,13 @@
   --la-radius-sm: 6px;
   --la-radius-md: 9px;
   --la-radius-lg: 12px;
-  --la-duration-fast: 120ms;
+  --la-duration-fast: 100ms;
   --la-duration-normal: 180ms;
-  --la-duration-slow: 300ms;
-  /* Strong custom easing — built-in ease / ease-out are too weak for UI. */
-  --la-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
-  --la-ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --la-duration-slow: 280ms;
+  /* Spring curve — feels responsive in under 300ms.
+     Never ease-in: leading edge is near-immediate. */
+  --la-ease-out: cubic-bezier(0.05, 0.7, 0.1, 1);
+  --la-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   --la-popover-origin: top right;
   --la-border: var(--background-modifier-border);
   --la-border-hover: var(--background-modifier-border-hover);
@@ -31,11 +38,66 @@
   --la-orange: var(--color-orange);
   --la-purple: var(--color-purple);
   --la-red: var(--color-red);
+  --la-shadow-sm: 0 1px 2px rgba(0,0,0,.06);
+  --la-shadow-md: 0 2px 8px rgba(0,0,0,.08);
+  --la-shadow-lg: 0 4px 16px rgba(0,0,0,.1);
   --strong-color: var(--text-normal);
   --em-color: var(--text-normal);
   color: var(--la-text);
   font-family: var(--zhixu-ui-font, var(--font-interface));
   font-size: 14px;
+}
+
+/* ── Animation Keyframes ───────────────────────────────────────────────────
+   Rule: only opacity + transform. Never width/height/top/left.
+   All ≤300ms. No ease-in.                                                   */
+
+/* Message entry: gentle slide-up + fade */
+@keyframes la-message-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Panel reveal: quick crossfade with slight scale */
+@keyframes la-panel-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Modal/popover entry: scale from origin with fade */
+@keyframes la-modal-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Loading shimmer: GPU-only bg-position */
+@keyframes la-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Pulse for live indicators (used sparingly) */
+@keyframes la-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .5; }
 }
 
 /* Long-form reading surfaces may use a font independent of plugin chrome. */
@@ -203,6 +265,13 @@ body .la-app .la-confidence strong {
   background: var(--background-primary-alt);
   border-radius: var(--la-radius-md);
   color: var(--la-muted);
+  transition: border-color var(--la-duration-fast) var(--la-ease-out),
+              box-shadow var(--la-duration-fast) var(--la-ease-out);
+}
+
+.la-search:focus-within {
+  border-color: var(--la-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--la-accent) 20%, transparent);
 }
 
 .la-search svg {
@@ -234,6 +303,10 @@ body .la-app .la-confidence strong {
   color: var(--la-muted);
   cursor: pointer;
   line-height: 0;
+  transition: background var(--la-duration-fast) var(--la-ease-out),
+              color var(--la-duration-fast) var(--la-ease-out),
+              transform var(--la-duration-fast) var(--la-ease-out);
+  will-change: transform;
 }
 
 .la-icon-button:hover {
@@ -241,9 +314,14 @@ body .la-app .la-confidence strong {
   color: var(--la-text);
 }
 
+.la-icon-button:active:not(:disabled) {
+  transform: scale(.92);
+}
+
 .la-icon-button:disabled {
   opacity: .35;
   cursor: default;
+  transform: none;
 }
 
 .la-icon-button svg {
@@ -332,16 +410,24 @@ body .la-app .la-confidence strong {
   cursor: pointer;
   text-align: left;
   line-height: 1;
+  transition: background var(--la-duration-fast) var(--la-ease-out),
+              color var(--la-duration-fast) var(--la-ease-out),
+              transform var(--la-duration-fast) var(--la-ease-out);
 }
 
 .la-module-nav__item:hover {
   background: var(--la-surface-hover);
 }
 
+.la-module-nav__item:active:not(.is-active) {
+  transform: scale(.96);
+}
+
 .la-module-nav__item.is-active {
   color: var(--la-accent);
   background: color-mix(in srgb, var(--la-accent) 11%, transparent);
   font-weight: 600;
+  transform: none;
 }
 
 .la-module-nav__icon {
@@ -407,6 +493,7 @@ body .la-app .la-confidence strong {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  animation: la-panel-enter var(--la-duration-slow) var(--la-ease-out);
 }
 
 .la-page-frame {
@@ -477,12 +564,19 @@ body .la-app .la-confidence strong {
   border-color: var(--la-accent);
   background: var(--la-accent);
   color: var(--text-on-accent);
+  transition: transform var(--la-duration-fast) var(--la-ease-out),
+              background var(--la-duration-fast) var(--la-ease-out);
 }
 
 .la-app button.mod-cta:hover,
 .la-modal button.mod-cta:hover {
   border-color: var(--la-accent-hover);
   background: var(--la-accent-hover);
+}
+
+.la-app button.mod-cta:active:not(:disabled),
+.la-modal button.mod-cta:active:not(:disabled) {
+  transform: scale(.96);
 }
 
 .la-page-toolbar {
@@ -1599,7 +1693,14 @@ body .la-app .la-confidence strong {
   border-radius: var(--la-radius-lg);
   background: var(--la-surface);
   line-height: 1.65;
+  animation: la-message-enter var(--la-duration-slow) var(--la-ease-out) both;
 }
+
+/* Subtle stagger for consecutive messages */
+.la-message:nth-child(2) { animation-delay: 30ms; }
+.la-message:nth-child(3) { animation-delay: 60ms; }
+.la-message:nth-child(4) { animation-delay: 90ms; }
+.la-message:nth-child(5) { animation-delay: 120ms; }
 
 .la-message--assistant {
   align-self: flex-start;
@@ -2186,10 +2287,7 @@ body .la-app .la-confidence strong {
   animation: la-shimmer 1.4s linear infinite;
 }
 
-@keyframes la-shimmer {
-  to { background-position: -200% 0; }
-}
-
+/* la-shimmer keyframe defined in Animation Keyframes section above */
 .la-muted {
   color: var(--la-muted) !important;
 }
@@ -2244,6 +2342,7 @@ body .la-app .la-confidence strong {
 /* Modals */
 .la-modal {
   max-width: 760px;
+  animation: la-modal-enter var(--la-duration-normal) var(--la-ease-out);
 }
 
 .la-modal__actions {
@@ -2632,7 +2731,9 @@ body .la-app .la-confidence strong {
   border: 1px solid var(--la-border);
   border-radius: 10px;
   background: var(--background-primary);
-  transition: border-color 120ms, box-shadow 120ms, transform 120ms;
+  transition: border-color var(--la-duration-normal) var(--la-ease-out),
+              box-shadow var(--la-duration-normal) var(--la-ease-out),
+              transform var(--la-duration-normal) var(--la-ease-out);
   cursor: pointer;
 }
 
@@ -3332,8 +3433,8 @@ body .la-app .la-confidence strong {
   min-width: 56px;
   max-width: 120px;
   cursor: default;
-  transition: border-color var(--la-duration-fast) ease,
-    background-color var(--la-duration-fast) ease;
+  transition: border-color var(--la-duration-fast) var(--la-ease-out),
+    background-color var(--la-duration-fast) var(--la-ease-out);
 }
 .la-context-meter[hidden] { display: none; }
 
@@ -3344,7 +3445,7 @@ body .la-app .la-confidence strong {
   width: var(--ctx-pct, 0)%;
   max-width: 100%;
   background: var(--color-green);
-  transition: width 0.35s ease, background-color 0.35s ease;
+  transition: width 0.35s var(--la-ease-out), background-color 0.35s var(--la-ease-out);
   flex-shrink: 0;
   min-width: 2px;
 }
@@ -4246,7 +4347,7 @@ button.la-daily-source {
 
 .la-study-progress > span { position: absolute; right: 10px; top: 8px; z-index: 2; color: var(--text-faint); font-size: 9px; }
 .la-study-progress > div { width: 100%; height: 100%; }
-.la-study-progress > div > div { height: 100%; border-radius: 0 999px 999px 0; background: linear-gradient(90deg, var(--interactive-accent), var(--la-purple)); transition: width var(--la-duration-normal) ease; }
+.la-study-progress > div > div { height: 100%; border-radius: 0 999px 999px 0; background: linear-gradient(90deg, var(--interactive-accent), var(--la-purple)); transition: width var(--la-duration-normal) var(--la-ease-out); }
 
 .la-study-content {
   min-width: 0;
@@ -5366,8 +5467,8 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   border-radius: 10px;
   background: color-mix(in srgb, var(--la-purple) 5%, var(--background-secondary));
   overflow: hidden;
-  transition: border-color var(--la-duration-fast) ease,
-    background-color var(--la-duration-fast) ease;
+  transition: border-color var(--la-duration-fast) var(--la-ease-out),
+    background-color var(--la-duration-fast) var(--la-ease-out);
 }
 .la-provider-reasoning:hover {
   border-color: color-mix(in srgb, var(--la-purple) 26%, var(--la-border));
@@ -5459,7 +5560,7 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   display: inline-flex;
   align-items: center;
   transition: transform var(--la-duration-fast) var(--la-ease-out),
-    color var(--la-duration-fast) ease;
+    color var(--la-duration-fast) var(--la-ease-out);
 }
 .la-provider-reasoning__chevron svg {
   width: 12px;
@@ -5670,8 +5771,8 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   border-left-width: 3px;
   border-radius: 10px;
   background: var(--background-secondary);
-  transition: border-color var(--la-duration-fast) ease,
-    background-color var(--la-duration-fast) ease;
+  transition: border-color var(--la-duration-fast) var(--la-ease-out),
+    background-color var(--la-duration-fast) var(--la-ease-out);
 }
 
 .la-inline-agent-confirmation--write.is-risk-low,
@@ -5992,7 +6093,7 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   text-align: left;
   font-size: 12px;
   cursor: pointer;
-  transition: background var(--la-duration-fast) ease;
+  transition: background var(--la-duration-fast) var(--la-ease-out);
 }
 .la-split-button__item:hover {
   background: color-mix(in srgb, var(--interactive-accent) 10%, var(--background-secondary));
@@ -6154,7 +6255,7 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   color: var(--text-muted);
   box-shadow: none;
   font-size: 11px;
-  transition: border-color var(--la-duration-fast) ease, background var(--la-duration-fast) ease, color var(--la-duration-fast) ease;
+  transition: border-color var(--la-duration-fast) var(--la-ease-out), background var(--la-duration-fast) var(--la-ease-out), color var(--la-duration-fast) var(--la-ease-out);
 }
 
 .la-assistant-shell-v6 .la-assistant-quick-actions button:hover,
@@ -6250,7 +6351,7 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   margin-bottom: 8px;
   border-radius: 10px;
   background: var(--background-primary);
-  transition: border-color var(--la-duration-fast) ease, transform var(--la-duration-fast) ease;
+  transition: border-color var(--la-duration-fast) var(--la-ease-out), transform var(--la-duration-fast) var(--la-ease-out);
 }
 
 .la-assistant-shell-v6 .la-assistant-source-card.is-clickable:hover {
@@ -6553,7 +6654,7 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   border-radius: 22px;
   background: var(--background-primary);
   box-shadow: 0 10px 28px color-mix(in srgb, var(--background-modifier-box-shadow) 8%, transparent);
-  transition: border-color var(--la-duration-fast) ease, box-shadow var(--la-duration-fast) ease;
+  transition: border-color var(--la-duration-fast) var(--la-ease-out), box-shadow var(--la-duration-fast) var(--la-ease-out);
 }
 
 .la-assistant-shell-v8 .la-unified-composer:focus-within {
@@ -6694,7 +6795,7 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   font-family: inherit;
   font-size: 11px;
   white-space: nowrap;
-  transition: color var(--la-duration-fast) ease, background var(--la-duration-fast) ease;
+  transition: color var(--la-duration-fast) var(--la-ease-out), background var(--la-duration-fast) var(--la-ease-out);
 }
 
 .la-assistant-shell-v8 .la-composer-mode svg {
@@ -6758,7 +6859,7 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   line-height: 0;
   box-shadow: none !important;
   overflow: hidden;
-  transition: filter var(--la-duration-fast) ease, transform var(--la-duration-fast) var(--la-ease-out);
+  transition: filter var(--la-duration-fast) var(--la-ease-out), transform var(--la-duration-fast) var(--la-ease-out);
 }
 
 .la-assistant-shell-v8 .la-composer-tools > button.la-composer-submit:not(.is-running),
@@ -6893,6 +6994,8 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   outline: 0;
   background: var(--background-primary);
   box-shadow: 0 18px 48px color-mix(in srgb, var(--background-modifier-box-shadow) 22%, transparent);
+  animation: la-modal-enter var(--la-duration-normal) var(--la-ease-out);
+  transform-origin: bottom right;
 }
 
 .la-assistant-shell-v8 .la-model-popover button {
@@ -6909,6 +7012,7 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   color: var(--text-normal);
   font-family: inherit;
   text-align: left;
+  transition: background var(--la-duration-fast) var(--la-ease-out);
 }
 
 .la-assistant-shell-v8 .la-model-popover button:hover,
@@ -6967,7 +7071,7 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   padding: 2px;
   border-radius: 999px;
   background: var(--background-modifier-border);
-  transition: background var(--la-duration-fast) ease;
+  transition: background var(--la-duration-fast) var(--la-ease-out);
 }
 
 .la-assistant-shell-v8 .la-model-switch > span {
@@ -7128,26 +7232,14 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
 .la-split-button__popover {
   transform-origin: var(--la-popover-origin);
 }
-.la-assistant-shell-v8 .la-model-popover {
-  transform-origin: var(--la-popover-origin);
-}
-
 /* ---- popover entrance: not-from-nothing (Standard 5) ---- */
+/* la-popover-enter is same as la-modal-enter; using the single definition above.
+   Keep split-button popover animation */
 .la-split-button__popover:not([hidden]) {
-  animation: la-popover-enter 180ms var(--la-ease-out) both;
-}
-@keyframes la-popover-enter {
-  from {
-    opacity: 0;
-    transform: scale(0.95);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
+  animation: la-modal-enter var(--la-duration-normal) var(--la-ease-out) both;
 }
 
-/* ---- reduced-motion: pulse / spin (Standard 8) ---- */
+/* ---- reduced-motion: all animations disabled (a11y a11y) ---- */
 @media (prefers-reduced-motion: reduce) {
   .la-provider-reasoning__status.is-streaming .la-provider-reasoning__status-dot {
     animation: none;
@@ -7161,5 +7253,24 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   }
   .la-split-button__popover:not([hidden]) {
     animation-duration: 0ms;
+  }
+  .la-message {
+    animation-duration: 0ms;
+    animation-delay: 0ms;
+  }
+  .la-module-content {
+    animation-duration: 0ms;
+  }
+  .la-modal {
+    animation-duration: 0ms;
+  }
+  .la-assistant-shell-v8 .la-model-popover {
+    animation-duration: 0ms;
+  }
+  .la-icon-button,
+  .la-module-nav__item,
+  .la-app button.mod-cta,
+  .la-modal button.mod-cta {
+    transition-duration: 0ms;
   }
 }
