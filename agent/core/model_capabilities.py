@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Any
 
-from agent.core.models import normalized_model_settings
+from agent.core.models import normalized_model_settings, lookup_known_model_context_window
 
 
 ADAPTER_VERSION = "openai-compatible-pi-v2"
@@ -127,7 +127,7 @@ class DeepSeekCapabilityProbe:
         capabilities["reasoningEffort"] = self._state("inconclusive")
         capabilities["thinkingControl"] = self._state("inconclusive")
         capabilities["supportsCancellation"] = self._state("inconclusive")
-        capabilities["contextWindow"] = self._state("inconclusive", value=int(settings.get("contextWindow") or 128_000))
+        capabilities["contextWindow"] = self._state("inconclusive", value=int(settings.get("contextWindow") or lookup_known_model_context_window(model)))
         capabilities["maxOutputTokens"] = self._state("inconclusive", value=int(settings.get("maxTokens") or 3_000))
         latency = int((time.monotonic() - started) * 1000)
         for value in capabilities.values(): value["latencyMs"] = latency
@@ -160,6 +160,6 @@ class CapabilityResolver:
             "reasoningEffort": supported("reasoningEffort"),
             "toolChoiceRequired": supported("toolChoiceRequired"),
             "usageReporting": supported("usageReporting"),
-            "contextWindow": numeric("contextWindow", 128_000),
+            "contextWindow": numeric("contextWindow", lookup_known_model_context_window(str((probe or {}).get("model") or ""))),
             "maxOutputTokens": numeric("maxOutputTokens", 3_000, "maxTokens"),
         }

@@ -27,6 +27,66 @@ ROUTING_TASKS = {
 KEY_REFERENCE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 
 
+# Vendor-published context windows for known OpenAI-compatible models.
+# Used as a fallback so users do not have to manually configure the limit
+# for popular chat models. Matching is case-insensitive and prefers the
+# longest key that matches as a prefix (so "deepseek-v4-pro" beats
+# "deepseek-v4").
+KNOWN_MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+    # DeepSeek family. DeepSeek-V4 Pro ships with a 1M-token window.
+    "deepseek-v4-pro": 1_000_000,
+    "deepseek-v4-flash": 128_000,
+    "deepseek-v4-lite": 64_000,
+    "deepseek-v3.2-exp": 128_000,
+    "deepseek-v3.2": 128_000,
+    "deepseek-v3.1": 128_000,
+    "deepseek-v3": 64_000,
+    "deepseek-coder-v2": 128_000,
+    "deepseek-coder": 128_000,
+    # OpenAI family.
+    "gpt-4.1": 1_000_000,
+    "gpt-4.1-mini": 1_000_000,
+    "gpt-4.1-nano": 1_000_000,
+    "gpt-4o": 128_000,
+    "gpt-4o-mini": 128_000,
+    "o3": 200_000,
+    "o3-mini": 200_000,
+    "o1": 200_000,
+    "o1-mini": 128_000,
+    # Anthropic via OpenAI-compatible proxies.
+    "claude-3-7-sonnet": 200_000,
+    "claude-3-5-sonnet": 200_000,
+    "claude-3-5-haiku": 200_000,
+    # Google Gemini.
+    "gemini-2.5-pro": 1_000_000,
+    "gemini-2.5-flash": 1_000_000,
+    "gemini-2.0-flash": 1_000_000,
+    "gemini-1.5-pro": 1_000_000,
+    "gemini-1.5-flash": 1_000_000,
+}
+# Generic fallback when no vendor-specific match is found.
+DEFAULT_UNKNOWN_MODEL_CONTEXT_WINDOW = 128_000
+
+
+def lookup_known_model_context_window(model_name: str) -> int:
+    """Return the vendor-published window for ``model_name`` if known.
+
+    Matching is case-insensitive. The longest key that matches as a prefix
+    wins, so vendor versioning can introduce newer entries without breaking
+    older lookups.
+    """
+    if not model_name:
+        return DEFAULT_UNKNOWN_MODEL_CONTEXT_WINDOW
+    normalized = model_name.strip().lower()
+    best_key = ""
+    best_value = DEFAULT_UNKNOWN_MODEL_CONTEXT_WINDOW
+    for key, value in KNOWN_MODEL_CONTEXT_WINDOWS.items():
+        if normalized.startswith(key) and len(key) > len(best_key):
+            best_key = key
+            best_value = value
+    return best_value
+
+
 def normalized_model_settings(profile: dict[str, Any]) -> dict[str, Any]:
     """Return capability defaults without rewriting an existing profile.
 
@@ -36,6 +96,7 @@ def normalized_model_settings(profile: dict[str, Any]) -> dict[str, Any]:
     explicit user choice.
     """
     provider_type = str(profile.get("providerType") or "openai-compatible")
+    default_model_name = str(profile.get("defaultModel") or "")
     settings = dict(profile.get("settings") or {})
     native_tool_calling = bool(
         settings.get("nativeToolCalling", settings.get("toolCalling", True))
@@ -43,7 +104,7 @@ def normalized_model_settings(profile: dict[str, Any]) -> dict[str, Any]:
     defaults: dict[str, Any] = {
         "temperature": 0.3,
         "maxTokens": 3000,
-        "contextWindow": 128_000,
+        "contextWindow": lookup_known_model_context_window(default_model_name),
         "timeout": 30,
         "streaming": True,
         "jsonSchema": True,
@@ -345,7 +406,7 @@ class ModelProfileService:
             "apiKeyReference": reference, "defaultModel": str(data.get("defaultModel", "")).strip(),
             "availableModels": [str(item) for item in data.get("availableModels", [])], "enabled": bool(data.get("enabled", True)),
             "settings": {"temperature": float(settings.get("temperature", .3)), "maxTokens": int(settings.get("maxTokens", 2000)),
-                         "contextWindow": int(settings.get("contextWindow", 128_000)),
+                         "contextWindow": int(settings.get("contextWindow", lookup_known_model_context_window(str(data.get("defaultModel", ""))))),
                          "timeout": float(settings.get("timeout", 30)), "streaming": bool(settings.get("streaming", True)),
                          "jsonSchema": bool(settings.get("jsonSchema", True)), "toolCalling": native_tool_calling,
                          "nativeToolCalling": native_tool_calling,

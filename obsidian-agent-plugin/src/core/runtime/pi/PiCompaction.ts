@@ -287,7 +287,21 @@ export function compactAgentMessages(
       reason: "pending_question",
     };
   }
-  const cut = findSafeCut(messages, keepRecent);
+  let cut = findSafeCut(messages, keepRecent);
+  if (cut <= 0 && force) {
+    // Forced compaction relaxes the keepRecent budget so a single oversized
+    // message or a malformed turn boundary does not leave the user stuck in a
+    // "context exceeded" loop when they explicitly chose to compress.
+    const fallbackBudgets = [
+      Math.floor(keepRecent / 2),
+      Math.floor(keepRecent / 4),
+      0,
+    ];
+    for (const budget of fallbackBudgets) {
+      const retry = findSafeCut(messages, budget);
+      if (retry > 0) { cut = retry; break; }
+    }
+  }
   if (cut <= 0) {
     return {
       messages,

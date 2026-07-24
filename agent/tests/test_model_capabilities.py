@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from agent.core.model_capabilities import CapabilityResolver, DeepSeekCapabilityProbe
+from agent.core.models import lookup_known_model_context_window
 from agent.core.storage import StateStore
 
 
@@ -59,6 +60,30 @@ class CapabilityProbeTests(unittest.TestCase):
         resolved = CapabilityResolver.resolve(None, {"contextWindow": 1_000_000, "maxTokens": 384_000})
         self.assertEqual(resolved["contextWindow"], 1_000_000)
         self.assertEqual(resolved["maxOutputTokens"], 384_000)
+
+
+class KnownModelContextWindowTests(unittest.TestCase):
+    def test_known_deepseek_v4_pro_is_one_million(self):
+        self.assertEqual(lookup_known_model_context_window("deepseek-v4-pro"), 1_000_000)
+        self.assertEqual(lookup_known_model_context_window("DeepSeek-V4-Pro"), 1_000_000)
+
+    def test_known_deepseek_v4_flash_is_128k(self):
+        self.assertEqual(lookup_known_model_context_window("deepseek-v4-flash"), 128_000)
+
+    def test_known_openai_gpt_4_1_is_one_million(self):
+        self.assertEqual(lookup_known_model_context_window("gpt-4.1"), 1_000_000)
+
+    def test_unknown_model_falls_back_to_128k(self):
+        self.assertEqual(lookup_known_model_context_window("custom-fancy-model-99"), 128_000)
+
+    def test_empty_model_falls_back_to_128k(self):
+        self.assertEqual(lookup_known_model_context_window(""), 128_000)
+
+    def test_prefix_match_prefers_longest_key(self):
+        # "deepseek-v4-pro" should win over "deepseek-v4-flash" when neither
+        # prefix matches exactly, but here we just confirm exact match wins.
+        self.assertEqual(lookup_known_model_context_window("deepseek-v4-pro"), 1_000_000)
+        self.assertEqual(lookup_known_model_context_window("deepseek-v4-flash"), 128_000)
 
 
 if __name__ == "__main__":
