@@ -2390,7 +2390,7 @@ export class LearningAgentMainView extends ItemView {
           const userCopy = user.createDiv({cls: "la-message-copy"}); userCopy.createEl("p", {text: content || "处理这些附件"});
           for (const attachment of this.pendingAttachments) userCopy.createSpan({cls: "la-message-attachment", text: attachment.displayName});
         }
-        const trace = messages.createEl("section", {cls: "la-live-trace is-running", attr: {"aria-label": "任务执行进度"}});
+        const trace = messages.createEl("section", {cls: "la-live-trace is-running"});
         this.assistantLiveTraceEls.set(this.conversationId, trace);
         const assistant = messages.createDiv({cls: "la-message la-message--assistant la-message--streaming"});
         this.assistantLiveAssistantEls.set(this.conversationId, assistant);
@@ -2613,6 +2613,7 @@ export class LearningAgentMainView extends ItemView {
         if (this.conversationId !== runConversationId) return;
         this.assistantLiveRun = liveRun;
         const failure = humanizeAssistantError(String(error.code ?? error.message ?? ""), String(error.message ?? ""), true);
+        const errorMessage = String(error.message ?? "").trim();
         if (!input.value.trim() && submittedDraft) {
           input.value = submittedDraft;
           this.assistantDraft = submittedDraft;
@@ -2623,7 +2624,11 @@ export class LearningAgentMainView extends ItemView {
         const actions = copy.createDiv({cls: "la-assistant-recovery__actions"});
         button(actions, "重试", () => sendMessage(), "mod-cta");
         button(actions, "切换模型", () => { this.assistantDrawerOpen = true; drawer.addClass("is-open"); shell.addClass("has-drawer"); });
-        const technical = copy.createEl("details", {cls: "la-technical"}); technical.createEl("summary", {text: "技术详情"}); technical.createEl("code", {text: String(failure.technicalCode ?? "assistant_error")});
+        const technical = copy.createEl("details", {cls: "la-technical"});
+        technical.createEl("summary", {text: "技术详情"});
+        const technicalLines: string[] = [String(failure.technicalCode ?? "assistant_error")];
+        if (errorMessage) technicalLines.push(errorMessage);
+        technical.createEl("code", {text: technicalLines.join("\n")});
       } finally {
         progressiveMarkdown?.dispose();
         this.abort = null;
