@@ -613,23 +613,99 @@ export class LearningAgentMainView extends ItemView {
     setIcon(menuTrigger, "more-horizontal");
     menuTrigger.setAttribute("aria-label", "模块菜单");
 
-    // Collapse toggle button
+    // Collapse button (visible when expanded)
     const collapseBtn = identity.createEl("button", {
       cls: "la-nav-collapse-btn",
-      attr: {"aria-label": this.navCollapsed ? "展开侧栏" : "折叠侧栏"}
+      attr: {"aria-label": "折叠侧栏"}
     });
-    setIcon(collapseBtn, this.navCollapsed ? "panel-left" : "panel-left-close");
-    collapseBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
+    setIcon(collapseBtn, "panel-left-close");
+
+    // Expand button (only visible when collapsed)
+    const expandBtn = nav.createEl("button", {
+      cls: "la-nav-expand-btn",
+      attr: {"aria-label": "展开侧栏"}
+    });
+    setIcon(expandBtn, "panel-left");
+    expandBtn.style.display = "none";
+
+    const toggleNav = () => {
       this.navCollapsed = !this.navCollapsed;
       localStorage.setItem("zhixu-nav-collapsed", String(this.navCollapsed));
       parent.classList.toggle("la-workspace--nav-collapsed", this.navCollapsed);
-      setIcon(collapseBtn, this.navCollapsed ? "panel-left" : "panel-left-close");
-      collapseBtn.setAttribute("aria-label", this.navCollapsed ? "展开侧栏" : "折叠侧栏");
+      if (this.navCollapsed) {
+        expandBtn.style.display = "flex";
+        collapseBtn.style.display = "none";
+      } else {
+        expandBtn.style.display = "none";
+        collapseBtn.style.display = "";
+        parent.style.setProperty("--la-nav-width", "");
+      }
+    };
+
+    collapseBtn.addEventListener("click", (e) => { e.stopPropagation(); toggleNav(); });
+    expandBtn.addEventListener("click", (e) => { e.stopPropagation(); toggleNav(); });
+
+    // Resize handle — drag to adjust sidebar width
+    const resizeHandle = nav.createDiv({cls: "la-nav-resize-handle"});
+    let dragStartX = 0;
+    let dragStartWidth = 0;
+
+    resizeHandle.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      dragStartX = e.clientX;
+      dragStartWidth = nav.getBoundingClientRect().width;
+      resizeHandle.classList.add("is-dragging");
+      document.body.classList.add("is-resizing");
+      if (this.navCollapsed) {
+        // Expand when dragging from collapsed state
+        this.navCollapsed = false;
+        localStorage.setItem("zhixu-nav-collapsed", "false");
+        parent.classList.remove("la-workspace--nav-collapsed");
+        expandBtn.style.display = "none";
+        collapseBtn.style.display = "";
+      }
+
+      const onMove = (ev: MouseEvent) => {
+        const delta = ev.clientX - dragStartX;
+        let newWidth = Math.max(36, Math.min(500, dragStartWidth + delta));
+        parent.style.setProperty("--la-nav-width", `${newWidth}px`);
+        localStorage.setItem("zhixu-nav-width", String(newWidth));
+      };
+
+      const onUp = (ev: MouseEvent) => {
+        resizeHandle.classList.remove("is-dragging");
+        document.body.classList.remove("is-resizing");
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        const finalWidth = nav.getBoundingClientRect().width;
+        if (finalWidth < 80) {
+          // Snap to collapsed
+          this.navCollapsed = true;
+          localStorage.setItem("zhixu-nav-collapsed", "true");
+          parent.classList.add("la-workspace--nav-collapsed");
+          expandBtn.style.display = "flex";
+          collapseBtn.style.display = "none";
+          parent.style.setProperty("--la-nav-width", "");
+        } else {
+          localStorage.setItem("zhixu-nav-width", String(finalWidth));
+        }
+      };
+
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
     });
 
-    // Apply collapsed state after DOM ready
-    if (this.navCollapsed) parent.classList.add("la-workspace--nav-collapsed");
+    // Apply saved state
+    if (this.navCollapsed) {
+      parent.classList.add("la-workspace--nav-collapsed");
+      collapseBtn.style.display = "none";
+      expandBtn.style.display = "flex";
+    } else {
+      const savedWidth = localStorage.getItem("zhixu-nav-width");
+      if (savedWidth) {
+        parent.style.setProperty("--la-nav-width", `${savedWidth}px`);
+      }
+    }
 
     if (this.tab === "assistant") {
       const actions = nav.createDiv({cls: "la-conversation-actions"});
