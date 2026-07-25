@@ -294,7 +294,7 @@ test("assistant production surface uses Pi model proxy, stop and three inspector
   assert.match(css, /\.la-message-markdown strong \{[\s\S]*display:\s*inline/);
   for (const label of ["上下文", "来源", "变更", "新会话", "搜索对话"]) assert.match(views, new RegExp(label));
   assert.match(css, /\.la-workspace--assistant/);
-  assert.match(css, /grid-template-columns:\s*minmax\(620px, 1fr\) 352px/);
+  assert.match(css, /grid-template-columns:\s*minmax\(0, 1fr\)/);
   assert.match(css, /\.la-live-trace/);
   assert.match(css, /@container \(max-width: 1420px\)[\s\S]*\.la-workspace--assistant \{ grid-template-columns: 72px minmax\(0, 1fr\); \}/);
   assert.match(css, /\.la-assistant-shell-v5 \.la-chat-toolbar__title \{ flex: 1 1 180px; min-width: 140px;/);

@@ -1990,8 +1990,9 @@ export class LearningAgentMainView extends ItemView {
       }
     }
     this.assistantConversations = conversations.items ?? this.assistantConversations;
-    const shell = body.createDiv({cls: `la-assistant-shell-v4 la-assistant-shell-v5 la-assistant-shell-v6 la-assistant-shell-v7 la-assistant-shell-v8 la-chat-shell ${this.assistantDrawerOpen ? "has-drawer" : ""} ${this.assistantInspectorOpen ? "has-inspector" : "inspector-closed"}`});
+    const shell = body.createDiv({cls: `la-assistant-shell-v4 la-assistant-shell-v5 la-assistant-shell-v6 la-assistant-shell-v7 la-assistant-shell-v8 la-chat-shell ${this.assistantDrawerOpen ? "has-drawer" : ""} ${this.assistantInspectorOpen ? "has-inspector-drawer" : ""}`});
     const chat = shell.createDiv({cls: "la-assistant-main"});
+    const inspectorBackdrop = shell.createDiv({cls: "la-inspector-drawer-backdrop"});
     const context = shell.createEl("aside", {cls: "la-assistant-context", attr: {"aria-label": "本次任务上下文"}});
     const drawer = shell.createDiv({cls: `la-provider-drawer la-provider-drawer--overlay ${this.assistantDrawerOpen ? "is-open" : ""}`, attr: {"aria-label": "模型与 API 设置"}});
     const header = chat.createDiv({cls: "la-assistant-head la-chat-toolbar"});
@@ -2054,8 +2055,10 @@ export class LearningAgentMainView extends ItemView {
     };
     const setInspectorOpen = (open: boolean): void => {
       this.assistantInspectorOpen = open;
-      shell.toggleClass("has-inspector", this.assistantInspectorOpen); shell.toggleClass("inspector-closed", !this.assistantInspectorOpen);
+      shell.toggleClass("has-inspector-drawer", this.assistantInspectorOpen);
+      if (this.assistantInspectorOpen) context.focus();
     };
+    inspectorBackdrop.onclick = () => setInspectorOpen(false);
     const openProviderDrawer = (): void => {
       this.assistantDrawerOpen = true; shell.addClass("has-drawer"); drawer.addClass("is-open");
     };
@@ -2164,7 +2167,7 @@ export class LearningAgentMainView extends ItemView {
         }));
       menu.addItem(item => item
         .setTitle(this.assistantInspectorOpen ? "关闭上下文" : "打开上下文")
-        .setIcon("panel-right")
+        .setIcon("panel-bottom")
         .onClick(() => setInspectorOpen(!this.assistantInspectorOpen)));
       menu.addItem(item => item.setTitle("历史会话").setIcon("history").onClick(() => {
         window.setTimeout(() => showHistoryMenu(event), 0);
@@ -3060,7 +3063,8 @@ export class LearningAgentMainView extends ItemView {
     }
     iconButton(tabs, "x", "关闭检查器", () => {
       this.assistantInspectorOpen = false;
-      parent.parentElement?.addClass("inspector-closed"); parent.parentElement?.removeClass("has-inspector");
+      const shell = parent.parentElement as HTMLElement | null;
+      if (shell) { shell.removeClass("has-inspector-drawer"); }
     });
     if (this.assistantInspectorTab === "sources") {
       const heading = parent.createDiv({cls: "la-assistant-context__head"}); heading.createEl("h2", {text: "来源材料"});

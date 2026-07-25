@@ -46,6 +46,69 @@
   font-size: 14px;
 }
 
+/* ── DeepSeek Color Palette ──────────────────────────────────────────────── */
+
+.theme-dark .la-app,
+.theme-dark .la-modal {
+  --background-primary: #111b27;
+  --background-secondary: #0c131b;
+  --background-primary-alt: #141e2b;
+  --text-normal: #e3eaf2;
+  --text-muted: #8da1b9;
+  --text-faint: #4e6a8a;
+  --background-modifier-border: rgba(255,255,255,.06);
+  --background-modifier-border-hover: rgba(255,255,255,.1);
+  --background-modifier-hover: rgba(255,255,255,.05);
+  --background-modifier-active-hover: rgba(255,255,255,.08);
+  --background-modifier-box-shadow: rgba(0,0,0,.35);
+  --interactive-accent: #4D6BFE;
+  --interactive-accent-hover: #6080fe;
+  --text-on-accent: #fff;
+  --scrollbar-bg: transparent;
+  --scrollbar-thumb-bg: rgba(255,255,255,.08);
+  --scrollbar-active-thumb-bg: rgba(255,255,255,.15);
+  /* DeepSeek sidebar is darker than chat, not lighter */
+  --la-surface-subtle: #0c131b;
+}
+
+.theme-light .la-app,
+.theme-light .la-modal {
+  /* Background layers — clean slate */
+  --background-primary: #f8fafc;
+  --background-secondary: #f1f5f9;
+  --background-primary-alt: #eef1f5;
+  /* Text — warm slate blue hierarchy */
+  --text-normal: #1e293b;
+  --text-muted: #64748b;
+  --text-faint: #94a3b8;
+  /* Borders — light and crisp */
+  --background-modifier-border: #e2e8f0;
+  --background-modifier-border-hover: #cbd5e1;
+  /* Interactive */
+  --background-modifier-hover: rgba(0,0,0,.03);
+  --background-modifier-active-hover: rgba(0,0,0,.05);
+  --background-modifier-box-shadow: rgba(0,0,0,.08);
+  --interactive-accent: #4D6BFE;
+  --interactive-accent-hover: #6080fe;
+  --text-on-accent: #fff;
+  /* Scrollbar */
+  --scrollbar-bg: transparent;
+  --scrollbar-thumb-bg: rgba(0,0,0,.08);
+  --scrollbar-active-thumb-bg: rgba(0,0,0,.15);
+}
+
+/* Override legacy neutral accent with DeepSeek blue */
+.la-app,
+.la-modal {
+  --la-accent: #4D6BFE;
+  --la-accent-hover: #6080fe;
+  --la-blue: #4D6BFE;
+  --la-green: #22c55e;
+  --la-orange: #dd8629;
+  --la-purple: #a78bfa;
+  --la-red: #e45649;
+}
+
 /* ── Animation Keyframes ───────────────────────────────────────────────────
    Rule: only opacity + transform. Never width/height/top/left.
    All ≤300ms. No ease-in.                                                   */
@@ -54,11 +117,11 @@
 @keyframes la-message-enter {
   from {
     opacity: 0;
-    transform: translateY(8px) scale(0.98);
+    transform: translateY(4px);
   }
   to {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translateY(0);
   }
 }
 
@@ -189,6 +252,14 @@ body .la-app .la-confidence strong {
 .la-app button,
 .la-modal button {
   line-height: 1.2;
+}
+
+/* Global press feedback — subtle scale-down on click */
+.la-app button:active:not(:disabled),
+.la-app .la-clickable:active,
+.la-assistant-shell-v5 button:active:not(:disabled) {
+  transform: scale(0.97);
+  transition: transform 160ms ease-out;
 }
 
 .la-app svg.svg-icon,
@@ -364,8 +435,8 @@ body .la-app .la-confidence strong {
   display: grid;
   place-items: center;
   border-radius: 8px;
-  background: var(--text-normal);
-  color: var(--background-primary);
+  background: #4D6BFE;
+  color: #fff;
   font-weight: 800;
   font-size: 15px;
   letter-spacing: -.02em;
@@ -1758,7 +1829,7 @@ body .la-app .la-confidence strong {
   border-radius: var(--la-radius-lg);
   background: var(--la-surface);
   line-height: 1.65;
-  animation: la-message-enter var(--la-duration-slow) var(--la-ease-out) both;
+  animation: la-message-enter 200ms ease-out both;
 }
 
 /* Subtle stagger for consecutive messages */
@@ -4989,15 +5060,30 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   border-radius: 10px;
 }
 
+/* ── Inspector bottom drawer (was sidebar) ─────────────── */
 .la-assistant-context {
-  min-width: 0;
-  min-height: 0;
+  position: absolute;
+  z-index: 30;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: 72%;
+  min-height: 280px;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 14px 15px;
+  padding: 14px 18px 20px;
+  border-top: 1px solid var(--la-border);
+  border-radius: 16px 16px 0 0;
   background: var(--background-primary);
+  box-shadow: 0 -8px 40px rgba(0,0,0,.12);
   overflow: hidden auto;
+  transform: translateY(100%);
+  transition: transform 320ms cubic-bezier(0.32, 0.72, 0, 1);
+  overscroll-behavior: contain;
+}
+.has-inspector-drawer .la-assistant-context {
+  transform: translateY(0);
 }
 
 .la-assistant-context__head {
@@ -5464,14 +5550,29 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
 }
 
 .la-assistant-shell-v5 {
-  grid-template-columns: minmax(620px, 1fr) 352px;
+  grid-template-columns: minmax(0, 1fr);
   background: var(--background-primary);
 }
 
-.la-assistant-shell-v5.inspector-closed { grid-template-columns: minmax(620px, 1fr) 0; }
+.la-assistant-shell-v5.inspector-closed { grid-template-columns: minmax(0, 1fr); }
 .la-assistant-shell-v5.inspector-closed .la-assistant-context { display: none; }
+
+/* ── Inspector bottom drawer ──────────────────────────── */
+.la-inspector-drawer-backdrop {
+  position: absolute;
+  z-index: 29;
+  inset: 0;
+  background: rgba(0,0,0,.35);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--la-duration-normal) var(--la-ease-out);
+}
+.has-inspector-drawer .la-inspector-drawer-backdrop {
+  opacity: 1;
+  pointer-events: auto;
+}
 .la-assistant-shell-v5 .la-assistant-main { border-right: 0; }
-.la-assistant-shell-v5 .la-chat-toolbar { flex-basis: 62px; padding-inline: 22px 16px; }
+.la-assistant-shell-v5 .la-chat-toolbar { flex-basis: 62px; padding-inline: 22px 16px; background: color-mix(in srgb, var(--background-primary) 88%, transparent); backdrop-filter: blur(16px) saturate(180%); }
 .la-assistant-shell-v5 .la-chat-toolbar__title h1 { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .la-assistant-shell-v5 .la-chat-toolbar__title p { font-size: 10px; }
 .la-assistant-shell-v5 .la-chat-toolbar select {
@@ -5511,9 +5612,9 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
 .la-assistant-shell-v5 .la-button-icon { width: 15px; height: 15px; margin: 0; display: grid; place-items: center; }
 .la-assistant-shell-v5 .la-context-toggle { display: inline-flex; gap: 6px; }
 .la-assistant-shell-v5 .la-context-toggle[aria-pressed="true"] {
-  border-color: color-mix(in srgb, var(--la-purple) 45%, var(--la-border));
-  background: color-mix(in srgb, var(--la-purple) 9%, var(--background-primary));
-  color: var(--la-purple);
+  border-color: color-mix(in srgb, var(--interactive-accent) 35%, var(--la-border));
+  background: color-mix(in srgb, var(--interactive-accent) 9%, var(--background-primary));
+  color: var(--interactive-accent);
 }
 .la-assistant-shell-v5 .la-context-toggle .la-button-icon { display: grid; place-items: center; }
 .la-assistant-shell-v5 .la-context-toggle svg { width: 14px; height: 14px; }
@@ -5536,8 +5637,8 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
 .la-assistant-shell-v5 .la-message--user {
   max-width: min(610px, 80%);
   padding: 10px 13px;
-  border-color: color-mix(in srgb, var(--la-purple) 30%, var(--la-border));
-  background: color-mix(in srgb, var(--la-purple) 16%, var(--background-primary));
+  border-color: color-mix(in srgb, var(--interactive-accent) 22%, var(--la-border));
+  background: color-mix(in srgb, var(--interactive-accent) 8%, var(--background-primary));
 }
 .la-assistant-shell-v5 .la-message-avatar { width: 28px; height: 28px; border-radius: 50%; }
 .la-assistant-shell-v5 .la-message-copy { min-width: 0; }
@@ -5870,8 +5971,8 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   color: var(--text-normal);
 }
 
-.la-assistant-shell-v5 .la-chat-dock { padding: 8px max(22px, calc((100% - 800px) / 2)) 10px; }
-.la-assistant-shell-v5 .la-unified-composer { min-height: 78px; border-color: color-mix(in srgb, var(--la-purple) 55%, var(--la-border)); background: color-mix(in srgb, var(--background-secondary) 18%, var(--background-primary)); }
+.la-assistant-shell-v5 .la-chat-dock { padding: 8px max(22px, calc((100% - 800px) / 2)) 10px; background: color-mix(in srgb, var(--background-primary) 88%, transparent); backdrop-filter: blur(20px) saturate(180%); border-top: 1px solid color-mix(in srgb, var(--la-border) 40%, transparent); }
+.la-assistant-shell-v5 .la-unified-composer { min-height: 78px; border-color: color-mix(in srgb, var(--la-accent) 40%, var(--la-border)); background: color-mix(in srgb, var(--background-secondary) 18%, var(--background-primary)); }
 
 .la-assistant-inspector-tabs {
   flex: 0 0 42px;
@@ -5884,7 +5985,7 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
 .la-assistant-inspector-tabs > button { border: 0; border-radius: 0; background: transparent; box-shadow: none; color: var(--text-muted); font-size: 10px; }
 .la-assistant-inspector-tabs > button.is-active { color: var(--la-purple); box-shadow: inset 0 -2px 0 var(--la-purple); }
 .la-assistant-inspector-tabs > .la-icon-button { width: 30px; }
-.la-assistant-shell-v5 .la-assistant-context { border-left: 1px solid var(--la-border); padding-top: 14px; }
+.la-assistant-shell-v5 .la-assistant-context { border-left: 0; padding-top: 14px; }
 .la-assistant-source-card { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 8px; padding: 9px; border: 1px solid var(--la-border); border-radius: 8px; background: color-mix(in srgb, var(--background-secondary) 28%, var(--background-primary)); }
 .la-assistant-source-card > span { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 6px; color: var(--la-purple); background: color-mix(in srgb, var(--la-purple) 11%, transparent); }
 .la-assistant-source-card svg { width: 14px; height: 14px; }
@@ -5903,7 +6004,6 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   .la-workspace--assistant .la-nav-modules { grid-template-columns: 1fr; padding-inline: 8px; }
   .la-workspace--assistant .la-module-nav__item { height: 38px; }
   .la-assistant-shell-v5 { grid-template-columns: minmax(0, 1fr); }
-  .la-assistant-shell-v5 .la-assistant-context { display: none; }
   .la-assistant-shell-v5 .la-chat-toolbar { gap: 7px; padding-inline: 14px 10px; }
   .la-assistant-shell-v5 .la-chat-toolbar__title { flex: 1 1 180px; min-width: 140px; margin-right: 0; }
   .la-assistant-shell-v5 .la-chat-toolbar__title h1 { max-width: 260px; }
@@ -6303,12 +6403,8 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
 
 /* Assistant V6 — calm research workspace, explicit network boundary. */
 .la-assistant-shell-v6 {
-  grid-template-columns: minmax(640px, 1fr) 318px;
+  grid-template-columns: minmax(0, 1fr);
   background: var(--background-primary);
-}
-
-.la-assistant-shell-v6.inspector-closed {
-  grid-template-columns: minmax(640px, 1fr) 0;
 }
 
 .la-assistant-shell-v6 .la-assistant-main {
@@ -6809,17 +6905,25 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   min-height: 132px;
   gap: 9px;
   padding: 15px 16px 11px;
-  border: 1px solid color-mix(in srgb, var(--background-modifier-border) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--background-modifier-border) 70%, transparent);
   border-radius: 22px;
   background: var(--background-primary);
-  box-shadow: 0 10px 28px color-mix(in srgb, var(--background-modifier-box-shadow) 8%, transparent);
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--background-modifier-box-shadow) 6%, transparent);
   transition: border-color var(--la-duration-fast) var(--la-ease-out), box-shadow var(--la-duration-fast) var(--la-ease-out);
+}
+
+.la-assistant-shell-v8 .la-unified-composer:focus-within {
+  border-color: color-mix(in srgb, var(--text-normal) 30%, transparent);
+  outline: 0 !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--text-normal) 8%, transparent),
+              0 10px 28px color-mix(in srgb, var(--background-modifier-box-shadow) 10%, transparent);
 }
 
 .la-assistant-shell-v8 .la-unified-composer:focus-within {
   border-color: color-mix(in srgb, var(--background-modifier-border) 88%, transparent);
   outline: 0 !important;
-  box-shadow: 0 10px 28px color-mix(in srgb, var(--background-modifier-box-shadow) 8%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--text-normal) 10%, transparent),
+              0 10px 28px color-mix(in srgb, var(--background-modifier-box-shadow) 10%, transparent);
 }
 
 .la-assistant-shell-v8 .la-unified-composer textarea,
@@ -7051,6 +7155,7 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   border-radius: 50%;
   object-fit: contain;
   pointer-events: none;
+  transition: opacity 200ms ease-out, transform 200ms ease-out;
 }
 
 .la-assistant-shell-v8 .la-composer-submit__spinner {

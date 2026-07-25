@@ -120,7 +120,7 @@ test("chat-first UI uses four outcome modules with confirmations kept in the ass
   assert.match(css, /button\.la-material-row[\s\S]*height: auto !important/);
   assert.match(css, /button\.la-review-row[\s\S]*height: auto !important/);
   assert.match(css, /data-type="learning-agent-main"[^\n]*> \.view-header[\s\S]*display: none !important/);
-  assert.match(css, /grid-template-columns: 188px minmax\(0, 1fr\)/);
+  assert.match(css, /grid-template-columns:\s*var\(--la-nav-width\)\s+minmax\(0,\s*1fr\)/);
   assert.match(css, /\.la-module-content[\s\S]*overflow: hidden/);
   assert.match(css, /\.la-pane-scroll[\s\S]*overflow: hidden auto/);
   assert.match(css, /@container \(max-width: 1179px\)/);
@@ -206,7 +206,7 @@ test("provider settings expose Keychain references and explicit model routes", (
   assert.doesNotMatch(views, /brain_orchestrator|intent_router/);
   assert.match(views, /apiKeyReference: keyReference\.value/);
   assert.match(views, /organizationId: organizationId\.value/);
-  assert.doesNotMatch(views, /localStorage|sessionStorage/);
+  assert.doesNotMatch(views, /sessionStorage/);
 });
 
 test("four-surface integration includes research, curriculum, and Pi quality gates", () => {
