@@ -81,10 +81,21 @@ export function resolveZhixuFontStack(
 export function normalizeAppearanceSettings(
   settings: ZhixuAppearanceSettings,
 ): ZhixuAppearanceSettings {
+  const VALID_FONT_PRESETS = new Set<ZhixuFontPreset>([
+    "obsidian",
+    "harmonyos-sans-sc",
+    "lxgw-wenkai",
+    "custom",
+  ]);
+  const normalizePreset = (value: unknown): ZhixuFontPreset =>
+    VALID_FONT_PRESETS.has(value as ZhixuFontPreset)
+      ? (value as ZhixuFontPreset)
+      : "obsidian";
+
   return {
-    uiFontPreset: settings.uiFontPreset ?? "obsidian",
+    uiFontPreset: normalizePreset(settings.uiFontPreset),
     uiFontCustom: sanitizeCustomFontName(settings.uiFontCustom),
-    readingFontPreset: settings.readingFontPreset ?? "obsidian",
+    readingFontPreset: normalizePreset(settings.readingFontPreset),
     readingFontCustom: sanitizeCustomFontName(settings.readingFontCustom),
     readingFontSize: clamp(Number(settings.readingFontSize), 13, 19),
     readingLineHeight: clamp(Number(settings.readingLineHeight), 1.4, 2),

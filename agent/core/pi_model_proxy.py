@@ -193,7 +193,8 @@ class PiModelProxy:
                     "configured": item["configured"],
                     "capabilities": CapabilityResolver.resolve(
                         self.capability_probe.cached(item),
-                        normalized_model_settings(item),
+                        explicit_settings=dict(item.get("settings") or {}),
+                        inferred_defaults=normalized_model_settings(item),
                     ),
                     "probe": self.capability_probe.cached(item),
                 }

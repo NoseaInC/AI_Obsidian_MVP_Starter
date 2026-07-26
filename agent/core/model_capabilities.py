@@ -135,21 +135,63 @@ class DeepSeekCapabilityProbe:
         return self.cache.put(profile, result)
 
 
+def _positive_int(value: Any) -> int | None:
+    """Coerce to a positive int, rejecting booleans, zeros, and negatives."""
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
 class CapabilityResolver:
+    """Four-tier resolution for numeric capabilities:
+
+    1. User-explicit settings (raw profile JSON — only if they actually set it)
+    2. Confirmed probe values (status in {"supported", "verified"})
+    3. System-inferred defaults (normalized_model_settings, includes static known-model mappings)
+    4. Conservative fallback (128K for context window, 3K for max tokens)
+    """
+
     @staticmethod
     def resolve(
         probe: dict[str, Any] | None,
-        settings: dict[str, Any] | None = None,
+        explicit_settings: dict[str, Any] | None = None,
+        inferred_defaults: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         values = (probe or {}).get("capabilities") or {}
-        configured = settings or {}
+        explicit = explicit_settings or {}
+        defaults = inferred_defaults or {}
         supported = lambda name: (values.get(name) or {}).get("status") == "supported"
+
         def numeric(name: str, fallback: int, configured_name: str | None = None) -> int:
-            return int(
-                (values.get(name) or {}).get("value")
-                or configured.get(configured_name or name)
-                or fallback
-            )
+            key = configured_name or name
+
+            # 1. 用户真正显式保存的配置 → 最高优先级
+            if key in explicit:
+                val = _positive_int(explicit.get(key))
+                if val is not None:
+                    return val
+
+            # 2. 明确可信的探测结果（白名单，排除 inconclusive/error/stale）
+            entry = values.get(name) or {}
+            if entry.get("status") in {"supported", "verified"}:
+                val = _positive_int(entry.get("value"))
+                if val is not None:
+                    return val
+
+            # 3. 系统推导值（normalized_model_settings 注入的静态映射等）
+            val = _positive_int(defaults.get(key))
+            if val is not None:
+                return val
+
+            # 4. 终局保守回退
+            fallback_val = _positive_int(fallback)
+            return fallback_val if fallback_val is not None else 128_000
+
+        model = str((probe or {}).get("model") or "")
         return {
             "basicStreaming": supported("basicStreaming"),
             "nativeToolCalling": supported("nativeToolCalling"),
@@ -160,6 +202,6 @@ class CapabilityResolver:
             "reasoningEffort": supported("reasoningEffort"),
             "toolChoiceRequired": supported("toolChoiceRequired"),
             "usageReporting": supported("usageReporting"),
-            "contextWindow": numeric("contextWindow", lookup_known_model_context_window(str((probe or {}).get("model") or ""))),
+            "contextWindow": numeric("contextWindow", lookup_known_model_context_window(model)),
             "maxOutputTokens": numeric("maxOutputTokens", 3_000, "maxTokens"),
         }
