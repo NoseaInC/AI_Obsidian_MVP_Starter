@@ -295,7 +295,7 @@ body .la-app .la-confidence strong {
 .la-app .la-clickable:active,
 .la-assistant-shell-v5 button:active:not(:disabled) {
   transform: scale(0.97);
-  transition: transform 160ms ease-out;
+  transition: transform 160ms var(--la-ease-out);
 }
 
 .la-app svg.svg-icon,
@@ -937,7 +937,7 @@ body .la-app .la-confidence strong {
   background: var(--la-surface);
   box-shadow: none;
   text-align: left;
-  transition: border-color var(--la-duration-fast), background var(--la-duration-fast), box-shadow var(--la-duration-fast);
+  transition: border-color var(--la-duration-fast) var(--la-ease-out), background var(--la-duration-fast) var(--la-ease-out), box-shadow var(--la-duration-fast) var(--la-ease-out);
 }
 
 .la-rec-row:hover,
@@ -1323,7 +1323,7 @@ body .la-app .la-confidence strong {
   height: 100%;
   border-radius: inherit;
   background: var(--la-accent);
-  transition: width var(--la-duration-normal);
+  transition: width var(--la-duration-normal) var(--la-ease-out);
 }
 
 
@@ -1761,7 +1761,7 @@ body .la-app .la-confidence strong {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 0;
   overflow: hidden;
-  transition: grid-template-columns var(--la-duration-normal);
+  transition: grid-template-columns var(--la-duration-normal) var(--la-ease-out);
 }
 
 .la-assistant-shell-v3.has-drawer {
@@ -1865,7 +1865,7 @@ body .la-app .la-confidence strong {
   border-radius: var(--la-radius-lg);
   background: var(--la-surface);
   line-height: 1.65;
-  animation: la-message-enter 200ms ease-out both;
+  animation: la-message-enter 200ms var(--la-ease-out) both;
 }
 
 /* Subtle stagger for consecutive messages */
@@ -3617,7 +3617,7 @@ body .la-app .la-confidence strong {
   width: var(--ctx-pct, 0)%;
   max-width: 100%;
   background: var(--color-green);
-  transition: width 0.35s var(--la-ease-out), background-color 0.35s var(--la-ease-out);
+  transition: width 280ms var(--la-ease-out), background-color 280ms var(--la-ease-out);
   flex-shrink: 0;
   min-width: 2px;
 }
@@ -5115,7 +5115,7 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   box-shadow: 0 -8px 40px rgba(0,0,0,.12);
   overflow: hidden auto;
   transform: translateY(100%);
-  transition: transform 320ms cubic-bezier(0.32, 0.72, 0, 1);
+  transition: transform 280ms cubic-bezier(0.32, 0.72, 0, 1);
   overscroll-behavior: contain;
 }
 .has-inspector-drawer .la-assistant-context {
@@ -5242,7 +5242,7 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   width: min(350px, 92%);
   box-shadow: -12px 0 32px color-mix(in srgb, var(--text-normal) 14%, transparent);
   transform: translateX(104%);
-  transition: transform var(--la-duration-normal), visibility 0s linear var(--la-duration-normal);
+  transition: transform var(--la-duration-normal) cubic-bezier(0.32, 0.72, 0, 1), visibility 0s linear var(--la-duration-normal);
 }
 
 .la-provider-drawer--overlay.is-open {
@@ -6816,6 +6816,12 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   transform: translateY(-1px);
 }
 
+.la-assistant-shell-v6 .la-assistant-source-card.is-clickable:active {
+  transform: scale(0.97);
+}
+
+.la-assistant-shell-v6 .la-assistant-source-card.is-clickable { transition: transform 160ms var(--la-ease-out), border-color var(--la-duration-fast) var(--la-ease-out); }
+
 .la-assistant-shell-v6 .la-assistant-source-card.is-web > span {
   color: var(--color-green);
   background: color-mix(in srgb, var(--color-green) 10%, transparent);
@@ -7357,7 +7363,7 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   border-radius: 50%;
   object-fit: contain;
   pointer-events: none;
-  transition: opacity 200ms ease-out, transform 200ms ease-out;
+  transition: opacity 200ms var(--la-ease-out), transform 200ms var(--la-ease-out);
 }
 
 .la-assistant-shell-v8 .la-composer-submit__spinner {
@@ -7764,7 +7770,7 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
 .la-board__trend-bar { display: grid; grid-template-columns: 48px minmax(0, 1fr) 44px; align-items: center; gap: 8px; }
 .la-board__trend-date { font-size: 10.5px; color: var(--text-faint); text-align: right; }
 .la-board__trend-track { height: 8px; background: var(--background-modifier-border); border-radius: 4px; overflow: hidden; }
-.la-board__trend-fill { height: 100%; background: linear-gradient(90deg, #5B6CFF, #AEB8FF); border-radius: 4px; transition: width .3s var(--la-ease-out); }
+.la-board__trend-fill { height: 100%; background: linear-gradient(90deg, #5B6CFF, #AEB8FF); border-radius: 4px; transition: width var(--la-duration-normal) var(--la-ease-out); }
 .la-board__trend-value { font-size: 10px; color: var(--text-muted); }
 
 .la-board__storage-bar { display: grid; grid-template-columns: 80px minmax(0, 1fr) 48px; align-items: center; gap: 8px; margin-bottom: 6px; }
@@ -7791,4 +7797,26 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
 @media (max-width: 900px) {
   .la-board__metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .la-board__row { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ── Touch-device guard: suppress sticky hover on touch ── */
+@media (hover: none), (pointer: coarse) {
+  .la-module-nav__item:hover,
+  .la-conversation-row:hover,
+  .la-assistant-shell-v5 .la-message:hover .la-message-actions,
+  .la-material-center-row:hover,
+  .la-rec-row:hover,
+  .la-today-queue-row:hover { background: transparent; }
+
+  .la-conversation-row__more { opacity: 0; }
+  .la-conversation-row.is-active .la-conversation-row__more { opacity: 1; }
+
+  .la-assistant-shell-v6 .la-assistant-source-card.is-clickable:hover {
+    border-color: var(--background-modifier-border);
+    transform: none;
+  }
+
+  [class*="la-board__"] button:hover,
+  .la-board__clean-btn:hover,
+  .la-board__materials-btn:hover { background: transparent; color: var(--text-muted); }
 }
