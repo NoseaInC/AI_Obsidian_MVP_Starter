@@ -1731,8 +1731,8 @@ export class LearningAgentMainView extends ItemView {
         this.client.get<any>("/dashboard/trends?days=7"),
         this.client.get<any>("/dashboard/materials-summary"),
       ]);
-    } catch {
-      body.createEl("p", {text: "无法加载看板数据，请确认 Agent 服务已启动。", cls: "la-board__error"});
+    } catch (err: any) {
+      body.createEl("p", {text: `无法加载看板数据：${err?.message || "请确认 Agent 服务已启动"}`, cls: "la-board__error"});
       return;
     }
 

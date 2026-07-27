@@ -260,7 +260,7 @@ class DashboardAggregator:
                 continue
             try:
                 stat = md.stat()
-                created_date = date.fromtimestamp(stat.st_ctime, TZ).isoformat()
+                created_date = datetime.fromtimestamp(stat.st_ctime, TZ).date().isoformat()
                 if created_date == day_prefix:
                     count += 1
             except OSError:
