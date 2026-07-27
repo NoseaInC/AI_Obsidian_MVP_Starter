@@ -1809,10 +1809,28 @@ export class LearningAgentMainView extends ItemView {
 
     const materialsPanel = botRow.createDiv({cls: "la-board__panel"});
     materialsPanel.createEl("h3", {text: "资料"});
-    const matRow = materialsPanel.createDiv({cls: "la-board__materials"});
-    matRow.createSpan({text: `资料总数: ${materials?.sourceCount ?? 0}`});
-    matRow.createSpan({text: `待处理: ${materials?.pendingCount ?? 0}`});
-    const viewBtn = matRow.createEl("button", {cls: "la-board__btn"});
+
+    // status summary chips
+    const statusRow = materialsPanel.createDiv({cls: "la-board__mat-status"});
+    this.boardMatBadge(statusRow, "已完成", materials?.completedCount ?? 0, "la-board__mat-badge--ok");
+    this.boardMatBadge(statusRow, "处理中", materials?.processingCount ?? 0, "la-board__mat-badge--warn");
+    if (materials?.failedCount) this.boardMatBadge(statusRow, "失败", materials.failedCount, "la-board__mat-badge--err");
+    statusRow.createSpan({text: `${materials?.attachmentCount ?? 0} 个附件`, cls: "la-board__mat-extra"});
+
+    // recent items
+    const recent = materials?.recentItems ?? [];
+    if (recent.length) {
+      const list = materialsPanel.createDiv({cls: "la-board__mat-list"});
+      for (const item of recent.slice(0, 4)) {
+        const row = list.createDiv({cls: "la-board__mat-item"});
+        row.createSpan({text: item.title || "未命名资料", cls: "la-board__mat-item-title"});
+        const dot = row.createSpan({cls: `la-board__mat-dot la-board__mat-dot--${item.status}`});
+      }
+    } else {
+      materialsPanel.createEl("p", {text: "暂无资料，从助手导入 PDF 或网页开始。", cls: "la-muted"});
+    }
+
+    const viewBtn = materialsPanel.createEl("button", {cls: "la-board__btn"});
     setIcon(viewBtn.createSpan(), "arrow-right");
     viewBtn.createSpan({text: "查看全部"});
     viewBtn.onclick = () => { body.empty(); void this.renderSources(body); };
@@ -1823,6 +1841,12 @@ export class LearningAgentMainView extends ItemView {
     card.createSpan({text: label, cls: "la-board__metric-label"});
     card.createEl("strong", {text: value, cls: "la-board__metric-value"});
     card.createSpan({text: sub, cls: "la-board__metric-sub"});
+  }
+
+  private boardMatBadge(parent: HTMLElement, label: string, count: number, cls: string): void {
+    const chip = parent.createSpan({cls: `la-board__mat-badge ${cls}`});
+    chip.createSpan({text: label});
+    chip.createSpan({text: String(count)});
   }
 
   private renderBoardTrendBars(parent: HTMLElement, points: any[], key: string, fmt: (v: number) => string): void {

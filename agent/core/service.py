@@ -265,11 +265,24 @@ class AgentService:
 
     def dashboard_materials_summary(self) -> dict[str, Any]:
         conn = self.store.connection
-        source_count = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
+        status_counts = {"completed": 0, "processing": 0, "failed": 0, "awaiting_confirmation": 0, "ready": 0}
+        rows = conn.execute("SELECT status, COUNT(*) cnt FROM intake_items GROUP BY status").fetchall()
+        for row in rows:
+            s = str(row["status"])
+            if s in status_counts: status_counts[s] = row["cnt"]
+        total = sum(status_counts.values())
+        recent = conn.execute(
+            "SELECT i.title, i.status, i.updated_at FROM intake_items i ORDER BY i.updated_at DESC LIMIT 5"
+        ).fetchall()
+        attachment_count = conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0]
         return {
-            "sourceCount": source_count,
-            "pendingCount": 0,
-            "recentlyImported": 0,
+            "totalCount": total,
+            "processingCount": status_counts["processing"],
+            "failedCount": status_counts["failed"],
+            "completedCount": status_counts["completed"],
+            "pendingCount": status_counts["ready"] + status_counts["awaiting_confirmation"],
+            "attachmentCount": attachment_count,
+            "recentItems": [{"title": r["title"], "status": r["status"], "updatedAt": r["updated_at"]} for r in recent],
         }
 
     def dashboard_refresh(self) -> dict[str, Any]:
