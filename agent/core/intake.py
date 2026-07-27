@@ -272,7 +272,7 @@ class IntakeService:
             "id": row["id"], "title": row["title"], "activeArtifactId": row["active_artifact_id"],
             "activeTaskThreadId": row["active_task_thread_id"],
             "activeTopic": row["active_topic"], "personalizationEnabled": bool(row["personalization_enabled"]),
-            "retentionPolicy": row["retention_policy"], "isPinned": bool(row.get("is_pinned", 0)),
+            "retentionPolicy": row["retention_policy"], "isPinned": bool(row["is_pinned"]),
             "messageCount": row["message_count"], "createdAt": row["created_at"], "updatedAt": row["updated_at"],
         } for row in rows]
         return {"items": items, "limit": limit, "offset": offset, "hasMore": len(items) == limit}
@@ -421,8 +421,8 @@ class IntakeService:
         items = [{
             "id": row["id"], "title": row["title"], "activeArtifactId": row["active_artifact_id"],
             "activeTaskThreadId": row["active_task_thread_id"],
-            "activeTopic": row["active_topic"], "personalizationEnabled": bool(row.get("personalization_enabled", 1)),
-            "retentionPolicy": row.get("retention_policy", "full"), "isPinned": bool(row.get("is_pinned", 0)),
+            "activeTopic": row["active_topic"], "personalizationEnabled": bool(row["personalization_enabled"]),
+            "retentionPolicy": row["retention_policy"], "isPinned": bool(row["is_pinned"]),
             "createdAt": row["created_at"], "updatedAt": row["updated_at"],
         } for row in result]
         return {"items": items, "limit": limit_val, "offset": 0, "hasMore": len(items) >= limit_val, "query": trimmed}
