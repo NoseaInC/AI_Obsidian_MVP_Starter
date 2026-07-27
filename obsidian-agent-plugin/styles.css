@@ -2831,11 +2831,14 @@ body .la-app .la-confidence strong {
 }
 
 .la-material-center,
-.la-plan-focus,
-.la-today-focus,
 .la-review-center {
   padding: 20px 24px;
-  background: color-mix(in srgb, var(--background-secondary) 22%, var(--background-primary));
+}
+
+.la-plan-focus,
+.la-today-focus {
+  padding: 18px 20px;
+  background: var(--la-page-bg);
 }
 
 .la-material-center .la-module-heading,
