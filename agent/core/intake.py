@@ -265,14 +265,14 @@ class IntakeService:
         limit, offset = max(1, min(100, int(limit))), max(0, int(offset))
         with self.store.lock:
             rows = self.store.connection.execute(
-                "SELECT c.*, COUNT(m.id) message_count FROM conversations c LEFT JOIN conversation_messages m ON m.conversation_id=c.id GROUP BY c.id ORDER BY c.updated_at DESC LIMIT ? OFFSET ?",
+                "SELECT c.*, COUNT(m.id) message_count FROM conversations c LEFT JOIN conversation_messages m ON m.conversation_id=c.id GROUP BY c.id ORDER BY c.is_pinned DESC, c.updated_at DESC LIMIT ? OFFSET ?",
                 (limit, offset),
             ).fetchall()
         items = [{
             "id": row["id"], "title": row["title"], "activeArtifactId": row["active_artifact_id"],
             "activeTaskThreadId": row["active_task_thread_id"],
             "activeTopic": row["active_topic"], "personalizationEnabled": bool(row["personalization_enabled"]),
-            "retentionPolicy": row["retention_policy"],
+            "retentionPolicy": row["retention_policy"], "isPinned": bool(row.get("is_pinned", 0)),
             "messageCount": row["message_count"], "createdAt": row["created_at"], "updatedAt": row["updated_at"],
         } for row in rows]
         return {"items": items, "limit": limit, "offset": offset, "hasMore": len(items) == limit}
@@ -358,6 +358,74 @@ class IntakeService:
             )
             self.store.connection.commit()
         return self.get_conversation(conversation_id, include_messages=False)
+
+    def rename_conversation(self, conversation_id: str, title: str) -> dict[str, Any]:
+        self.ensure_conversation(conversation_id)
+        if not title.strip():
+            raise ValueError("title_required")
+        trimmed = title.strip()[:128]
+        with self.store.lock:
+            self.store.connection.execute(
+                "UPDATE conversations SET title=?, updated_at=? WHERE id=?",
+                (trimmed, _now(), conversation_id),
+            )
+            self.store.connection.commit()
+        return self.get_conversation(conversation_id, include_messages=False)
+
+    def pin_conversation(self, conversation_id: str, pinned: bool) -> dict[str, Any]:
+        self.ensure_conversation(conversation_id)
+        with self.store.lock:
+            self.store.connection.execute(
+                "UPDATE conversations SET is_pinned=?, updated_at=? WHERE id=?",
+                (int(pinned), _now(), conversation_id),
+            )
+            self.store.connection.commit()
+        return self.get_conversation(conversation_id, include_messages=False)
+
+    def search_conversations(self, query: str, limit: int = 30) -> dict[str, Any]:
+        trimmed = query.strip()
+        if not trimmed:
+            return self.list_conversations(limit)
+        limit_val = max(1, min(100, int(limit)))
+        keyword = f"%{trimmed}%"
+        with self.store.lock:
+            title_rows = self.store.connection.execute(
+                """SELECT DISTINCT c.* FROM conversations c
+                   WHERE c.title LIKE ? ORDER BY c.is_pinned DESC, c.updated_at DESC LIMIT ?""",
+                (keyword, limit_val),
+            ).fetchall()
+            seen = {row["id"] for row in title_rows}
+            result = list(title_rows)
+            if len(result) < limit_val:
+                msg_rows = self.store.connection.execute(
+                    "SELECT DISTINCT conversation_id, content_reference FROM conversation_messages WHERE role='user' ORDER BY rowid DESC LIMIT ?",
+                    (limit_val * 20,),
+                ).fetchall()
+                for mrow in msg_rows:
+                    cid = mrow["conversation_id"]
+                    if cid in seen:
+                        continue
+                    try:
+                        msg = self._read_message(mrow)
+                        if trimmed.lower() in str(msg.get("content", "")).lower():
+                            conv = self.store.connection.execute(
+                                "SELECT c.* FROM conversations c WHERE c.id=?", (cid,)
+                            ).fetchone()
+                            if conv:
+                                result.append(conv)
+                                seen.add(cid)
+                    except Exception:
+                        pass
+                    if len(result) >= limit_val:
+                        break
+        items = [{
+            "id": row["id"], "title": row["title"], "activeArtifactId": row["active_artifact_id"],
+            "activeTaskThreadId": row["active_task_thread_id"],
+            "activeTopic": row["active_topic"], "personalizationEnabled": bool(row.get("personalization_enabled", 1)),
+            "retentionPolicy": row.get("retention_policy", "full"), "isPinned": bool(row.get("is_pinned", 0)),
+            "createdAt": row["created_at"], "updatedAt": row["updated_at"],
+        } for row in result]
+        return {"items": items, "limit": limit_val, "offset": 0, "hasMore": len(items) >= limit_val, "query": trimmed}
 
     def export_conversation(self, conversation_id: str, extras: dict[str, Any] | None = None) -> dict[str, Any]:
         """Export one private conversation without moving it into the synced Vault."""

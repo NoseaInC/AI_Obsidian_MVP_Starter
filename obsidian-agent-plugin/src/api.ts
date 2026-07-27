@@ -248,6 +248,15 @@ export class AgentClient {
       throw new Error(rollback?.ok === true ? "runtime_upgrade_failed_and_rolled_back" : "runtime_upgrade_failed_rollback_required");
     }
   }
+  async renameConversation(conversationId: string, title: string): Promise<any> {
+    return this.patch(`/conversations/${encodeURIComponent(conversationId)}/rename`, {title});
+  }
+  async pinConversation(conversationId: string, pinned: boolean): Promise<any> {
+    return this.patch(`/conversations/${encodeURIComponent(conversationId)}/pin`, {pinned});
+  }
+  async searchConversations(query: string, limit = 30): Promise<any> {
+    return this.get(`/conversations/search?q=${encodeURIComponent(query)}&limit=${limit}`);
+  }
   async agentAction(actionId: string): Promise<any> {
     return this.get(`/actions/${encodeURIComponent(actionId)}`);
   }

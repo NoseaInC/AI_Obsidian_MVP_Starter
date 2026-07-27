@@ -180,7 +180,11 @@ class Handler(BaseHTTPRequestHandler):
                     self._identifier(path.removeprefix("/actions/"))
                 )
             elif path == "/conversations": payload = self.service.list_conversations(int(query.get("limit", [50])[0]), int(query.get("offset", [0])[0]))
+            elif path == "/conversations/search" and "q" in query:
+                payload = self.service.search_conversations(query["q"][0], int(query.get("limit", [30])[0]))
             elif path.startswith("/conversations/"): payload = {"conversation": self.service.get_conversation(self._identifier(path.removeprefix("/conversations/")))}
+            elif path == "/conversations/search":
+                payload = self.service.list_conversations(50, 0)
             elif path.startswith("/conversation-focus/"): payload = {"focus": self.service.conversation_focus(self._identifier(path.removeprefix("/conversation-focus/")))}
             elif path.startswith("/material-bundles/"): payload = {"bundle": self.service.material_bundle(self._identifier(path.removeprefix("/material-bundles/")))}
             elif path.startswith("/organization-plans/"): payload = {"plan": self.service.organization_plan(self._identifier(path.removeprefix("/organization-plans/")))}
@@ -308,6 +312,12 @@ class Handler(BaseHTTPRequestHandler):
                 payload = self.service.explicit.submit_intake(body, self.headers.get("Idempotency-Key", ""))
             elif path == "/conversations":
                 payload = {"conversation": self.service.create_conversation(body)}
+            elif path.startswith("/conversations/") and path.endswith("/rename"):
+                conversation_id = self._identifier(path.removeprefix("/conversations/").removesuffix("/rename"))
+                payload = self.service.rename_conversation(conversation_id, body)
+            elif path.startswith("/conversations/") and path.endswith("/pin"):
+                conversation_id = self._identifier(path.removeprefix("/conversations/").removesuffix("/pin"))
+                payload = self.service.pin_conversation(conversation_id, body)
             elif path.startswith("/conversations/") and path.endswith("/export"):
                 conversation_id = self._identifier(path.removeprefix("/conversations/").removesuffix("/export"))
                 payload = self.service.export_conversation(conversation_id)

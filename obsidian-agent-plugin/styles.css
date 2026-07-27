@@ -5269,7 +5269,8 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
 /* ── Assistant sidebar (macOS-inspired AI workspace rail) ──────────── */
 
 .la-workspace--assistant {
-  grid-template-columns: 272px minmax(0, 1fr);
+  --la-nav-width: 272px;
+  grid-template-columns: var(--la-nav-width, 272px) minmax(0, 1fr);
   background: var(--la-sidebar-panel);
 }
 
@@ -5346,7 +5347,7 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
 /* ── Collapsed nav — only expand button visible ────────── */
 .la-workspace--nav-collapsed {
   --la-nav-width: 36px;
-  grid-template-columns: 36px minmax(0, 1fr) !important;
+  grid-template-columns: var(--la-nav-width, 36px) minmax(0, 1fr) !important;
 }
 .la-workspace--nav-collapsed .la-module-nav {
   overflow: hidden;
@@ -5582,10 +5583,6 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   background: transparent;
   color: var(--la-sidebar-text);
   box-shadow: none;
-  text-align: left;
-  cursor: pointer;
-  position: relative;
-  overflow: hidden;
   transition: background var(--la-duration-fast) var(--la-ease-out),
               box-shadow var(--la-duration-fast) var(--la-ease-out);
 }
@@ -5623,12 +5620,20 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   outline-offset: -2px;
 }
 
-.la-workspace--assistant .la-conversation-row > div {
+.la-workspace--assistant .la-conversation-row__main {
   grid-column: 2;
   min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 1px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  font: inherit;
 }
 
 .la-workspace--assistant .la-conversation-row strong {
@@ -5668,9 +5673,13 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   height: 28px;
   display: grid;
   place-items: center;
+  border: none;
+  padding: 0;
+  background: transparent;
   border-radius: var(--la-sidebar-radius-xs);
   opacity: 0;
   color: var(--la-sidebar-text-secondary);
+  cursor: pointer;
   transition: opacity var(--la-duration-fast) var(--la-ease-out),
               background var(--la-duration-fast) var(--la-ease-out),
               color var(--la-duration-fast) var(--la-ease-out);
@@ -5737,6 +5746,8 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
   background: var(--la-green);
   flex-shrink: 0;
 }
+.la-workspace--assistant .la-nav-runtime--footer.is-offline { color: var(--la-red); }
+.la-workspace--assistant .la-nav-runtime--footer.is-offline::after { background: var(--la-red); }
 
 .la-assistant-shell-v5 {
   grid-template-columns: minmax(0, 1fr);

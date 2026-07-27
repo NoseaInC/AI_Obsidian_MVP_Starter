@@ -86,5 +86,29 @@ class KnownModelContextWindowTests(unittest.TestCase):
         self.assertEqual(lookup_known_model_context_window("deepseek-v4-flash"), 128_000)
 
 
+    def test_inconclusive_probe_does_not_override_user_explicit_settings(self) -> None:
+        probe_result = {
+            "capabilities": {
+                "contextWindow": {"status": "inconclusive", "value": 1_000_000},
+                "maxOutputTokens": {"status": "inconclusive", "value": 128_000},
+            },
+        }
+        explicit = {"contextWindow": 128_000, "maxTokens": 32_000}
+        resolved = CapabilityResolver.resolve(probe_result, explicit_settings=explicit)
+        self.assertEqual(resolved["contextWindow"], 128_000)
+        self.assertEqual(resolved["maxOutputTokens"], 32_000)
+
+    def test_error_and_unsupported_probe_values_are_ignored_even_when_present(self) -> None:
+        probe_result = {
+            "capabilities": {
+                "contextWindow": {"status": "error", "value": 999_999},
+                "maxOutputTokens": {"status": "unsupported", "value": 888_888},
+            },
+        }
+        resolved = CapabilityResolver.resolve(probe_result)
+        self.assertNotEqual(resolved["contextWindow"], 999_999)
+        self.assertNotEqual(resolved["maxOutputTokens"], 888_888)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -124,6 +124,15 @@ class AgentService:
             retention_policy=str(body["retention_policy"]) if body.get("retention_policy") is not None else None,
         )
 
+    def rename_conversation(self, conversation_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        return self.intake.rename_conversation(conversation_id, str(body.get("title") or ""))
+
+    def pin_conversation(self, conversation_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        return self.intake.pin_conversation(conversation_id, bool(body.get("pinned", True)))
+
+    def search_conversations(self, query: str, limit: int = 30) -> dict[str, Any]:
+        return self.intake.search_conversations(query, limit)
+
     def export_conversation(self, conversation_id: str) -> dict[str, Any]:
         result = self.intake.export_conversation(conversation_id, {
             "summary": self.store.latest_conversation_summary(conversation_id),

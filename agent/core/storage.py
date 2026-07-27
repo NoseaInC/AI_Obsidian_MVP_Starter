@@ -2563,6 +2563,7 @@ class StateStore:
                 "active_topic": "TEXT",
                 "personalization_enabled": "INTEGER NOT NULL DEFAULT 1",
                 "retention_policy": "TEXT NOT NULL DEFAULT 'full'",
+                "is_pinned": "INTEGER NOT NULL DEFAULT 0",
             },
             "conversation_messages": {
                 "model_profile_id": "TEXT",

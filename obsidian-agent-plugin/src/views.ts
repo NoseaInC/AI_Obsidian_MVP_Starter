@@ -262,6 +262,36 @@ function statusKind(state: string): string {
   return "source";
 }
 
+class PromptModal extends Modal {
+  private input!: HTMLInputElement;
+  constructor(
+    app: App,
+    private titleText: string,
+    private defaultValue: string,
+    private onSubmit: (value: string) => void,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.contentEl.addClass("la-modal");
+    this.contentEl.createEl("h2", {text: this.titleText});
+    this.input = this.contentEl.createEl("input", {attr: {type: "text", value: this.defaultValue}});
+    this.input.style.width = "100%";
+    this.input.style.marginBottom = "12px";
+    this.input.addEventListener("keydown", event => {
+      if (event.key === "Enter") { this.onSubmit(this.input.value); this.close(); }
+    });
+    const actions = this.contentEl.createDiv({cls: "la-modal__actions"});
+    button(actions, "取消", () => this.close());
+    button(actions, "确定", () => { this.onSubmit(this.input.value); this.close(); }, "mod-cta");
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
 class TextPreviewModal extends Modal {
   constructor(
     app: App,
@@ -741,7 +771,7 @@ export class LearningAgentMainView extends ItemView {
       const paint = (): void => {
         recent.empty();
         const query = this.assistantConversationQuery.trim().toLocaleLowerCase();
-        const items = this.assistantConversations.filter(item => !query || String(item.title ?? "").toLocaleLowerCase().includes(query));
+        const items = query ? this.assistantConversations.filter(item => String(item.title ?? "").toLocaleLowerCase().includes(query)) : this.assistantConversations;
         const heading = recent.createDiv({cls: "la-conversation-list__head"}); heading.createSpan({text: query ? "搜索结果" : "最近对话"}); heading.createSpan({text: String(items.length)});
         if (!items.length) {
           const empty = recent.createEl("p", {cls: "la-conversation-empty"});
@@ -749,33 +779,81 @@ export class LearningAgentMainView extends ItemView {
           if (!query) empty.createEl("small", {text: "从「新会话」开始你的第一轮整理与学习"});
         }
         for (const conversation of items) {
-          const row = recent.createEl("button", {cls: `la-conversation-row ${String(conversation.id) === this.conversationId ? "is-active" : ""}`});
-          const title = row.createDiv(); title.createEl("strong", {text: humanTitle(conversation.title, "新会话")});
+          const isActive = String(conversation.id) === this.conversationId;
+          const row = recent.createDiv({cls: `la-conversation-row ${isActive ? "is-active" : ""}`});
+          const main = row.createEl("button", {
+            cls: "la-conversation-row__main",
+            attr: {"aria-label": `${humanTitle(conversation.title, "新会话")} — ${this.relativeTime(String(conversation.updatedAt ?? ""))}`},
+          });
+          const title = main.createDiv(); title.createEl("strong", {text: humanTitle(conversation.title, "新会话")});
           title.createEl("small", {text: this.relativeTime(String(conversation.updatedAt ?? ""))});
-          const more = row.createSpan({cls: "la-conversation-row__more", attr: {"aria-label": "会话菜单"}}); setIcon(more, "ellipsis");
-          row.onclick = event => {
-            if ((event.target as HTMLElement).closest(".la-conversation-row__more")) {
-              event.stopPropagation();
-              const menu = new Menu();
-              menu.addItem(item => item.setTitle("导出到本地私有区").setIcon("download").onClick(async () => {
-                const result = await this.client.post<any>(`/conversations/${encodeURIComponent(conversation.id)}/export`, {});
-                new Notice(`已导出：${result.reference}`);
-              }));
-              menu.addItem(item => item.setTitle("删除会话").setIcon("trash-2").onClick(() => new ExplicitConfirmModal(
-                this.app, "删除会话", "只删除本地会话、附件副本和绑定成果，不删除正式知识。", async () => {
-                  await this.client.delete(`/conversations/${encodeURIComponent(conversation.id)}?confirm=true`);
-                  if (this.conversationId === conversation.id) this.conversationId = "";
-                  await this.refresh();
+          const showMenu = (mouseEvent?: MouseEvent): void => {
+            const menu = new Menu();
+            menu.addItem(item => item.setTitle("重命名").setIcon("pencil").onClick(() => {
+              new PromptModal(
+                this.app, "重命名会话", conversation.title, async (newTitle: string) => {
+                  if (newTitle.trim()) {
+                    await this.client.renameConversation(conversation.id, newTitle.trim());
+                    await this.refresh();
+                  }
                 },
-              ).open()));
-              menu.showAtMouseEvent(event as MouseEvent); return;
-            }
+              ).open();
+            }));
+            menu.addItem(item => item.setTitle("复制标题").setIcon("copy").onClick(() => {
+              navigator.clipboard.writeText(conversation.title).then(() => new Notice("已复制标题"), () => new Notice("复制失败"));
+            }));
+            menu.addItem(item => item.setTitle(conversation.isPinned ? "取消置顶" : "置顶").setIcon("pin").onClick(async () => {
+              await this.client.pinConversation(conversation.id, !conversation.isPinned);
+              await this.refresh();
+            }));
+            menu.addSeparator();
+            menu.addItem(item => item.setTitle("导出到本地私有区").setIcon("download").onClick(async () => {
+              const result = await this.client.post<any>(`/conversations/${encodeURIComponent(conversation.id)}/export`, {});
+              new Notice(`已导出：${result.reference}`);
+            }));
+            menu.addItem(item => item.setTitle("删除会话").setIcon("trash-2").onClick(() => new ExplicitConfirmModal(
+              this.app, "删除会话", "只删除本地会话、附件副本和绑定成果，不删除正式知识。", async () => {
+                await this.client.delete(`/conversations/${encodeURIComponent(conversation.id)}?confirm=true`);
+                if (this.conversationId === conversation.id) this.conversationId = "";
+                await this.refresh();
+              },
+            ).open()));
+            if (mouseEvent) { menu.showAtMouseEvent(mouseEvent); } else { menu.showAtPosition({x: 0, y: 0}); }
+          };
+          const more = row.createEl("button", {
+            cls: "la-conversation-row__more",
+            attr: {"aria-label": "会话菜单"},
+          });
+          setIcon(more, "ellipsis");
+          more.onclick = event => { event.stopPropagation(); showMenu(event as MouseEvent); };
+          more.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); showMenu(); } };
+          main.onclick = () => {
             if (this.conversationId) this.assistantLiveRuns.set(this.conversationId, this.assistantLiveRun);
             this.conversationId = String(conversation.id); this.assistantLiveRun = this.assistantLiveRuns.get(this.conversationId) ?? initialAssistantLiveRun(); this.assistantVisibleMessageLimit = 160; void this.refresh();
           };
         }
       };
-      searchInput.oninput = () => { this.assistantConversationQuery = searchInput.value; paint(); };
+      let searchTimer: ReturnType<typeof setTimeout> | undefined;
+      searchInput.oninput = () => {
+        this.assistantConversationQuery = searchInput.value;
+        clearTimeout(searchTimer);
+        const query = searchInput.value.trim();
+        if (query) {
+          searchTimer = setTimeout(async () => {
+            try {
+              const result = await this.client.searchConversations(query);
+              if (result.items && searchInput.value.trim() === query) {
+                this.assistantConversations = result.items;
+                paint();
+              }
+            } catch { /* fall back to local filtering */ }
+          }, 300);
+        } else {
+          void this.refresh();
+          return;
+        }
+        paint();
+      };
       paint();
     } else {
       const modules = nav.createDiv({cls: "la-nav-modules"});
@@ -801,11 +879,12 @@ export class LearningAgentMainView extends ItemView {
     bar.createDiv({attr: {style: `width:${percentage}%`}});
     this.navStat(stats, "运行任务", summary?.active_job_count ?? 0);
 
-    const status = nav.createDiv({cls: "la-nav-runtime la-nav-runtime--footer"});
+    const online = Boolean(this.dashboard);
+    const status = nav.createDiv({cls: `la-nav-runtime la-nav-runtime--footer${online ? "" : " is-offline"}`});
     setIcon(status.createSpan(), "shield-check");
     const statusCopy = status.createSpan();
-    statusCopy.createEl("strong", {text: "Agent 已连接"});
-    statusCopy.createEl("small", {text: "本地运行 · 正常"});
+    statusCopy.createEl("strong", {text: online ? "Agent 已连接" : "Agent 未连接"});
+    statusCopy.createEl("small", {text: online ? "本地运行 · 正常" : "正在尝试连接"});
   }
 
   private relativeTime(value: string): string {
