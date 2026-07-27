@@ -791,6 +791,7 @@ class StateStore:
         self._migrate_learning_brain()
         self._migrate_agent_runtime_v3()
         self._migrate_pi_runtime()
+        self._migrate_dashboard()
         self._record_schema_version()
         self.connection.commit()
 
@@ -932,6 +933,42 @@ class StateStore:
                     "UPDATE pi_session_entries SET payload_json=? WHERE id=?",
                     (json.dumps(normalized, ensure_ascii=False), row["id"]),
                 )
+
+    def _migrate_dashboard(self) -> None:
+        self.connection.execute(
+            """CREATE TABLE IF NOT EXISTS dashboard_daily_metrics (
+                metric_date TEXT PRIMARY KEY,
+                learning_duration_ms INTEGER NOT NULL DEFAULT 0,
+                completed_learning_tasks INTEGER NOT NULL DEFAULT 0,
+                knowledge_created_count INTEGER NOT NULL DEFAULT 0,
+                agent_run_count INTEGER NOT NULL DEFAULT 0,
+                agent_completed_count INTEGER NOT NULL DEFAULT 0,
+                agent_failed_count INTEGER NOT NULL DEFAULT 0,
+                tool_call_count INTEGER NOT NULL DEFAULT 0,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                computed_at TEXT NOT NULL,
+                schema_version INTEGER NOT NULL DEFAULT 1
+            )"""
+        )
+        self.connection.execute(
+            """CREATE TABLE IF NOT EXISTS dashboard_storage_snapshots (
+                snapshot_date TEXT PRIMARY KEY,
+                database_bytes INTEGER NOT NULL DEFAULT 0,
+                wal_bytes INTEGER NOT NULL DEFAULT 0,
+                conversation_bytes INTEGER NOT NULL DEFAULT 0,
+                reasoning_bytes INTEGER NOT NULL DEFAULT 0,
+                attachment_bytes INTEGER NOT NULL DEFAULT 0,
+                research_cache_bytes INTEGER NOT NULL DEFAULT 0,
+                log_bytes INTEGER NOT NULL DEFAULT 0,
+                temporary_bytes INTEGER NOT NULL DEFAULT 0,
+                reclaimable_bytes INTEGER NOT NULL DEFAULT 0,
+                computed_at TEXT NOT NULL,
+                schema_version INTEGER NOT NULL DEFAULT 1
+            )"""
+        )
+        self.connection.commit()
 
     def create_pi_task_authorization(self, authorization: dict[str, Any]) -> dict[str, Any]:
         required = (

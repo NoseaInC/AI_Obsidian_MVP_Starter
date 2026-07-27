@@ -179,6 +179,11 @@ class Handler(BaseHTTPRequestHandler):
                 payload = self.service.get_agent_action(
                     self._identifier(path.removeprefix("/actions/"))
                 )
+            elif path == "/dashboard/overview": payload = self.service.dashboard_overview()
+            elif path == "/dashboard/trends": payload = self.service.dashboard_trends(int(query.get("days", [7])[0]))
+            elif path == "/dashboard/storage": payload = self.service.dashboard_storage()
+            elif path == "/dashboard/data-health": payload = self.service.dashboard_data_health()
+            elif path == "/dashboard/materials-summary": payload = self.service.dashboard_materials_summary()
             elif path == "/conversations": payload = self.service.list_conversations(int(query.get("limit", [50])[0]), int(query.get("offset", [0])[0]))
             elif path == "/conversations/search" and "q" in query:
                 payload = self.service.search_conversations(query["q"][0], int(query.get("limit", [30])[0]))
@@ -307,7 +312,9 @@ class Handler(BaseHTTPRequestHandler):
                     path.removeprefix("/actions/").removesuffix("/undo")
                 )
                 self._send(200, self.service.undo_agent_action(action_id)); return
-            if path == "/intake/submit":
+            if path == "/dashboard/refresh":
+                payload = self.service.dashboard_refresh()
+            elif path == "/intake/submit":
                 # DEPRECATED: legacy Brain intake. Ordinary Assistant chat uses PiAgentRuntime, not this.
                 payload = self.service.explicit.submit_intake(body, self.headers.get("Idempotency-Key", ""))
             elif path == "/conversations":
