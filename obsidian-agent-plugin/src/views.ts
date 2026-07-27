@@ -708,6 +708,7 @@ export class LearningAgentMainView extends ItemView {
     }
 
     if (this.tab === "assistant") {
+      // A. 新会话 CTA
       const actions = nav.createDiv({cls: "la-conversation-actions"});
       const create = actions.createEl("button", {cls: "la-conversation-actions__create"});
       setIcon(create.createSpan({cls: "la-conversation-actions__create-icon"}), "plus");
@@ -719,17 +720,34 @@ export class LearningAgentMainView extends ItemView {
         this.conversationId = String(response.conversation.id); this.assistantMessages = [];
         this.pendingAttachments = []; this.assistantDraft = ""; this.assistantRegenerateMessageId = ""; this.assistantRegenerateRunId = ""; this.assistantLiveRun = initialAssistantLiveRun(); this.assistantVisibleMessageLimit = 160; await this.refresh();
       };
+      // B. 搜索
       const search = actions.createDiv({cls: "la-conversation-search"});
       setIcon(search.createSpan({cls: "la-conversation-search__icon"}), "search");
       const searchInput = search.createEl("input", {attr: {placeholder: "搜索对话", "aria-label": "搜索历史会话"}});
       searchInput.value = this.assistantConversationQuery;
+      // C. 模块切换胶囊
+      const modules = nav.createDiv({cls: "la-nav-modules la-nav-modules--assistant"});
+      for (const item of MODULES) {
+        const element = modules.createEl("button", {
+          cls: `la-module-nav__item ${item.id === this.tab ? "is-active" : ""}`,
+          attr: {"aria-current": item.id === this.tab ? "page" : "false"},
+        });
+        setIcon(element.createSpan({cls: "la-module-nav__icon"}), item.icon);
+        element.createSpan({text: item.label, cls: "la-module-nav__label"});
+        element.onclick = () => this.setTab(item.id);
+      }
+      // D. 会话列表
       const recent = nav.createDiv({cls: "la-conversation-list"});
       const paint = (): void => {
         recent.empty();
         const query = this.assistantConversationQuery.trim().toLocaleLowerCase();
         const items = this.assistantConversations.filter(item => !query || String(item.title ?? "").toLocaleLowerCase().includes(query));
         const heading = recent.createDiv({cls: "la-conversation-list__head"}); heading.createSpan({text: query ? "搜索结果" : "最近对话"}); heading.createSpan({text: String(items.length)});
-        if (!items.length) recent.createEl("p", {cls: "la-conversation-empty", text: query ? "没有匹配会话" : "开始对话后会保存在本地"});
+        if (!items.length) {
+          const empty = recent.createEl("p", {cls: "la-conversation-empty"});
+          empty.createSpan({text: query ? "没有匹配会话" : "还没有会话"});
+          if (!query) empty.createEl("small", {text: "从「新会话」开始你的第一轮整理与学习"});
+        }
         for (const conversation of items) {
           const row = recent.createEl("button", {cls: `la-conversation-row ${String(conversation.id) === this.conversationId ? "is-active" : ""}`});
           const title = row.createDiv(); title.createEl("strong", {text: humanTitle(conversation.title, "新会话")});
@@ -759,20 +777,18 @@ export class LearningAgentMainView extends ItemView {
       };
       searchInput.oninput = () => { this.assistantConversationQuery = searchInput.value; paint(); };
       paint();
+    } else {
+      const modules = nav.createDiv({cls: "la-nav-modules"});
+      for (const item of MODULES) {
+        const element = modules.createEl("button", {
+          cls: `la-module-nav__item ${item.id === this.tab ? "is-active" : ""}`,
+          attr: {"aria-current": item.id === this.tab ? "page" : "false"},
+        });
+        setIcon(element.createSpan({cls: "la-module-nav__icon"}), item.icon);
+        element.createSpan({text: item.label, cls: "la-module-nav__label"});
+        element.onclick = () => this.setTab(item.id);
+      }
     }
-
-    const modules = nav.createDiv({cls: "la-nav-modules"});
-    for (const item of MODULES) {
-      const element = modules.createEl("button", {
-        cls: `la-module-nav__item ${item.id === this.tab ? "is-active" : ""}`,
-        attr: {"aria-current": item.id === this.tab ? "page" : "false"},
-      });
-      setIcon(element.createSpan({cls: "la-module-nav__icon"}), item.icon);
-      element.createSpan({text: item.label, cls: "la-module-nav__label"});
-      element.onclick = () => this.setTab(item.id);
-    }
-
-    if (this.tab === "assistant") modules.addClass("la-nav-modules--assistant");
     const stats = nav.createDiv({cls: `la-nav-stats ${this.tab === "assistant" ? "la-nav-stats--assistant" : ""}`});
     const summary = this.dashboard?.summary;
     const total = summary?.suggested_minutes ?? 0;
