@@ -1716,7 +1716,7 @@ export class LearningAgentMainView extends ItemView {
 
     const header = body.createDiv({cls: "la-board__header"});
     header.createEl("h2", {text: "看板"});
-    const refreshBtn = iconButton(header.createDiv({cls: "la-board__tools"}), "refresh-cw", "刷新", async () => {
+    const refreshBtn = iconButton(header, "refresh-cw", "刷新", async () => {
       await this.client.post("/dashboard/refresh", {});
       await this.renderBoard(body);
     });
@@ -1779,10 +1779,13 @@ export class LearningAgentMainView extends ItemView {
       barRow.createSpan({text: this.formatBytes(bytes), cls: "la-board__storage-value"});
     }
     if (storage?.reclaimableBytes) {
-      const cleanRow = storagePanel.createDiv({cls: "la-board__storage-bar la-board__storage-bar--clean"});
-      cleanRow.createSpan({text: "可安全清理", cls: "la-board__storage-label"});
-      cleanRow.createSpan({text: this.formatBytes(storage.reclaimableBytes), cls: "la-board__storage-value"});
-      const cleanBtn = cleanRow.createEl("button", {text: "清理", cls: "la-board__clean-btn"});
+      const footer = storagePanel.createDiv({cls: "la-board__storage-footer"});
+      footer.createSpan({text: "可安全清理", cls: "la-board__storage-footer-label"});
+      footer.createSpan({text: this.formatBytes(storage.reclaimableBytes), cls: "la-board__storage-footer-value"});
+      footer.createSpan({cls: "la-board__storage-footer-spacer"});
+      const cleanBtn = footer.createEl("button", {cls: "la-board__btn la-board__btn--primary"});
+      setIcon(cleanBtn.createSpan(), "trash-2");
+      cleanBtn.createSpan({text: "清理"});
       cleanBtn.onclick = () => new Notice("清理功能将在后续版本中实现");
     }
 
@@ -1809,7 +1812,9 @@ export class LearningAgentMainView extends ItemView {
     const matRow = materialsPanel.createDiv({cls: "la-board__materials"});
     matRow.createSpan({text: `资料总数: ${materials?.sourceCount ?? 0}`});
     matRow.createSpan({text: `待处理: ${materials?.pendingCount ?? 0}`});
-    const viewBtn = materialsPanel.createEl("button", {text: "查看全部资料", cls: "la-board__materials-btn"});
+    const viewBtn = matRow.createEl("button", {cls: "la-board__btn"});
+    setIcon(viewBtn.createSpan(), "arrow-right");
+    viewBtn.createSpan({text: "查看全部"});
     viewBtn.onclick = () => { body.empty(); void this.renderSources(body); };
   }
 
