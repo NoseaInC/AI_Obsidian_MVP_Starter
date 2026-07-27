@@ -7809,24 +7809,34 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
 /* Board buttons: shared token */
 .la-board__btn {
   display: inline-flex; align-items: center; gap: 6px;
-  padding: 6px 14px; font-size: 12px; font-weight: 500;
+  height: 32px; padding: 0 14px; font-size: 12.5px; font-weight: 500;
   border: 1px solid var(--background-modifier-border); border-radius: 10px;
   background: var(--background-primary); color: var(--text-muted);
   cursor: pointer; white-space: nowrap;
   transition: background var(--la-duration-fast) var(--la-ease-out),
               color var(--la-duration-fast) var(--la-ease-out),
               border-color var(--la-duration-fast) var(--la-ease-out),
-              transform var(--la-duration-fast) var(--la-ease-out);
+              transform var(--la-duration-fast) var(--la-ease-out),
+              box-shadow var(--la-duration-fast) var(--la-ease-out);
 }
-.la-board__btn:hover { background: var(--la-sidebar-hover); color: var(--text-normal); border-color: var(--la-sidebar-selected-border); }
+.la-board__btn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+  border-color: var(--la-sidebar-selected-border);
+  box-shadow: 0 1px 4px rgba(0,0,0,.06);
+}
 .la-board__btn:active { transform: scale(.97); }
 .la-board__btn svg { width: 14px; height: 14px; opacity: .7; }
 
 .la-board__btn--primary {
   background: linear-gradient(135deg, #5B6CFF, #6F7CFF); color: #fff;
   border-color: transparent; font-weight: 600;
+  box-shadow: 0 2px 8px rgba(91,108,255,.22);
 }
-.la-board__btn--primary:hover { background: linear-gradient(135deg, #4F5FEE, #6270EE); color: #fff; }
+.la-board__btn--primary:hover {
+  background: linear-gradient(135deg, #4F5FEE, #6270EE); color: #fff;
+  box-shadow: 0 4px 14px rgba(91,108,255,.30);
+}
 
 /* Health rows */
 .la-board__health-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; font-size: 12px; border-bottom: 1px solid var(--background-modifier-border-hover); }

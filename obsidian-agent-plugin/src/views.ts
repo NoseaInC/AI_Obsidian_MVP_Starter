@@ -1716,11 +1716,14 @@ export class LearningAgentMainView extends ItemView {
 
     const header = body.createDiv({cls: "la-board__header"});
     header.createEl("h2", {text: "看板"});
-    const refreshBtn = iconButton(header, "refresh-cw", "刷新", async () => {
+    const refreshBtn = header.createEl("button", {cls: "la-board__btn", attr: {"aria-label": "刷新看板数据"}});
+    setIcon(refreshBtn.createSpan(), "refresh-cw");
+    refreshBtn.createSpan({text: "刷新"});
+    refreshBtn.style.marginLeft = "auto";
+    refreshBtn.onclick = async () => {
       await this.client.post("/dashboard/refresh", {});
       await this.renderBoard(body);
-    });
-    refreshBtn.style.marginLeft = "auto";
+    };
 
     let overview: any = null; let storage: any = null; let health: any = null; let trends: any = null; let materials: any = null;
     try {
