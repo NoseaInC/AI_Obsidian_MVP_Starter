@@ -7862,7 +7862,9 @@ button.la-study-section__head { width: 100%; height: auto !important; min-height
 .la-board__mat-dot--awaiting_confirmation { background: var(--la-green); opacity: .5; }
 .la-board__mat-dot--ready { background: var(--text-faint); }
 
-.la-board__panel .la-board__btn { margin-top: auto; align-self: flex-start; }
+.la-board__panel-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.la-board__panel-head h3 { margin: 0; }
+.la-board__panel-head .la-board__btn { margin-left: auto; }
 
 /* Error state */
 .la-board__error { padding: 32px; text-align: center; color: var(--text-muted); }

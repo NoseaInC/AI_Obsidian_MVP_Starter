@@ -1808,7 +1808,12 @@ export class LearningAgentMainView extends ItemView {
     }
 
     const materialsPanel = botRow.createDiv({cls: "la-board__panel"});
-    materialsPanel.createEl("h3", {text: "资料"});
+    const matHead = materialsPanel.createDiv({cls: "la-board__panel-head"});
+    matHead.createEl("h3", {text: "资料"});
+    const viewBtn = matHead.createEl("button", {cls: "la-board__btn"});
+    setIcon(viewBtn.createSpan(), "arrow-right");
+    viewBtn.createSpan({text: "查看全部"});
+    viewBtn.onclick = () => { body.empty(); void this.renderSources(body); };
 
     // status summary chips
     const statusRow = materialsPanel.createDiv({cls: "la-board__mat-status"});
@@ -1829,11 +1834,6 @@ export class LearningAgentMainView extends ItemView {
     } else {
       materialsPanel.createEl("p", {text: "暂无资料，从助手导入 PDF 或网页开始。", cls: "la-muted"});
     }
-
-    const viewBtn = materialsPanel.createEl("button", {cls: "la-board__btn"});
-    setIcon(viewBtn.createSpan(), "arrow-right");
-    viewBtn.createSpan({text: "查看全部"});
-    viewBtn.onclick = () => { body.empty(); void this.renderSources(body); };
   }
 
   private boardMetricCard(parent: HTMLElement, label: string, value: string, sub: string): void {
