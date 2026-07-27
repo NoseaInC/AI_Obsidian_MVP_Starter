@@ -103,7 +103,7 @@ test("Python production boundary has no retired Agent loop or keyword intent rou
 
 test("primary navigation has no standalone approval or review inbox", () => {
   const views = fs.readFileSync(path.join(root, "views.ts"), "utf8");
-  assert.match(views, /type MainTab = "today" \| "sources" \| "plan" \| "assistant"/);
+  assert.match(views, /type MainTab = "today" \| "board" \| "plan" \| "assistant"/);
   assert.doesNotMatch(views, /this\.navStat\(stats, "需要你确认"/);
   assert.doesNotMatch(views, /renderReviews|renderAgentArtifactReview|renderReviewDetail|renderAssistantArtifactGroup|renderArtifactCard/);
 });

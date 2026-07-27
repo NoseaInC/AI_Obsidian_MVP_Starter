@@ -111,7 +111,7 @@ test("chat-first UI uses four outcome modules with confirmations kept in the ass
   const css = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
   for (const surface of ["la-material-center","la-plan-focus","la-today-focus","la-assistant-shell-v3","la-provider-drawer","la-live-trace","la-live-trace__action-result"]) assert.match(views + css, new RegExp(surface));
   for (const field of ["Base URL","API Key","模型名称","任务模型路由","OpenAI-compatible","Custom"]) assert.match(views, new RegExp(field));
-  for (const module of ["today", "sources", "plan", "assistant"]) assert.match(views, new RegExp(`id: "${module}"`));
+  for (const module of ["today", "board", "plan", "assistant"]) assert.match(views, new RegExp(`id: "${module}"`));
   assert.doesNotMatch(views, /\{id: "review", label: "审核"/);
   assert.doesNotMatch(views, /setTab\("review"\)/);
   assert.doesNotMatch(views, /学习 Agent/);

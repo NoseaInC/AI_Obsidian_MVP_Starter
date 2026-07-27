@@ -11,7 +11,7 @@ import {
   type ZhixuFontPreset,
 } from "./src/appearance";
 
-type MainTab = "today" | "sources" | "plan" | "assistant";
+type MainTab = "today" | "board" | "plan" | "assistant";
 interface LearningAgentSettings
   extends RuntimeSettings,
     ZhixuAppearanceSettings {
@@ -408,8 +408,8 @@ export default class LearningAgentPlugin extends Plugin {
     this.addCommand({id: "import-pdf", name: "Agent: 导入 PDF", callback: async () => { await this.openMain("assistant"); new Notice("请把 PDF 拖入助手或点击输入框下方的附件按钮"); }});
     this.addCommand({id: "import-textbook", name: "Agent: 导入教材", callback: async () => { await this.openMain("assistant"); new Notice("请把教材 PDF 拖入助手，并说明希望整理的章节或学习目标"); }});
     this.addCommand({id: "import-conversation", name: "Agent: 导入 AI 对话", callback: async () => { await this.openMain("assistant"); new Notice("请把对话文件或文本交给助手；原文只保存在本地私有区"); }});
-    this.addCommand({id: "view-jobs", name: "Agent: 查看当前任务", callback: () => this.openMain("sources")});
-    this.addCommand({id: "view-prepared", name: "Agent: 查看待确认资料", callback: () => this.openMain("sources")});
+    this.addCommand({id: "view-jobs", name: "Agent: 查看当前任务", callback: () => this.openMain("board")});
+    this.addCommand({id: "view-prepared", name: "Agent: 查看待确认资料", callback: () => this.openMain("board")});
     this.addCommand({id: "review", name: "Agent: 在助手中处理待确认操作", callback: async () => { await this.openMain("assistant"); new Notice("需要确认的修改会直接出现在当前助手对话中"); }});
     this.addCommand({id: "today-learning", name: "Agent: 开始今日学习", callback: () => this.openMain("today")});
     this.addCommand({id: "assistant", name: "Agent: 打开 AI 助手", callback: () => this.openMain("assistant")});

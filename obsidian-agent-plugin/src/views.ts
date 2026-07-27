@@ -69,7 +69,7 @@ export const MAIN_VIEW = "learning-agent-main";
 export const SIDEBAR_VIEW = "zhixu-sidebar-v2";
 export const LEGACY_SIDEBAR_VIEW = "obsidian-learning-agent-view";
 
-type MainTab = "today" | "sources" | "plan" | "assistant";
+type MainTab = "today" | "board" | "plan" | "assistant";
 type SourceFilter = "all" | "pending" | "running" | "research" | "applied" | "failed" | "history";
 interface DailyViewPreferences {
   trackingEnabled: boolean;
@@ -102,14 +102,14 @@ interface StudyNoteWriteResult {
 
 const MODULES: Array<{id: MainTab; label: string; icon: string}> = [
   {id: "today", label: "今日", icon: "calendar-days"},
-  {id: "sources", label: "资料", icon: "files"},
   {id: "plan", label: "计划", icon: "calendar-range"},
+  {id: "board", label: "看板", icon: "layout-dashboard"},
   {id: "assistant", label: "助手", icon: "messages-square"},
 ];
 
 const MODULE_TITLES: Record<MainTab, string> = {
   today: "今天，继续前进",
-  sources: "资料中心",
+  board: "看板",
   plan: "学习计划",
   assistant: "助手",
 };
@@ -974,7 +974,7 @@ export class LearningAgentMainView extends ItemView {
   private async renderTab(body: HTMLElement): Promise<void> {
     if (!this.dashboard) return;
     if (this.tab === "today") this.renderToday(body);
-    else if (this.tab === "sources") await this.renderSources(body);
+    else if (this.tab === "board") await this.renderBoard(body);
     else if (this.tab === "plan") await this.renderPlan(body);
     else await this.renderAssistant(body);
   }
@@ -1178,7 +1178,7 @@ export class LearningAgentMainView extends ItemView {
     button(actions, "加入周末", () => this.act(item, "weekend"));
     button(actions, "不感兴趣", () => this.act(item, "not_interested"));
     button(actions, "太难", () => this.act(item, "too_hard"));
-    if (item.kind === "source") button(actions, "查看资料", () => this.setTab("sources"), "mod-cta");
+    if (item.kind === "source") button(actions, "查看资料", () => this.setTab("board"), "mod-cta");
     else if (item.dailyPlanState === "completed") {
       const completed = button(actions, "今日已完成", () => { new Notice("本次学习已计入今日进度；可从计划页安排下一次复习。"); }); completed.disabled = true;
     }
@@ -1708,6 +1708,148 @@ export class LearningAgentMainView extends ItemView {
       await this.client.post("/prepared/apply", {prepared_id: item.preparedId});
       await this.refresh();
     }).open();
+  }
+
+  private async renderBoard(body: HTMLElement): Promise<void> {
+    body.addClass("la-page-frame", "la-board");
+    body.empty();
+
+    const header = body.createDiv({cls: "la-board__header"});
+    header.createEl("h2", {text: "看板"});
+    const refreshBtn = iconButton(header.createDiv({cls: "la-board__tools"}), "refresh-cw", "刷新", async () => {
+      await this.client.post("/dashboard/refresh", {});
+      await this.renderBoard(body);
+    });
+    refreshBtn.style.marginLeft = "auto";
+
+    let overview: any = null; let storage: any = null; let health: any = null; let trends: any = null; let materials: any = null;
+    try {
+      [overview, storage, health, trends, materials] = await Promise.all([
+        this.client.get<any>("/dashboard/overview"),
+        this.client.get<any>("/dashboard/storage"),
+        this.client.get<any>("/dashboard/data-health"),
+        this.client.get<any>("/dashboard/trends?days=7"),
+        this.client.get<any>("/dashboard/materials-summary"),
+      ]);
+    } catch {
+      body.createEl("p", {text: "无法加载看板数据，请确认 Agent 服务已启动。", cls: "la-board__error"});
+      return;
+    }
+
+    const metrics = overview?.metrics ?? {};
+    const comparisons = overview?.comparisons ?? {};
+
+    // ── Row 1: four top metrics ──────────────────────────
+    const topRow = body.createDiv({cls: "la-board__metrics"});
+    this.boardMetricCard(topRow, "本地数据", this.formatBytes(metrics.storageTotalBytes), "可清理 " + this.formatBytes(comparisons.storageReclaimableBytes));
+    this.boardMetricCard(topRow, "本周学习", this.formatDuration(metrics.learningDurationMs7d), "新增 " + (comparisons.knowledgeCreatedCount7d ?? 0) + " 条知识");
+    this.boardMetricCard(topRow, "知识资产", String(metrics.knowledgeAssetCount), "条已掌握知识");
+    this.boardMetricCard(topRow, "Agent 完成", String(metrics.agentCompletedRunCount7d), "次任务（近7天）");
+
+    // ── Row 2: trends + storage ──────────────────────────
+    const midRow = body.createDiv({cls: "la-board__row"});
+    const trendsPanel = midRow.createDiv({cls: "la-board__panel la-board__panel--wide"});
+    trendsPanel.createEl("h3", {text: "近 7 天学习趋势"});
+    const chart = trendsPanel.createDiv({cls: "la-board__chart"});
+    const points = trends?.points ?? [];
+    if (points.length) {
+      this.renderBoardTrendBars(chart, points, "learningDurationMs", this.formatDurationShort);
+    } else {
+      chart.createEl("p", {text: "暂无数据，开始学习后这里会出现趋势图。", cls: "la-muted"});
+    }
+
+    const storagePanel = midRow.createDiv({cls: "la-board__panel"});
+    storagePanel.createEl("h3", {text: "存储分类"});
+    const breakdown = storage?.breakdown ?? {};
+    const categories: Array<[string, string, number]> = [
+      ["附件与 PDF", "attachmentBytes", breakdown.attachmentBytes ?? 0],
+      ["网页缓存", "researchCacheBytes", breakdown.researchCacheBytes ?? 0],
+      ["会话正文", "conversationBytes", breakdown.conversationBytes ?? 0],
+      ["数据库", "databaseBytes", breakdown.databaseBytes ?? 0],
+      ["模型思考", "reasoningBytes", breakdown.reasoningBytes ?? 0],
+      ["日志", "logBytes", breakdown.logBytes ?? 0],
+      ["临时文件", "temporaryBytes", breakdown.temporaryBytes ?? 0],
+    ];
+    const maxBytes = Math.max(1, ...categories.map(c => c[2]));
+    for (const [label, , bytes] of categories) {
+      const barRow = storagePanel.createDiv({cls: "la-board__storage-bar"});
+      barRow.createSpan({text: label, cls: "la-board__storage-label"});
+      const barTrack = barRow.createDiv({cls: "la-board__storage-track"});
+      barTrack.createDiv({cls: "la-board__storage-fill", attr: {style: `width:${Math.round(bytes / maxBytes * 100)}%`}});
+      barRow.createSpan({text: this.formatBytes(bytes), cls: "la-board__storage-value"});
+    }
+    if (storage?.reclaimableBytes) {
+      const cleanRow = storagePanel.createDiv({cls: "la-board__storage-bar la-board__storage-bar--clean"});
+      cleanRow.createSpan({text: "可安全清理", cls: "la-board__storage-label"});
+      cleanRow.createSpan({text: this.formatBytes(storage.reclaimableBytes), cls: "la-board__storage-value"});
+      const cleanBtn = cleanRow.createEl("button", {text: "清理", cls: "la-board__clean-btn"});
+      cleanBtn.onclick = () => new Notice("清理功能将在后续版本中实现");
+    }
+
+    // ── Row 3: data health + materials ───────────────────
+    const botRow = body.createDiv({cls: "la-board__row"});
+    const healthPanel = botRow.createDiv({cls: "la-board__panel"});
+    healthPanel.createEl("h3", {text: "系统健康"});
+    const healthItems: Array<[string, string, boolean]> = [
+      ["Agent Runtime", "正常", true],
+      ["SQLite", health?.sqliteStatus ?? "正常", !health?.walWarning],
+      ["数据库 WAL", this.formatBytes(health?.walBytes ?? 0), (health?.walBytes ?? 0) < 500 * 1024 * 1024],
+      ["索引状态", health?.indexStatus ?? "正常", true],
+      ["可回收空间", this.formatBytes(health?.walBytes ?? 0), true],
+    ];
+    for (const [label, value, ok] of healthItems) {
+      const row = healthPanel.createDiv({cls: "la-board__health-row"});
+      row.createSpan({text: label});
+      const status = row.createSpan({text: String(value), cls: `la-board__health-status ${ok ? "" : "la-board__health-status--warn"}`});
+      if (!ok) status.style.color = "var(--la-red)";
+    }
+
+    const materialsPanel = botRow.createDiv({cls: "la-board__panel"});
+    materialsPanel.createEl("h3", {text: "资料"});
+    const matRow = materialsPanel.createDiv({cls: "la-board__materials"});
+    matRow.createSpan({text: `资料总数: ${materials?.sourceCount ?? 0}`});
+    matRow.createSpan({text: `待处理: ${materials?.pendingCount ?? 0}`});
+    const viewBtn = materialsPanel.createEl("button", {text: "查看全部资料", cls: "la-board__materials-btn"});
+    viewBtn.onclick = () => { body.empty(); void this.renderSources(body); };
+  }
+
+  private boardMetricCard(parent: HTMLElement, label: string, value: string, sub: string): void {
+    const card = parent.createDiv({cls: "la-board__metric"});
+    card.createSpan({text: label, cls: "la-board__metric-label"});
+    card.createEl("strong", {text: value, cls: "la-board__metric-value"});
+    card.createSpan({text: sub, cls: "la-board__metric-sub"});
+  }
+
+  private renderBoardTrendBars(parent: HTMLElement, points: any[], key: string, fmt: (v: number) => string): void {
+    const maxVal = Math.max(1, ...points.map((p: any) => p[key] ?? 0));
+    for (const point of points) {
+      const bar = parent.createDiv({cls: "la-board__trend-bar"});
+      const dateLabel = bar.createSpan({text: (point.date ?? "").slice(5), cls: "la-board__trend-date"});
+      const fill = bar.createDiv({cls: "la-board__trend-track"});
+      fill.createDiv({cls: "la-board__trend-fill", attr: {style: `width:${Math.round((point[key] ?? 0) / maxVal * 100)}%`}});
+      bar.createSpan({text: fmt(point[key] ?? 0), cls: "la-board__trend-value"});
+    }
+  }
+
+  private formatBytes(bytes: number): string {
+    if (!bytes || bytes < 1024) return (bytes || 0) + " B";
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+    return (bytes / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+  }
+
+  private formatDuration(ms: number): string {
+    if (!ms) return "0 小时";
+    const hours = ms / 3600000;
+    if (hours < 1) return Math.round(ms / 60000) + " 分钟";
+    return hours.toFixed(1) + " 小时";
+  }
+
+  private formatDurationShort(ms: number): string {
+    if (!ms) return "0";
+    const hours = ms / 3600000;
+    if (hours < 1) return Math.round(ms / 60000) + "m";
+    return hours.toFixed(1) + "h";
   }
 
   private async renderSources(body: HTMLElement): Promise<void> {
@@ -3281,7 +3423,7 @@ export class LearningAgentMainView extends ItemView {
       materials.createEl("p", {cls: "la-assistant-context-empty", text: "暂无可追溯的近期资料"});
     }
     for (const material of this.assistantContext?.recentMaterials ?? []) {
-      const row = materials.createEl("button"); setIcon(row.createSpan(), "file-archive"); row.createSpan({text: material.title}); setIcon(row.createSpan(), "external-link"); row.onclick = () => this.setTab("sources");
+      const row = materials.createEl("button"); setIcon(row.createSpan(), "file-archive"); row.createSpan({text: material.title}); setIcon(row.createSpan(), "external-link"); row.onclick = () => this.setTab("board");
     }
     const actions = parent.createEl("section", {cls: "la-assistant-context-section"}); actions.createEl("h3", {text: "推荐动作"});
     const path = actions.createEl("button"); setIcon(path.createSpan(), "route"); path.createSpan({text: "生成学习路径"}); setIcon(path.createSpan(), "chevron-right"); path.onclick = () => { composer.value = "基于当前成果生成一条循序渐进的学习路径"; composer.focus(); };
