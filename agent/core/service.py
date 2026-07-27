@@ -272,7 +272,7 @@ class AgentService:
             if s in status_counts: status_counts[s] = row["cnt"]
         total = sum(status_counts.values())
         recent = conn.execute(
-            "SELECT i.title, i.status, i.updated_at FROM intake_items i ORDER BY i.updated_at DESC LIMIT 5"
+            "SELECT c.title, i.status, i.updated_at FROM intake_items i JOIN conversations c ON c.id=i.conversation_id ORDER BY i.updated_at DESC LIMIT 5"
         ).fetchall()
         attachment_count = conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0]
         return {
