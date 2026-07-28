@@ -178,6 +178,7 @@ class DashboardAggregator:
         local_only = self.vault / "90-Local-Only"
         agent_dir = local_only / "Agent"
         db_path = agent_dir / "agent.sqlite3"
+        conn = self.store.connection
 
         database_bytes = db_path.stat().st_size if db_path.is_file() else 0
         wal_path = Path(str(db_path) + "-wal")
@@ -188,16 +189,14 @@ class DashboardAggregator:
         log_path = agent_dir / "logs" / "events.jsonl"
         log_bytes = log_path.stat().st_size if log_path.is_file() else 0
 
-        # Reasoning: scan event payloads for reasoning content size estimate
+        # Reasoning: estimate from SQLite event payloads (contained in database_bytes)
         reasoning_bytes = 0
-        try:
-            row = conn.execute(
-                "SELECT SUM(LENGTH(payload_json)) FROM pi_agent_events WHERE event_type LIKE 'reasoning%'"
-            ).fetchone()
-            if row and row[0]:
-                reasoning_bytes = int(row[0])
-        except Exception:
-            pass
+        row = conn.execute(
+            "SELECT COALESCE(SUM(LENGTH(CAST(payload_json AS BLOB))), 0) "
+            "FROM pi_agent_events WHERE event_type LIKE 'reasoning%'"
+        ).fetchone()
+        if row and row[0]:
+            reasoning_bytes = int(row[0])
 
         temporary_bytes = _scan_dir_bytes(local_only / "Temp") if (local_only / "Temp").is_dir() else 0
 

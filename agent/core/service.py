@@ -137,124 +137,146 @@ class AgentService:
 
     # ── Dashboard ──────────────────────────────────────────────
 
-    def dashboard_overview(self) -> dict[str, Any]:
+    def dashboard_snapshot(self) -> dict[str, Any]:
+        """Single snapshot: fill gaps, aggregate today, collect storage, return everything.
+        Executes sequentially inside the store lock to prevent concurrent SQLite writes."""
         today = _today()
-        conn = self.store.connection
-        # Always re-aggregate today so afternoon data shows up (P0 fix)
-        self.dashboard_agg.aggregate_daily_metrics(today)
-        self.dashboard_agg.collect_storage_snapshot(today)
-        row = conn.execute(
-            "SELECT * FROM dashboard_daily_metrics WHERE metric_date=?", (_date_str(today),)
-        ).fetchone()
-        storage_row = conn.execute(
-            "SELECT * FROM dashboard_storage_snapshots WHERE snapshot_date=?", (_date_str(today),)
-        ).fetchone()
-        # 7-day aggregates: today + 6 prior days = 7 days total
-        seven_start = _date_str(today - timedelta(days=6))
-        rows_7d = conn.execute(
-            "SELECT SUM(learning_duration_ms) ld, SUM(agent_completed_count) ac, "
-            "SUM(knowledge_created_count) kc FROM dashboard_daily_metrics "
-            "WHERE metric_date >= ?", (seven_start,)
-        ).fetchone()
+        with self.store.lock:
+            self.dashboard_agg.fill_recent_gaps(7)
+            self.dashboard_agg.aggregate_daily_metrics(today)
+            self.dashboard_agg.collect_storage_snapshot(today)
+
+            conn = self.store.connection
+            row = conn.execute(
+                "SELECT * FROM dashboard_daily_metrics WHERE metric_date=?", (_date_str(today),)
+            ).fetchone()
+            storage_row = conn.execute(
+                "SELECT * FROM dashboard_storage_snapshots WHERE snapshot_date=?", (_date_str(today),)
+            ).fetchone()
+
+            seven_start = _date_str(today - timedelta(days=6))
+            rows_7d = conn.execute(
+                "SELECT SUM(learning_duration_ms) ld, SUM(agent_completed_count) ac, "
+                "SUM(knowledge_created_count) kc FROM dashboard_daily_metrics "
+                "WHERE metric_date >= ?", (seven_start,)
+            ).fetchone()
+
+            trend_start = _date_str(today - timedelta(days=6))
+            trend_rows = conn.execute(
+                "SELECT * FROM dashboard_daily_metrics WHERE metric_date >= ? ORDER BY metric_date",
+                (trend_start,),
+            ).fetchall()
+
+            health = self._dashboard_health(conn)
 
         knowledge_count = self._count_knowledge_assets()
+        materials = self._dashboard_materials(conn)
 
-        def _r(d: dict | None, k: str, fallback: int = 0) -> int:
-            if d is None:
-                return fallback
-            try:
-                return int(d[k])
-            except (KeyError, TypeError, ValueError):
-                return fallback
+        def _r(d, k, fallback=0):
+            if d is None: return fallback
+            try: return int(d[k])
+            except: return fallback
+
+        external_bytes = (
+            _r(storage_row, "wal_bytes") + _r(storage_row, "conversation_bytes") +
+            _r(storage_row, "attachment_bytes") + _r(storage_row, "research_cache_bytes") +
+            _r(storage_row, "log_bytes") + _r(storage_row, "temporary_bytes")
+        )
+        db_bytes = _r(storage_row, "database_bytes")
 
         return {
             "generatedAt": _now_iso(),
-            "metrics": {
-                "storageTotalBytes": _r(storage_row, "database_bytes") + _r(storage_row, "wal_bytes")
-                    + _r(storage_row, "conversation_bytes") + _r(storage_row, "reasoning_bytes")
-                    + _r(storage_row, "attachment_bytes") + _r(storage_row, "research_cache_bytes")
-                    + _r(storage_row, "log_bytes") + _r(storage_row, "temporary_bytes"),
+            "overview": {
+                "storageTotalBytes": db_bytes + external_bytes,
                 "learningDurationMs7d": rows_7d["ld"] or 0 if rows_7d else 0,
                 "knowledgeAssetCount": knowledge_count,
                 "agentCompletedRunCount7d": rows_7d["ac"] or 0 if rows_7d else 0,
-            },
-            "comparisons": {
                 "storageReclaimableBytes": _r(storage_row, "reclaimable_bytes"),
                 "knowledgeCreatedCount7d": rows_7d["kc"] or 0 if rows_7d else 0,
-                "storageSnapshotDate": _r(storage_row, "snapshot_date", "") if isinstance(storage_row, dict) else "",
             },
+            "storage": {
+                "totalBytes": db_bytes + external_bytes,
+                "breakdown": {
+                    "databaseBytes": db_bytes,
+                    "walBytes": _r(storage_row, "wal_bytes"),
+                    "conversationBytes": _r(storage_row, "conversation_bytes"),
+                    "attachmentBytes": _r(storage_row, "attachment_bytes"),
+                    "researchCacheBytes": _r(storage_row, "research_cache_bytes"),
+                    "logBytes": _r(storage_row, "log_bytes"),
+                    "temporaryBytes": _r(storage_row, "temporary_bytes"),
+                },
+                "databaseComposition": {
+                    "reasoningEstimatedBytes": _r(storage_row, "reasoning_bytes"),
+                },
+                "reclaimableBytes": _r(storage_row, "reclaimable_bytes"),
+            },
+            "trends": {
+                "days": 7,
+                "points": [{
+                    "date": r["metric_date"],
+                    "learningDurationMs": r["learning_duration_ms"],
+                    "completedTasks": r["completed_learning_tasks"],
+                    "knowledgeCreated": r["knowledge_created_count"],
+                    "agentRuns": r["agent_run_count"],
+                    "agentCompleted": r["agent_completed_count"],
+                    "agentFailed": r["agent_failed_count"],
+                    "toolCalls": r["tool_call_count"],
+                    "inputTokens": r["input_tokens"],
+                    "outputTokens": r["output_tokens"],
+                    "reasoningTokens": r["reasoning_tokens"],
+                } for r in trend_rows],
+            },
+            "health": health,
+            "materials": materials,
         }
+
+    def dashboard_refresh(self) -> dict[str, Any]:
+        return self.dashboard_snapshot()
+
+    # ── Legacy individual endpoints (delegated to snapshot) ───
+
+    def dashboard_overview(self) -> dict[str, Any]:
+        return self.dashboard_snapshot()
 
     def dashboard_trends(self, days: int = 7) -> dict[str, Any]:
-        today = _today()
-        self.dashboard_agg.fill_recent_gaps(days)
-        start = _date_str(today - timedelta(days=days - 1))
-        rows = self.store.connection.execute(
-            "SELECT * FROM dashboard_daily_metrics WHERE metric_date >= ? ORDER BY metric_date",
-            (start,),
-        ).fetchall()
-        return {
-            "days": days,
-            "points": [{
-                "date": r["metric_date"],
-                "learningDurationMs": r["learning_duration_ms"],
-                "completedTasks": r["completed_learning_tasks"],
-                "knowledgeCreated": r["knowledge_created_count"],
-                "agentRuns": r["agent_run_count"],
-                "agentCompleted": r["agent_completed_count"],
-                "agentFailed": r["agent_failed_count"],
-                "toolCalls": r["tool_call_count"],
-                "inputTokens": r["input_tokens"],
-                "outputTokens": r["output_tokens"],
-                "reasoningTokens": r["reasoning_tokens"],
-            } for r in rows],
-        }
+        return self.dashboard_snapshot()
 
     def dashboard_storage(self) -> dict[str, Any]:
-        today = _today()
-        self.dashboard_agg.collect_storage_snapshot(today)
-        row = self.store.connection.execute(
-            "SELECT * FROM dashboard_storage_snapshots WHERE snapshot_date=?",
-            (_date_str(today),),
-        ).fetchone()
-        r = dict(row or {})
-        return {
-            "snapshotDate": r.get("snapshot_date", _date_str(today)),
-            "breakdown": {
-                "databaseBytes": int(r.get("database_bytes", 0)),
-                "walBytes": int(r.get("wal_bytes", 0)),
-                "conversationBytes": int(r.get("conversation_bytes", 0)),
-                "reasoningBytes": int(r.get("reasoning_bytes", 0)),
-                "attachmentBytes": int(r.get("attachment_bytes", 0)),
-                "researchCacheBytes": int(r.get("research_cache_bytes", 0)),
-                "logBytes": int(r.get("log_bytes", 0)),
-                "temporaryBytes": int(r.get("temporary_bytes", 0)),
-            },
-            "reclaimableBytes": int(r.get("reclaimable_bytes", 0)),
-            "totalBytes": sum(int(r.get(k, 0)) for k in [
-                "database_bytes", "wal_bytes", "conversation_bytes", "reasoning_bytes",
-                "attachment_bytes", "research_cache_bytes", "log_bytes", "temporary_bytes",
-            ]),
-        }
+        return self.dashboard_snapshot()
 
     def dashboard_data_health(self) -> dict[str, Any]:
+        return self.dashboard_snapshot()
+
+    def dashboard_materials_summary(self) -> dict[str, Any]:
+        return self.dashboard_snapshot()
+
+    # ── Helpers ────────────────────────────────────────────────
+
+    def _dashboard_health(self, conn) -> dict[str, Any]:
         db_path = self.vault / "90-Local-Only/Agent/agent.sqlite3"
         wal_path = Path(str(db_path) + "-wal")
         wal_bytes = wal_path.stat().st_size if wal_path.is_file() else 0
         db_bytes = db_path.stat().st_size if db_path.is_file() else 0
+
+        # Check for WAL warning (>500MB)
+        wal_warning = wal_bytes > 500 * 1024 * 1024
+
+        # Quick integrity check
+        sqlite_ok = True
+        try:
+            result = conn.execute("PRAGMA quick_check").fetchone()
+            sqlite_ok = result and str(result[0]) == "ok"
+        except Exception:
+            sqlite_ok = False
+
         return {
-            "sqliteStatus": "正常",
             "databaseBytes": db_bytes,
             "walBytes": wal_bytes,
-            "walWarning": wal_bytes > 500 * 1024 * 1024,
-            "orphanFiles": 0,
-            "brokenReferences": 0,
-            "indexStatus": "正常",
-            "lastCheckpoint": _now_iso(),
+            "walWarning": wal_warning,
+            "sqliteOk": sqlite_ok,
         }
 
-    def dashboard_materials_summary(self) -> dict[str, Any]:
-        conn = self.store.connection
+    def _dashboard_materials(self, conn) -> dict[str, Any]:
         status_counts = {"completed": 0, "processing": 0, "failed": 0, "awaiting_confirmation": 0, "ready": 0}
         rows = conn.execute("SELECT status, COUNT(*) cnt FROM intake_items GROUP BY status").fetchall()
         for row in rows:
@@ -274,13 +296,6 @@ class AgentService:
             "attachmentCount": attachment_count,
             "recentItems": [{"title": r["title"], "status": r["status"], "updatedAt": r["updated_at"]} for r in recent],
         }
-
-    def dashboard_refresh(self) -> dict[str, Any]:
-        today = _today()
-        self.dashboard_agg.aggregate_daily_metrics(today)
-        self.dashboard_agg.fill_recent_gaps(7)
-        self.dashboard_agg.collect_storage_snapshot(today)
-        return {"refreshedAt": _now_iso(), "ok": True}
 
     def _count_knowledge_assets(self) -> int:
         root = self.vault / "20-Knowledge"

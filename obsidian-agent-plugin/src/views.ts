@@ -609,6 +609,7 @@ export class LearningAgentMainView extends ItemView {
     }
     this.tab = tab;
     this.mobileDetail = false;
+    if (tab === "board") this.boardSection = "overview";
     if (this.loading) this.refreshQueued = true;
     else void this.refresh();
   }
@@ -975,7 +976,10 @@ export class LearningAgentMainView extends ItemView {
   private async renderTab(body: HTMLElement): Promise<void> {
     if (!this.dashboard) return;
     if (this.tab === "today") this.renderToday(body);
-    else if (this.tab === "board") await this.renderBoard(body);
+    else if (this.tab === "board") {
+      if (this.boardSection === "materials") await this.renderSources(body);
+      else await this.renderBoard(body);
+    }
     else if (this.tab === "plan") await this.renderPlan(body);
     else await this.renderAssistant(body);
   }
@@ -1712,7 +1716,6 @@ export class LearningAgentMainView extends ItemView {
   }
 
   private async renderBoard(body: HTMLElement): Promise<void> {
-    this.boardSection = "overview";
     body.addClass("la-page-frame", "la-board");
     body.empty();
 
@@ -1727,29 +1730,26 @@ export class LearningAgentMainView extends ItemView {
       await this.renderBoard(body);
     };
 
-    let overview: any = null; let storage: any = null; let health: any = null; let trends: any = null; let materials: any = null;
+    let snapshot: any = null;
     try {
-      [overview, storage, health, trends, materials] = await Promise.all([
-        this.client.get<any>("/dashboard/overview"),
-        this.client.get<any>("/dashboard/storage"),
-        this.client.get<any>("/dashboard/data-health"),
-        this.client.get<any>("/dashboard/trends?days=7"),
-        this.client.get<any>("/dashboard/materials-summary"),
-      ]);
+      snapshot = await this.client.get<any>("/dashboard/snapshot");
     } catch (err: any) {
       body.createEl("p", {text: `无法加载看板数据：${err?.message || "请确认 Agent 服务已启动"}`, cls: "la-board__error"});
       return;
     }
 
-    const metrics = overview?.metrics ?? {};
-    const comparisons = overview?.comparisons ?? {};
+    const overview = snapshot?.overview ?? {};
+    const storage = snapshot?.storage ?? {};
+    const trends = snapshot?.trends ?? {};
+    const health = snapshot?.health ?? {};
+    const materials = snapshot?.materials ?? {};
 
     // ── Row 1: four top metrics ──────────────────────────
     const topRow = body.createDiv({cls: "la-board__metrics"});
-    this.boardMetricCard(topRow, "本地数据", this.formatBytes(metrics.storageTotalBytes), "可清理 " + this.formatBytes(comparisons.storageReclaimableBytes));
-    this.boardMetricCard(topRow, "本周学习", this.formatDuration(metrics.learningDurationMs7d), "新增 " + (comparisons.knowledgeCreatedCount7d ?? 0) + " 条知识");
-    this.boardMetricCard(topRow, "知识笔记", String(metrics.knowledgeAssetCount), "条本地 Markdown");
-    this.boardMetricCard(topRow, "Agent 完成", String(metrics.agentCompletedRunCount7d), "次任务（近7天）");
+    this.boardMetricCard(topRow, "本地数据", this.formatBytes(overview.storageTotalBytes ?? 0), "可清理 " + this.formatBytes(overview.storageReclaimableBytes ?? 0));
+    this.boardMetricCard(topRow, "本周学习", this.formatDuration(overview.learningDurationMs7d ?? 0), "新增 " + (overview.knowledgeCreatedCount7d ?? 0) + " 条知识");
+    this.boardMetricCard(topRow, "知识笔记", String(overview.knowledgeAssetCount ?? 0), "条本地 Markdown");
+    this.boardMetricCard(topRow, "Agent 完成", String(overview.agentCompletedRunCount7d ?? 0), "次任务（近7天）");
 
     // ── Row 2: trends + storage ──────────────────────────
     const midRow = body.createDiv({cls: "la-board__row"});
