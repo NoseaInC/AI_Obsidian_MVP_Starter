@@ -1725,18 +1725,25 @@ export class LearningAgentMainView extends ItemView {
     setIcon(refreshBtn.createSpan(), "refresh-cw");
     refreshBtn.createSpan({text: "刷新"});
     refreshBtn.style.marginLeft = "auto";
-    refreshBtn.onclick = async () => {
-      await this.client.post("/dashboard/refresh", {});
-      await this.renderBoard(body);
+
+    const content = body.createDiv({cls: "la-board__content"});
+
+    const fetchAndRender = async () => {
+      try {
+        const snapshot = await this.client.get<any>("/dashboard/snapshot");
+        content.empty();
+        this.renderBoardContent(content, snapshot);
+      } catch (err: any) {
+        content.empty();
+        content.createEl("p", {text: `无法加载看板数据：${err?.message || "请确认 Agent 服务已启动"}`, cls: "la-board__error"});
+      }
     };
 
-    let snapshot: any = null;
-    try {
-      snapshot = await this.client.get<any>("/dashboard/snapshot");
-    } catch (err: any) {
-      body.createEl("p", {text: `无法加载看板数据：${err?.message || "请确认 Agent 服务已启动"}`, cls: "la-board__error"});
-      return;
-    }
+    refreshBtn.onclick = () => void fetchAndRender();
+    await fetchAndRender();
+  }
+
+  private renderBoardContent(body: HTMLElement, snapshot: any): void {
 
     const overview = snapshot?.overview ?? {};
     const storage = snapshot?.storage ?? {};

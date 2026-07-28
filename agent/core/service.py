@@ -138,12 +138,17 @@ class AgentService:
     # ── Dashboard ──────────────────────────────────────────────
 
     def dashboard_snapshot(self) -> dict[str, Any]:
-        """Single snapshot: fill gaps, aggregate today, collect storage, return everything.
-        Executes sequentially inside the store lock to prevent concurrent SQLite writes."""
+        """Single coherent snapshot. DB writes are transactionally scoped;
+        heavy filesystem scans run outside the lock to avoid blocking other operations."""
         today = _today()
+        yesterday = today - timedelta(days=1)
+
+        # Phase 1: DB reads + re-aggregate today and yesterday (lock)
         with self.store.lock:
             self.dashboard_agg.fill_recent_gaps(7)
+            # Re-aggregate today + yesterday so late-arriving events are captured
             self.dashboard_agg.aggregate_daily_metrics(today)
+            self.dashboard_agg.aggregate_daily_metrics(yesterday)
             self.dashboard_agg.collect_storage_snapshot(today)
 
             conn = self.store.connection
@@ -153,24 +158,21 @@ class AgentService:
             storage_row = conn.execute(
                 "SELECT * FROM dashboard_storage_snapshots WHERE snapshot_date=?", (_date_str(today),)
             ).fetchone()
-
             seven_start = _date_str(today - timedelta(days=6))
             rows_7d = conn.execute(
                 "SELECT SUM(learning_duration_ms) ld, SUM(agent_completed_count) ac, "
                 "SUM(knowledge_created_count) kc FROM dashboard_daily_metrics "
                 "WHERE metric_date >= ?", (seven_start,)
             ).fetchone()
-
-            trend_start = _date_str(today - timedelta(days=6))
             trend_rows = conn.execute(
                 "SELECT * FROM dashboard_daily_metrics WHERE metric_date >= ? ORDER BY metric_date",
-                (trend_start,),
+                (seven_start,),
             ).fetchall()
-
             health = self._dashboard_health(conn)
+            materials = self._dashboard_materials(conn)
 
+        # Phase 2: heavy filesystem scan outside lock
         knowledge_count = self._count_knowledge_assets()
-        materials = self._dashboard_materials(conn)
 
         def _r(d, k, fallback=0):
             if d is None: return fallback

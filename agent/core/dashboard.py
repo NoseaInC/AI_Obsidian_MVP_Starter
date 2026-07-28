@@ -269,9 +269,6 @@ class DashboardAggregator:
     # ── helpers ───────────────────────────────────────────────
 
     def _count_knowledge_notes_created(self, date_str: str) -> int:
-        """Count new knowledge notes created on a given date.
-        Priority: frontmatter.created → file mtime → file ctime (fallback).
-        st_ctime is unreliable across OS and can drift on metadata changes."""
         root = self._knowledge_root
         if not root.is_dir():
             return 0
@@ -284,26 +281,32 @@ class DashboardAggregator:
                 text = md.read_text(encoding="utf-8", errors="replace")
                 meta = ingest_pdf.parse_frontmatter(text)
                 created_raw = str(meta.get("created", "") or "").strip()
-                if created_raw:
-                    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S"):
-                        try:
-                            d = datetime.strptime(created_raw[:10], "%Y-%m-%d").date()
-                            if d.isoformat() == day_prefix:
-                                count += 1
-                            break
-                        except ValueError:
-                            continue
-                    else:
-                        # frontmatter created exists but doesn't match this day
-                        continue
+                parsed = _parse_frontmatter_date(created_raw) if created_raw else None
+                if parsed is not None:
+                    if parsed.isoformat() == day_prefix:
+                        count += 1
                 else:
-                    stat = md.stat()
-                    d = datetime.fromtimestamp(stat.st_mtime, TZ).date()
+                    d = datetime.fromtimestamp(md.stat().st_mtime, TZ).date()
                     if d.isoformat() == day_prefix:
                         count += 1
             except Exception:
                 pass
         return count
+
+
+def _parse_frontmatter_date(raw: str) -> date | None:
+    """Parse a frontmatter created field into a date. Returns None on failure
+    so the caller can fall back to mtime."""
+    if not raw:
+        return None
+    # Try ISO-like formats: 2024-01-15, 2024-01-15T10:30:00, 2024/01/15
+    cleaned = raw.strip().replace("/", "-")[:10]
+    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(cleaned if fmt == "%Y-%m-%d" else raw.strip()[:19], fmt).date()
+        except ValueError:
+            continue
+    return None
 
 
 def _estimate_reclaimable_bytes(local_only: Path) -> int:
