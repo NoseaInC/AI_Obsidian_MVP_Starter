@@ -373,6 +373,7 @@ class Handler(BaseHTTPRequestHandler):
                 session_id = self._identifier(path.removeprefix("/study-sessions/").removesuffix("/complete"))
                 payload = self.service.complete_study_session(session_id, float(body.get("correctness", 0)), str(body.get("notes", "")))
             elif path == "/prepared/apply": payload = {"result": self.service.apply_prepared(str(body["prepared_id"]))}
+            elif path == "/prepared/reject": payload = self.service.reject_prepared(str(body["prepared_id"]), str(body.get("reason", "")))
             elif path == "/review/transition": payload = {"result": self.service.transition_review(str(body["artifact_id"]), str(body["action"]), str(body.get("reason", "")))}
             elif path == "/learning/mastery/suggest": payload = {"mastery": self.service.suggest_mastery(int(body["current"]), float(body["correctness"]), bool(body.get("critical_error", False)))}
             elif path == "/learning/mastery/confirm": payload = {"result": self.service.confirm_mastery(str(body["path"]), int(body["mastery"]), list(body.get("weak_points", [])))}

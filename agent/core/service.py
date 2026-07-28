@@ -38,6 +38,7 @@ from agent.tools import build_tool_registry
 from agent.tools.change_set import ChangeSetTools
 from agent.core.explicit_workflow_service import ExplicitWorkflowService
 from agent.core.dashboard import DashboardAggregator, TZ, _today, _date_str, _now_iso
+from agent.materials import PreparedPdfService
 from agent.tools.vault_access import read_model_visible_note, safe_read_note
 
 
@@ -69,6 +70,7 @@ class AgentService:
         )
         self.developer_workspace = DeveloperWorkspace(self.vault, self.store)
         self.dashboard_agg = DashboardAggregator(self.vault, self.store)
+        self.materials = PreparedPdfService(self.vault)
         self.store.recover_interrupted()
         self.log_path = self.vault / "90-Local-Only/Agent/logs/events.jsonl"
         self.sync_indexes()
@@ -810,6 +812,16 @@ class AgentService:
             self.store.connection.commit()
         return rows
     def inspect_prepared(self, prepared_id: str) -> str: return prepared_pdf.inspect_bundle(self.vault, prepared_id)
+    def reject_prepared(self, prepared_id: str, reason: str = "") -> dict[str, Any]:
+        result = self.materials.reject(prepared_id, reason)
+        linked = next((row for row in self.store.list_jobs() if row.get("prepared_id") == prepared_id and row["state"] == "awaiting_confirmation"), None)
+        if linked: self.store.update_job(str(linked["job_id"]), "rejected", stage="rejected", progress=100)
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        with self.store.lock:
+            self.store.connection.execute("UPDATE change_sets SET state='rejected', updated_at=? WHERE prepared_id=?", (now, prepared_id))
+            self.store.connection.commit()
+        self.log("prepared.rejected", {"prepared_id": prepared_id, "reason": reason})
+        return result
     def apply_prepared(self, prepared_id: str) -> str:
         linked = next((row for row in self.store.list_jobs() if row.get("prepared_id") == prepared_id and row["state"] == "awaiting_confirmation"), None)
         if linked: self.store.update_job(str(linked["job_id"]), "applying", stage="applying", progress=100)
