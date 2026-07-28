@@ -30,11 +30,19 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
+import sys
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPTS = ROOT / "00-System" / "Scripts"
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+import ingest_pdf
 
 
 TZ = timezone(timedelta(hours=8))  # Asia/Shanghai default
@@ -261,6 +269,9 @@ class DashboardAggregator:
     # ── helpers ───────────────────────────────────────────────
 
     def _count_knowledge_notes_created(self, date_str: str) -> int:
+        """Count new knowledge notes created on a given date.
+        Priority: frontmatter.created → file mtime → file ctime (fallback).
+        st_ctime is unreliable across OS and can drift on metadata changes."""
         root = self._knowledge_root
         if not root.is_dir():
             return 0
@@ -270,11 +281,27 @@ class DashboardAggregator:
             if md.is_symlink():
                 continue
             try:
-                stat = md.stat()
-                created_date = datetime.fromtimestamp(stat.st_ctime, TZ).date().isoformat()
-                if created_date == day_prefix:
-                    count += 1
-            except OSError:
+                text = md.read_text(encoding="utf-8", errors="replace")
+                meta = ingest_pdf.parse_frontmatter(text)
+                created_raw = str(meta.get("created", "") or "").strip()
+                if created_raw:
+                    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S"):
+                        try:
+                            d = datetime.strptime(created_raw[:10], "%Y-%m-%d").date()
+                            if d.isoformat() == day_prefix:
+                                count += 1
+                            break
+                        except ValueError:
+                            continue
+                    else:
+                        # frontmatter created exists but doesn't match this day
+                        continue
+                else:
+                    stat = md.stat()
+                    d = datetime.fromtimestamp(stat.st_mtime, TZ).date()
+                    if d.isoformat() == day_prefix:
+                        count += 1
+            except Exception:
                 pass
         return count
 
