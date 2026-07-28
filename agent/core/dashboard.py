@@ -38,6 +38,11 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "00-System" / "Scripts"
 if str(SCRIPTS) not in sys.path:
@@ -45,7 +50,39 @@ if str(SCRIPTS) not in sys.path:
 import ingest_pdf
 
 
-TZ = timezone(timedelta(hours=8))  # Asia/Shanghai default
+_TIMEZONE_CACHE: timezone | None = None
+
+
+def _resolve_timezone(store: Any | None = None) -> timezone:
+    global _TIMEZONE_CACHE
+    if _TIMEZONE_CACHE is not None:
+        return _TIMEZONE_CACHE
+    tz_name = "Asia/Shanghai"
+    if store is not None:
+        try:
+            configured = str(store.get_setting("timezone", "") or "").strip()
+            if configured:
+                tz_name = configured
+        except Exception:
+            pass
+    if ZoneInfo is not None:
+        try:
+            _TIMEZONE_CACHE = ZoneInfo(tz_name)
+            return _TIMEZONE_CACHE
+        except Exception:
+            pass
+    offset_map = {
+        "Asia/Shanghai": 8, "Asia/Tokyo": 9, "Asia/Seoul": 9,
+        "Asia/Singapore": 8, "Asia/Kolkata": 5.5, "Asia/Dubai": 4,
+        "Europe/London": 0, "Europe/Berlin": 1, "Europe/Paris": 1,
+        "America/New_York": -5, "America/Los_Angeles": -8, "Pacific/Auckland": 12,
+    }
+    hours = offset_map.get(tz_name, 8)
+    _TIMEZONE_CACHE = timezone(timedelta(hours=hours))
+    return _TIMEZONE_CACHE
+
+
+TZ = _resolve_timezone()
 
 
 def _today() -> date:
@@ -81,6 +118,8 @@ class DashboardAggregator:
         self.vault = Path(vault)
         self.store = store
         self._knowledge_root = self.vault / "20-Knowledge"
+        # Resolve timezone from agent settings (default: Asia/Shanghai)
+        _resolve_timezone(store)
 
     # ── daily business metrics ────────────────────────────────
 
