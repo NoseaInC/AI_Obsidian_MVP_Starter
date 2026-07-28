@@ -140,27 +140,17 @@ class AgentService:
     def dashboard_overview(self) -> dict[str, Any]:
         today = _today()
         conn = self.store.connection
+        # Always re-aggregate today so afternoon data shows up (P0 fix)
+        self.dashboard_agg.aggregate_daily_metrics(today)
+        self.dashboard_agg.collect_storage_snapshot(today)
         row = conn.execute(
-            "SELECT * FROM dashboard_daily_metrics ORDER BY metric_date DESC LIMIT 1"
+            "SELECT * FROM dashboard_daily_metrics WHERE metric_date=?", (_date_str(today),)
         ).fetchone()
         storage_row = conn.execute(
-            "SELECT * FROM dashboard_storage_snapshots ORDER BY snapshot_date DESC LIMIT 1"
+            "SELECT * FROM dashboard_storage_snapshots WHERE snapshot_date=?", (_date_str(today),)
         ).fetchone()
-
-        # live-aggregate today
-        if not row or row["metric_date"] != _date_str(today):
-            self.dashboard_agg.aggregate_daily_metrics(today)
-            row = conn.execute(
-                "SELECT * FROM dashboard_daily_metrics WHERE metric_date=?", (_date_str(today),)
-            ).fetchone()
-        if not storage_row or storage_row["snapshot_date"] != _date_str(today):
-            self.dashboard_agg.collect_storage_snapshot(today)
-            storage_row = conn.execute(
-                "SELECT * FROM dashboard_storage_snapshots WHERE snapshot_date=?", (_date_str(today),)
-            ).fetchone()
-
-        # 7-day aggregates
-        seven_start = _date_str(today - timedelta(days=7))
+        # 7-day aggregates: today + 6 prior days = 7 days total
+        seven_start = _date_str(today - timedelta(days=6))
         rows_7d = conn.execute(
             "SELECT SUM(learning_duration_ms) ld, SUM(agent_completed_count) ac, "
             "SUM(knowledge_created_count) kc FROM dashboard_daily_metrics "
@@ -287,6 +277,7 @@ class AgentService:
 
     def dashboard_refresh(self) -> dict[str, Any]:
         today = _today()
+        self.dashboard_agg.aggregate_daily_metrics(today)
         self.dashboard_agg.fill_recent_gaps(7)
         self.dashboard_agg.collect_storage_snapshot(today)
         return {"refreshedAt": _now_iso(), "ok": True}

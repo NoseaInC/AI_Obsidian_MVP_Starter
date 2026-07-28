@@ -534,6 +534,7 @@ export class LearningAgentMainView extends ItemView {
   private dailyDashboard: DailyDashboard | null = null;
   private dailyCategory: DailyCategory = "daily-knowledge";
   private dailySort: DailySort = "recommendation";
+  private boardSection: "overview" | "materials" = "overview";
   private dailyDetailTab = "why";
   private studyState: StudyWorkspaceState | null = null;
   private studyLesson: LessonBlueprint | null = null;
@@ -1711,6 +1712,7 @@ export class LearningAgentMainView extends ItemView {
   }
 
   private async renderBoard(body: HTMLElement): Promise<void> {
+    this.boardSection = "overview";
     body.addClass("la-page-frame", "la-board");
     body.empty();
 
@@ -1746,7 +1748,7 @@ export class LearningAgentMainView extends ItemView {
     const topRow = body.createDiv({cls: "la-board__metrics"});
     this.boardMetricCard(topRow, "本地数据", this.formatBytes(metrics.storageTotalBytes), "可清理 " + this.formatBytes(comparisons.storageReclaimableBytes));
     this.boardMetricCard(topRow, "本周学习", this.formatDuration(metrics.learningDurationMs7d), "新增 " + (comparisons.knowledgeCreatedCount7d ?? 0) + " 条知识");
-    this.boardMetricCard(topRow, "知识资产", String(metrics.knowledgeAssetCount), "条已掌握知识");
+    this.boardMetricCard(topRow, "知识笔记", String(metrics.knowledgeAssetCount), "条本地 Markdown");
     this.boardMetricCard(topRow, "Agent 完成", String(metrics.agentCompletedRunCount7d), "次任务（近7天）");
 
     // ── Row 2: trends + storage ──────────────────────────
@@ -1797,11 +1799,9 @@ export class LearningAgentMainView extends ItemView {
     const healthPanel = botRow.createDiv({cls: "la-board__panel"});
     healthPanel.createEl("h3", {text: "系统健康"});
     const healthItems: Array<[string, string, boolean]> = [
-      ["Agent Runtime", "正常", true],
-      ["SQLite", health?.sqliteStatus ?? "正常", !health?.walWarning],
-      ["数据库 WAL", this.formatBytes(health?.walBytes ?? 0), (health?.walBytes ?? 0) < 500 * 1024 * 1024],
-      ["索引状态", health?.indexStatus ?? "正常", true],
-      ["可回收空间", this.formatBytes(health?.walBytes ?? 0), true],
+      ["SQLite 状态", health?.sqliteStatus ?? "正常", !health?.walWarning],
+      ["WAL 大小", this.formatBytes(health?.walBytes ?? 0), (health?.walBytes ?? 0) < 500 * 1024 * 1024],
+      ["回收空间", this.formatBytes(storage?.reclaimableBytes ?? 0), true],
     ];
     for (const [label, value, ok] of healthItems) {
       const row = healthPanel.createDiv({cls: "la-board__health-row"});
@@ -1816,7 +1816,7 @@ export class LearningAgentMainView extends ItemView {
     const viewBtn = matHead.createEl("button", {cls: "la-board__btn"});
     setIcon(viewBtn.createSpan(), "arrow-right");
     viewBtn.createSpan({text: "查看全部"});
-    viewBtn.onclick = () => { body.empty(); void this.renderSources(body); };
+    viewBtn.onclick = () => { this.boardSection = "materials"; body.empty(); void this.renderSources(body); };
 
     // status summary chips
     const statusRow = materialsPanel.createDiv({cls: "la-board__mat-status"});

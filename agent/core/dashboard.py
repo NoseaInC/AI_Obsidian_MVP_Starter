@@ -108,7 +108,7 @@ class DashboardAggregator:
             (day_start, day_end),
         ).fetchone()[0]
         tool_call_count = conn.execute(
-            "SELECT COUNT(*) FROM pi_agent_events WHERE event_type='tool_call_start' AND created_at >= ? AND created_at <= ?",
+            "SELECT COUNT(*) FROM pi_agent_events WHERE event_type IN ('tool_use', 'tool_call_start') AND created_at >= ? AND created_at <= ?",
             (day_start, day_end),
         ).fetchone()[0]
 
@@ -183,10 +183,22 @@ class DashboardAggregator:
         wal_path = Path(str(db_path) + "-wal")
         wal_bytes = wal_path.stat().st_size if wal_path.is_file() else 0
         conversation_bytes = _scan_dir_bytes(agent_dir / "Conversations")
-        reasoning_bytes = _scan_dir_bytes(local_only / "Reasoning") if (local_only / "Reasoning").is_dir() else 0
-        attachment_bytes = _scan_dir_bytes(local_only / "Attachments") if (local_only / "Attachments").is_dir() else 0
+        attachment_bytes = _scan_dir_bytes(agent_dir / "Attachments")
         research_cache_bytes = _scan_dir_bytes(agent_dir / "WebCache")
-        log_bytes = _scan_dir_bytes(agent_dir / "Logs") if (agent_dir / "Logs").is_dir() else 0
+        log_path = agent_dir / "logs" / "events.jsonl"
+        log_bytes = log_path.stat().st_size if log_path.is_file() else 0
+
+        # Reasoning: scan event payloads for reasoning content size estimate
+        reasoning_bytes = 0
+        try:
+            row = conn.execute(
+                "SELECT SUM(LENGTH(payload_json)) FROM pi_agent_events WHERE event_type LIKE 'reasoning%'"
+            ).fetchone()
+            if row and row[0]:
+                reasoning_bytes = int(row[0])
+        except Exception:
+            pass
+
         temporary_bytes = _scan_dir_bytes(local_only / "Temp") if (local_only / "Temp").is_dir() else 0
 
         reclaimable_bytes = _estimate_reclaimable_bytes(local_only)
@@ -269,16 +281,18 @@ class DashboardAggregator:
 
 
 def _estimate_reclaimable_bytes(local_only: Path) -> int:
+    agent_dir = local_only / "Agent"
     total = 0
-    web_cache = local_only / "Agent" / "WebCache"
+    web_cache = agent_dir / "WebCache"
     if web_cache.is_dir():
         total += _scan_dir_bytes(web_cache)
-    reasoning = local_only / "Reasoning"
-    if reasoning.is_dir():
-        total += _scan_dir_bytes(reasoning)
-    logs = local_only / "Agent" / "Logs"
-    if logs.is_dir():
-        total += _scan_dir_bytes(logs)
+    # Old reasoning files from earlier builds
+    old_reasoning = local_only / "Reasoning"
+    if old_reasoning.is_dir():
+        total += _scan_dir_bytes(old_reasoning)
+    logs_dir = agent_dir / "logs"
+    if logs_dir.is_dir():
+        total += _scan_dir_bytes(logs_dir)
     temp = local_only / "Temp"
     if temp.is_dir():
         total += _scan_dir_bytes(temp)

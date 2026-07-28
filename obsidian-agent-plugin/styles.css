@@ -3246,11 +3246,9 @@ body .la-app .la-confidence strong {
 }
 .la-today-queue-row:hover { background: var(--la-page-hover); }
 .la-today-queue-row:active { transform: scale(.99); }
-}
 
 .la-today-queue-row.is-selected {
   background: var(--la-page-selected);
-}
 }
 
 .la-today-queue-row > .la-kind-icon {
