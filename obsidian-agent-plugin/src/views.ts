@@ -1771,7 +1771,6 @@ export class LearningAgentMainView extends ItemView {
       ["网页缓存", "researchCacheBytes", breakdown.researchCacheBytes ?? 0],
       ["会话正文", "conversationBytes", breakdown.conversationBytes ?? 0],
       ["数据库", "databaseBytes", breakdown.databaseBytes ?? 0],
-      ["模型思考", "reasoningBytes", breakdown.reasoningBytes ?? 0],
       ["日志", "logBytes", breakdown.logBytes ?? 0],
       ["临时文件", "temporaryBytes", breakdown.temporaryBytes ?? 0],
     ];
@@ -1782,6 +1781,11 @@ export class LearningAgentMainView extends ItemView {
       const barTrack = barRow.createDiv({cls: "la-board__storage-track"});
       barTrack.createDiv({cls: "la-board__storage-fill", attr: {style: `width:${Math.round(bytes / maxBytes * 100)}%`}});
       barRow.createSpan({text: this.formatBytes(bytes), cls: "la-board__storage-value"});
+    }
+    const dbComp = storage?.databaseComposition ?? {};
+    if (dbComp.reasoningEstimatedBytes) {
+      const dbNote = storagePanel.createDiv({cls: "la-board__storage-note"});
+      dbNote.createSpan({text: `其中模型思考约 ${this.formatBytes(dbComp.reasoningEstimatedBytes)}（含于数据库）`});
     }
     if (storage?.reclaimableBytes) {
       const footer = storagePanel.createDiv({cls: "la-board__storage-footer"});
@@ -1798,10 +1802,11 @@ export class LearningAgentMainView extends ItemView {
     const botRow = body.createDiv({cls: "la-board__row"});
     const healthPanel = botRow.createDiv({cls: "la-board__panel"});
     healthPanel.createEl("h3", {text: "系统健康"});
+    const sqliteOk = health?.sqliteOk !== false;
+    const walWarning = health?.walWarning || (health?.walBytes ?? 0) > 500 * 1024 * 1024;
     const healthItems: Array<[string, string, boolean]> = [
-      ["SQLite 状态", health?.sqliteStatus ?? "正常", !health?.walWarning],
-      ["WAL 大小", this.formatBytes(health?.walBytes ?? 0), (health?.walBytes ?? 0) < 500 * 1024 * 1024],
-      ["回收空间", this.formatBytes(storage?.reclaimableBytes ?? 0), true],
+      ["数据库完整性", sqliteOk ? "正常" : "异常", sqliteOk],
+      ["WAL 大小", this.formatBytes(health?.walBytes ?? 0), !walWarning],
     ];
     for (const [label, value, ok] of healthItems) {
       const row = healthPanel.createDiv({cls: "la-board__health-row"});
