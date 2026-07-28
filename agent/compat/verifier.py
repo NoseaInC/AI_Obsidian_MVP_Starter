@@ -5,7 +5,7 @@ from typing import Any
 from urllib.parse import urlparse
 import ipaddress
 
-from .errors import BrainError
+from agent.errors import BrainError
 
 
 class Verifier:

@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from agent.core.service import AgentService
 from agent.core.models import KeyStore
 from agent.core.redaction import redact
-from agent.brain.errors import BrainError
+from agent.errors import BrainError
 
 
 class Handler(BaseHTTPRequestHandler):

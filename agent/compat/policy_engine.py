@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .schemas import PolicyDecision
+from agent.core.compat_schemas import PolicyDecision
 
 
 READ_ONLY = {"find_related_notes", "research_topic", "curriculum_planner", "daily_recommendations", "tutor_topic", "organize_vault"}

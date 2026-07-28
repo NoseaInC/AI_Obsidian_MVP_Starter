@@ -4,7 +4,7 @@ import json
 import urllib.error
 from typing import Any
 
-from .errors import BrainError
+from agent.errors import BrainError
 CURRICULUM_SCHEMA = {
     "name": "daily_curriculum_candidates",
     "schema": {

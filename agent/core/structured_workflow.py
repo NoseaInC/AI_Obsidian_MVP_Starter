@@ -3,10 +3,10 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from agent.brain.context_builder import ContextBuilder
-from agent.brain.errors import as_brain_error
-from agent.brain.schemas import BrainRequest, BrainStatus, IntentResult
-from agent.brain.verifier import Verifier
+from agent.compat.context_builder import ContextBuilder
+from agent.errors import BrainError, as_brain_error
+from agent.core.compat_schemas import BrainRequest, BrainStatus, IntentResult
+from agent.compat.verifier import Verifier
 
 
 EXPLICIT_WORKFLOWS: dict[str, tuple[str, str]] = {

@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .helpers import classify_text, frontmatter, inbox_folder, note_result, safe_title, unique_path
+from agent.compat.skills.helpers import classify_text, frontmatter, inbox_folder, note_result, safe_title, unique_path
 
 
 def run(tools: Any, vault: Path, payload: dict[str, Any], context: dict[str, Any], run_id: str, step_id: str) -> dict[str, Any]:

@@ -29,16 +29,16 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from agent.brain import BrainRequest
-from agent.brain.schemas import IntentResult
-from agent.brain.model_gateway import BrainModelGateway
+from agent.core.compat_schemas import BrainRequest
+from agent.core.compat_schemas import IntentResult
+from agent.core.compat_model_gateway import BrainModelGateway
 from agent.core.assistant_outcomes import AssistantOutcome, resolve_assistant_outcome
 from agent.core.context_material import ContextMaterialCoordinator
 from agent.core.conversation_intelligence import build_conversation_summary, extract_knowledge_signals
 from agent.core.redaction import redact_secret_text
 from agent.core.structured_workflow import StructuredWorkflowRunner
 from agent.core.vault_autonomy import VaultAutonomyService, render_managed_block
-from agent.skills import build_skill_registry
+from agent.compat.skills import build_skill_registry
 from agent.tools.change_set import ChangeSetTools
 
 

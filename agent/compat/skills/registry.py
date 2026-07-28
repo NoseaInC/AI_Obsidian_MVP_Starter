@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .base import SkillDefinition, SkillHandler
-from . import capture_text, curriculum_planner, daily_recommendations, misc, organize_text, organize_vault, research_topic, tutor_topic
+from agent.compat.skills.base import SkillDefinition, SkillHandler
+from agent.compat.skills import capture_text, curriculum_planner, daily_recommendations, misc, organize_text, organize_vault, research_topic, tutor_topic
 
 
 class SkillRegistry:

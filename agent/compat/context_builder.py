@@ -6,8 +6,8 @@ from typing import Any
 
 from agent.core import learning
 
-from .errors import BrainError
-from .schemas import BrainRequest, IntentResult
+from agent.errors import BrainError
+from agent.core.compat_schemas import BrainRequest, IntentResult
 
 
 SECRET_PATTERN = re.compile(r"(?:authorization|bearer|api[_-]?key|token|secret|password)", re.I)

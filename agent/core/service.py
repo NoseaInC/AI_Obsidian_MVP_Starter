@@ -33,7 +33,7 @@ from agent.core.intake import IntakeService
 from agent.core.web_research import WebResearchService
 from agent.core.vault_autonomy import VaultAutonomyService, render_managed_block
 from agent.core import study_workspace
-from agent.brain.errors import BrainError
+from agent.errors import BrainError
 from agent.tools import build_tool_registry
 from agent.tools.change_set import ChangeSetTools
 from agent.core.explicit_workflow_service import ExplicitWorkflowService

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent.brain.schemas import BrainRequest
+from agent.core.compat_schemas import BrainRequest
 from agent.core.storage import StateStore
 from agent.core.structured_workflow import StructuredWorkflowRunner
 

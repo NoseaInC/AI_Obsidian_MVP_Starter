@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .helpers import frontmatter, inbox_folder, note_result, safe_title, unique_path
+from agent.compat.skills.helpers import frontmatter, inbox_folder, note_result, safe_title, unique_path
 
 
 def _lines(text: str) -> list[str]:

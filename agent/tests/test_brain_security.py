@@ -5,10 +5,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agent.brain.policy_engine import PolicyEngine
+from agent.compat.policy_engine import PolicyEngine
 from agent.core.redaction import redact, summary
 from agent.core.storage import StateStore
-from agent.skills.base import SkillDefinition
+from agent.compat.skills.base import SkillDefinition
 from agent.tools.source_fetch import PublicRedirectHandler, fetch_user_url, validate_public_url
 from agent.core.web_research import WebResearchService, extract_web_document
 
