@@ -1,6 +1,6 @@
 ---
 type: moc
-status: ai-draft
+status: core
 domain: LLM 与 Agent
 created:
 updated:

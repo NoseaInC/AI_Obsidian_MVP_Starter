@@ -1,6 +1,44 @@
 # Project Status
 
-Last updated: 2026-07-23
+Last updated: 2026-08-02
+
+## Current phase — Workspace Policy + Long-term Memory V1
+
+Branch: `workspace-memory-v1` (based on `9f3c071`).
+
+Implemented:
+
+- Vault layout adjusted: `20-Knowledge/概率论与数理统计` moved to
+  `20-Knowledge/Courses/` (git mv); 10 chapters marked
+  `type: course-chapter, review_unit: false`; both top-level MOCs restored
+  to `status: core`.
+- Workspace Policy files: `00-System/AI/{VAULT_CONSTITUTION,NOTE_TYPES,
+  WRITING_POLICY,LINKING_POLICY}.md`, loaded by
+  `agent/core/workspace_policy/` (loader/models/validator/resolver).
+- Long-term memory: `memory_items` + `memory_evidence` (migration in
+  `_migrate_memory`), `agent/core/memory/` (service/policy/retrieval/
+  extractor). Explicit-intent remember, candidate promotion rules,
+  supersede-on-conflict, reference-only evidence.
+- Pi integration: `PiAgentRuntime.resolveMemoryContext` injects
+  `<zhixu_memory_context>` (≤8 items / ≤800 tokens); new tools
+  `search_memory` / `remember_memory` / `forget_memory` /
+  `validate_write_intent` + 4 policy read tools; `pi_agent_runs` gains
+  `memory_snapshot_json`.
+- Endpoints: `/memory/{context,search,remember,forget,list}`,
+  `/write-intent/validate`, `/workspace/policy/{name}`, `/workspace/profile`.
+- Learning scan: `scan_reviewed` now requires
+  `review_unit != false AND status ∈ {reviewed, core}` (legacy notes default
+  to reviewable).
+- Home.md converged to five sections (今天 / 当前学习 / 当前项目 / 待处理 /
+  快速入口).
+- Tests: `test_memory.py` (11), `test_workspace_policy.py` (13), learning
+  review-unit cases (4). All offline gates pass.
+
+Out of scope for this phase (kept): no vector DB, no memory profile/usage
+tables, no first-class memory UI module, model does not decide Today order,
+`conversation_knowledge_signals` stays read-only.
+
+Full design: `docs/architecture/WORKSPACE_MEMORY_V1.md`.
 
 ## Current phase
 

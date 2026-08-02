@@ -304,5 +304,54 @@ artifact_id: "manual:{name}"
             service.adjust_today({"type": "remove", "target_id": plan["items"][0]["recommendationId"]})
         service.store.close()
 
+    def test_course_chapter_review_unit_false_excluded_from_review(self):
+        # 课程章节：review_unit=false，即使 status=reviewed 也不进复习
+        path = self.vault / "20-Knowledge/Concepts" / "课程章节笔记.md"
+        path.write_text('''---
+type: course-chapter
+status: reviewed
+review_unit: false
+domain: 统计与机器学习
+mastery: 1
+importance: 4
+next_review: "2026-07-12"
+---
+# 课程章节笔记
+长章节正文，不作为复习单元。
+''', encoding="utf-8")
+        # 正常概念：review_unit=true + reviewed → 可复习
+        self.note("可复习概念", next_review="2026-07-12")
+        items = learning.scan_reviewed(self.vault)
+        titles = [item.title for item in items]
+        self.assertNotIn("课程章节笔记", titles)
+        self.assertIn("可复习概念", titles)
+
+    def test_concept_review_unit_true_reviewed_enters_review(self):
+        self.note("概念A", next_review="2026-07-12")
+        items = learning.scan_reviewed(self.vault)
+        due = learning.due_reviews(items, date(2026, 7, 12))
+        self.assertIn("概念A", [item.title for item in due])
+
+    def test_topic_review_unit_true_core_enters_review(self):
+        path = self.vault / "20-Knowledge/Topics" / "主线主题.md"
+        path.write_text('''---
+type: topic
+status: core
+review_unit: true
+domain: 统计与机器学习
+mastery: 0
+importance: 4
+next_review: "2026-07-12"
+---
+# 主线主题
+''', encoding="utf-8")
+        items = learning.scan_reviewed(self.vault)
+        self.assertIn("主线主题", [item.title for item in items])
+
+    def test_ai_draft_never_enters_formal_review(self):
+        self.note("草稿概念", status="ai-draft", next_review="2026-07-12")
+        items = learning.scan_reviewed(self.vault)
+        self.assertNotIn("草稿概念", [item.title for item in items])
+
 
 if __name__ == "__main__": unittest.main()

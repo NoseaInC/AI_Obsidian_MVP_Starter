@@ -38,6 +38,8 @@ from agent.tools import build_tool_registry
 from agent.tools.change_set import ChangeSetTools
 from agent.core.explicit_workflow_service import ExplicitWorkflowService
 from agent.core.dashboard import DashboardAggregator, TZ, _today, _date_str, _now_iso
+from agent.core.memory import MemoryService, extract_candidates
+from agent.core.workspace_policy import WorkspacePolicyLoader, validate_intent
 from agent.materials import PreparedPdfService
 from agent.tools.vault_access import read_model_visible_note, safe_read_note
 
@@ -71,6 +73,8 @@ class AgentService:
         self.developer_workspace = DeveloperWorkspace(self.vault, self.store)
         self.dashboard_agg = DashboardAggregator(self.vault, self.store)
         self.materials = PreparedPdfService(self.vault)
+        self.memory = MemoryService(self.store)
+        self.workspace = WorkspacePolicyLoader(self.vault)
         self.store.recover_interrupted()
         self.log_path = self.vault / "90-Local-Only/Agent/logs/events.jsonl"
         self.sync_indexes()
@@ -1465,6 +1469,119 @@ class AgentService:
             {**developer_common, "mutates_state": False, "idempotent": True, "name": "validate_mcp_server", "description": "校验受控 worktree 中的 MCP manifest 与隔离权限。", "input_schema": {"type": "object", "properties": {"workspace_id": workspace_id, "path": {"type": "string", "minLength": 1, "maxLength": 500}}, "required": ["workspace_id", "path"], "additionalProperties": False}},
             {**developer_common, "mutates_state": False, "idempotent": False, "name": "probe_mcp_server", "description": "在断网、最小环境的 sandbox 中临时启动 MCP 并执行 initialize 与 tools/list。", "input_schema": {"type": "object", "properties": {"workspace_id": workspace_id, "path": {"type": "string", "minLength": 1, "maxLength": 500}}, "required": ["workspace_id", "path"], "additionalProperties": False}},
         ])
+        read_common = {
+            "output_schema": {"type": "object", "additionalProperties": True},
+            "uses_network": False,
+            "mutates_state": False,
+            "timeout_seconds": 20,
+            "cancellable": False,
+            "idempotent": True,
+            "max_result_bytes": 16000,
+        }
+        proposal_common = {
+            "output_schema": {"type": "object", "additionalProperties": True},
+            "uses_network": False,
+            "mutates_state": True,
+            "timeout_seconds": 20,
+            "cancellable": False,
+            "max_result_bytes": 16000,
+        }
+        items.extend([
+            {
+                **read_common,
+                "name": "search_memory",
+                "description": "检索用户的长期记忆（目标、偏好、知识状态、项目决策）。只返回已激活且未删除的记忆。",
+                "permission_level": "read_only",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "minLength": 1, "maxLength": 500},
+                        "memoryTypes": {
+                            "type": "array",
+                            "items": {"type": "string", "enum": ["goal", "preference", "knowledge_state", "project_decision"]},
+                            "maxItems": 4,
+                        },
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                **read_common,
+                "name": "get_vault_constitution",
+                "description": "读取 Vault 工作空间总章程（目录职责、写入纪律）。准备写入前应阅读。",
+                "permission_level": "read_only",
+                "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+            },
+            {
+                **read_common,
+                "name": "get_note_type_policy",
+                "description": "读取笔记类型规则（source/course-chapter/topic/concept/project-note/learning-log 的决策边界与目录映射）。",
+                "permission_level": "read_only",
+                "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+            },
+            {
+                **read_common,
+                "name": "get_writing_policy",
+                "description": "读取写作规则（先检索再新建、更新 vs 新建、reviewed/core 保护）。",
+                "permission_level": "read_only",
+                "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+            },
+            {
+                **read_common,
+                "name": "get_linking_policy",
+                "description": "读取链接规则（parent/course/project/sources/prerequisites/related 语义）。",
+                "permission_level": "read_only",
+                "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+            },
+            {
+                **proposal_common,
+                "name": "remember_memory",
+                "description": "保存用户明确表达的长期记忆（目标、偏好、知识状态、项目决策）。只在用户明确说「记住…/以后请…/我的长期目标是…」时调用；模型不得保存自己的猜测。",
+                "permission_level": "proposal",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "memoryType": {"type": "string", "enum": ["goal", "preference", "knowledge_state", "project_decision"]},
+                        "memoryKey": {"type": "string", "minLength": 1, "maxLength": 200},
+                        "value": {"type": "object", "additionalProperties": True},
+                        "userMessage": {"type": "string", "description": "用户原始消息，用于校验显式意图"},
+                        "scopeType": {"type": "string", "enum": ["vault", "project", "conversation", "user"]},
+                        "scopeId": {"type": "string"},
+                    },
+                    "required": ["memoryType", "memoryKey", "value", "userMessage"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                **proposal_common,
+                "name": "forget_memory",
+                "description": "删除用户明确指定的记忆。只能删除单个用户指定的记忆，禁止批量删除或修改证据。",
+                "permission_level": "proposal",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"memoryId": {"type": "string", "minLength": 1, "maxLength": 100}},
+                    "required": ["memoryId"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                **read_common,
+                "name": "validate_write_intent",
+                "description": "校验写入意图（WriteIntent）：类型/目录匹配、复习单元规则、重复检测、受保护目标、链接存在性。写入前必须先通过校验。",
+                "permission_level": "proposal",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "intent": {"type": "object", "additionalProperties": True},
+                        "authorizationPaths": {"type": "array", "items": {"type": "string"}, "maxItems": 50},
+                    },
+                    "required": ["intent"],
+                    "additionalProperties": False,
+                },
+            },
+        ])
         return {"schemaVersion": 1, "items": items}
 
     def register_task_authorization(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -2035,6 +2152,123 @@ class AgentService:
             )
         }
 
+    # ── Long-term memory ──────────────────────────────────
+
+    def memory_context(self, body: dict[str, Any]) -> dict[str, Any]:
+        """每轮 Pi Turn 前的记忆上下文：≤8 条 / ≤800 tokens，只返回 active 记忆。"""
+        query = str(body.get("query") or "")
+        types = body.get("memoryTypes")
+        limit = int(body.get("maxItems") or 8)
+        tokens = int(body.get("maxTokens") or 800)
+        context = self.memory.build_pi_context(
+            query,
+            memory_types=[str(t) for t in types] if isinstance(types, list) else None,
+            max_items=limit,
+            max_tokens=tokens,
+        )
+        return {"ok": True, "context": context}
+
+    def memory_search(self, body: dict[str, Any]) -> dict[str, Any]:
+        query = str(body.get("query") or "")
+        types = body.get("memoryTypes")
+        limit = int(body.get("limit") or 6)
+        items = self.memory.search(
+            query,
+            memory_types=[str(t) for t in types] if isinstance(types, list) else None,
+            limit=limit,
+        )
+        return {"ok": True, "items": items}
+
+    def memory_remember(self, body: dict[str, Any]) -> dict[str, Any]:
+        """显式记忆：仅当用户明确表达意图时允许。模型不得保存自己的猜测。"""
+        memory_type = str(body.get("memoryType") or "")
+        memory_key = str(body.get("memoryKey") or "")
+        value = body.get("value")
+        if not isinstance(value, dict):
+            raise ValueError("memory_value_must_be_object")
+        # 显式意图门槛：用户消息必须命中 extractor 的明确表达模式
+        user_message = str(body.get("userMessage") or "")
+        candidates = extract_candidates(user_message)
+        if not candidates:
+            raise PermissionError("memory_requires_explicit_user_intent")
+        # 模型提供的 key 必须与用户明确表达一致（或为空时用提取的 key）
+        extracted_keys = {c["memory_key"] for c in candidates}
+        if memory_key:
+            overlap = False
+            for k in extracted_keys:
+                if k in memory_key or memory_key in k:
+                    overlap = True
+                    break
+                # 共享至少 2 个字的词级重叠（中文语义宽容）
+                if len(set(memory_key) & set(k)) >= 2:
+                    overlap = True
+                    break
+            if not overlap:
+                raise PermissionError("memory_key_not_explicitly_stated")
+        else:
+            memory_key = candidates[0]["memory_key"]
+        item = self.memory.remember_explicit(
+            memory_type, memory_key, value,
+            scope_type=str(body.get("scopeType") or "user"),
+            scope_id=body.get("scopeId"),
+            evidence_id=body.get("evidenceId"),
+        )
+        self.log("memory.remembered", {"memory_id": item["id"], "memory_type": memory_type, "memory_key": memory_key, "source_type": item["source_type"]})
+        return {"ok": True, "item": item}
+
+    def memory_forget(self, body: dict[str, Any]) -> dict[str, Any]:
+        memory_id = str(body.get("memoryId") or "")
+        item = self.memory.forget(memory_id)
+        self.log("memory.forgotten", {"memory_id": memory_id})
+        return {"ok": True, "item": item}
+
+    def memory_list(self, body: dict[str, Any]) -> dict[str, Any]:
+        items = self.memory.list_active(
+            str(body.get("memoryType") or "") or None,
+            int(body.get("limit") or 50),
+        )
+        return {"ok": True, "items": items}
+
+    def run_memory_extraction(self, *, user_message: str, run_id: str = "") -> None:
+        """Pi Run 完成后受控候选提取：仅显式意图 → candidate，Policy 决定激活。"""
+        try:
+            candidates = extract_candidates(user_message)
+            for candidate in candidates:
+                self.memory.create_candidate(
+                    candidate["memory_type"],
+                    candidate["memory_key"],
+                    candidate["value"],
+                    evidence=[("message", run_id)] if run_id else None,
+                )
+        except Exception:
+            pass  # 宁可少记，不可错误记忆；提取失败不影响主流程
+
+    # ── Workspace policy ──────────────────────────────────
+
+    def workspace_policy(self, name: str) -> dict[str, Any]:
+        if name not in {"constitution", "note_types", "writing", "linking"}:
+            raise ValueError(f"unknown_policy:{name}")
+        content = self.workspace.get(name)
+        if len(content) > 16000:
+            content = content[:16000]
+        return {"ok": True, "policy": name, "content": content}
+
+    def workspace_profile(self) -> dict[str, Any]:
+        return {"ok": True, "profile": self.workspace.profile_summary()}
+
+    # ── WriteIntent ───────────────────────────────────────
+
+    def validate_write_intent(self, body: dict[str, Any]) -> dict[str, Any]:
+        intent = body.get("intent")
+        if not isinstance(intent, dict):
+            raise ValueError("write_intent_required")
+        authorization_paths = body.get("authorizationPaths")
+        paths: set[str] | None = None
+        if isinstance(authorization_paths, list):
+            paths = {str(p) for p in authorization_paths}
+        result = validate_intent(self.vault, intent, authorization_paths=paths)
+        return {"ok": True, "validation": result}
+
     def call_runtime_tool(self, body: dict[str, Any]) -> dict[str, Any]:
         tool_name = str(body.get("toolName") or "")
         arguments = body.get("arguments")
@@ -2052,6 +2286,11 @@ class AgentService:
         stable_reads = {
             "get_current_note", "read_vault_note", "find_related_notes",
             "search_public_web", "fetch_public_url",
+            "search_memory", "get_vault_constitution", "get_note_type_policy",
+            "get_writing_policy", "get_linking_policy",
+        }
+        memory_tools = {
+            "remember_memory", "forget_memory", "validate_write_intent",
         }
         developer_tools = {
             "create_git_worktree", "read_workspace_file", "write_workspace_file",
@@ -2251,6 +2490,25 @@ class AgentService:
                     result = self.developer_workspace.validate_mcp(workspace_id_value, run_id, str(arguments.get("path") or ""))
                 else:
                     result = self.developer_workspace.probe_mcp(workspace_id_value, run_id, str(arguments.get("path") or ""))
+            elif tool_name in memory_tools:
+                if tool_name == "search_memory":
+                    result = self.memory_search(arguments)
+                elif tool_name == "remember_memory":
+                    result = self.memory_remember(arguments)
+                elif tool_name == "forget_memory":
+                    result = self.memory_forget(arguments)
+                elif tool_name == "validate_write_intent":
+                    result = self.validate_write_intent(arguments)
+                elif tool_name == "get_vault_constitution":
+                    result = self.workspace_policy("constitution")
+                elif tool_name == "get_note_type_policy":
+                    result = self.workspace_policy("note_types")
+                elif tool_name == "get_writing_policy":
+                    result = self.workspace_policy("writing")
+                elif tool_name == "get_linking_policy":
+                    result = self.workspace_policy("linking")
+                else:
+                    raise ValueError(f"unknown_memory_tool:{tool_name}")
             else:
                 result = self.tools.call(
                     tool_name,

@@ -114,6 +114,19 @@ export type PiForkProjection = {
   schemaVersion: number;
 };
 
+export type PiMemoryEntry = {
+  id: string;
+  key: string;
+  value: Record<string, unknown>;
+};
+
+export type PiMemoryContext = {
+  activeGoals: PiMemoryEntry[];
+  explicitPreferences: PiMemoryEntry[];
+  relevantKnowledgeStates: PiMemoryEntry[];
+  projectDecisions: PiMemoryEntry[];
+};
+
 export type PiRuntimeTool = AgentTool<any, Record<string, unknown>>;
 export type PiCoreEvent = AgentEvent;
 
@@ -141,6 +154,10 @@ export interface PiRuntimeTransport {
   cancelRuntimeRun(runId: string): Promise<Record<string, unknown>>;
   toolContracts(): Promise<{schemaVersion: number; items: PiToolContract[]}>;
   callRuntimeTool(body: unknown): Promise<Record<string, unknown>>;
+  /** Long-term memory context for the current turn (≤8 items, ≤800 tokens). */
+  memoryContext?(
+    body: {query: string; memoryTypes?: string[]; maxItems?: number; maxTokens?: number},
+  ): Promise<{ok: boolean; context: PiMemoryContext}>;
   /**
    * Persist a tool call that is blocked awaiting a permission decision so that a
    * plugin restart can rebuild the same confirmation card and continue the run.

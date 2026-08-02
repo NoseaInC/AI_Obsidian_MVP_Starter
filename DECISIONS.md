@@ -281,3 +281,32 @@ Before the model issues any write plan, the Task Authorization's `resourceScope.
 - Authorized reversible draft work does not ask for repeated confirmation.
   `reviewed`, `core`, protected paths and policy failures remain non-bypassable
   and can produce only update suggestions or explicit denials.
+
+## D-058 — Workspace Policy is Vault rules, delivered as profile + on-demand tools
+
+- Directory semantics and writing rules live in `00-System/AI/*.md`
+  (user-editable), not in code or in `memory_items`.
+- Pi receives a ~800-token resident Workspace Profile every turn plus
+  on-demand read tools (`get_writing_policy`, `get_note_type_policy`, …).
+- All ordinary knowledge writes must produce a typed WriteIntent validated by
+  `agent/core/workspace_policy/` before entering the transaction path.
+
+## D-059 — Long-term memory is `memory_items`; evidence is reference-only
+
+- `memory_items` is the single authority for user goals, preferences,
+  knowledge state and project decisions. `memory_evidence` stores only
+  references (message/learning_event/quiz/feedback/action ids) — never prose.
+- Explicit memory requires an explicit-user-intent match; implicit candidates
+  promote only with ≥3 evidence, ≥2 distinct days, confidence ≥0.75.
+- Conflicts supersede (new active, old superseded) instead of overwriting in
+  place. `claimed` never auto-upgrades to `verified`.
+- `conversation_knowledge_signals` stays read-only and is not a second
+  authority.
+
+## D-060 — Review units are semantic, not directory-based
+
+- `scan_reviewed` requires `review_unit != false AND status ∈ {reviewed, core}`.
+  `course-chapter` notes are `review_unit: false` by definition and never enter
+  Today review; only topic/concept may be review units.
+- Directories remain safe boundaries but are no longer the sole learning
+  semantic. Legacy notes without `review_unit` default to `true`.

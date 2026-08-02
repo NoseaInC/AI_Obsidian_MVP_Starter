@@ -257,6 +257,9 @@ export class AgentClient {
   async searchConversations(query: string, limit = 30): Promise<any> {
     return this.get(`/conversations/search?q=${encodeURIComponent(query)}&limit=${limit}`);
   }
+  async memoryContext(body: {query: string; memoryTypes?: string[]; maxItems?: number; maxTokens?: number}): Promise<any> {
+    return this.post("/memory/context", body);
+  }
   async agentAction(actionId: string): Promise<any> {
     return this.get(`/actions/${encodeURIComponent(actionId)}`);
   }

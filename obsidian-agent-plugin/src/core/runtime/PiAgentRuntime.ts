@@ -15,6 +15,7 @@ import {projectPiSessionMessages} from "./pi/PiSessionProjector";
 import {createPiTools} from "./pi/PiToolAdapter";
 import {createTurnIdentity} from "./pi/TaskAuthorization";
 import type {
+  PiMemoryContext,
   PiPendingToolCallRecord,
   PiPermissionDecision,
   PiPermissionRequest,
@@ -139,6 +140,7 @@ function promptWithContext(
   request: AgentTurnRequest,
   identity: PiRunIdentity,
   inherited?: PiConversation["inheritedContext"],
+  memoryContext?: PiMemoryContext | null,
 ): string {
   const context = {
     conversationId: identity.conversationId,
@@ -162,7 +164,15 @@ function promptWithContext(
       completedActionIds: inherited.completedActionIds,
     } : null,
   };
-  return `${request.message}\n\n<zhixu_turn_context>\n${JSON.stringify(context)}\n</zhixu_turn_context>`;
+  const hasMemory = memoryContext
+    && (memoryContext.activeGoals?.length
+      || memoryContext.explicitPreferences?.length
+      || memoryContext.relevantKnowledgeStates?.length
+      || memoryContext.projectDecisions?.length);
+  const memoryBlock = hasMemory
+    ? `\n\n<zhixu_memory_context>\n${JSON.stringify(memoryContext)}\n</zhixu_memory_context>`
+    : "";
+  return `${request.message}\n\n<zhixu_turn_context>\n${JSON.stringify(context)}\n</zhixu_turn_context>${memoryBlock}`;
 }
 
 /** Production Agent runtime. Pi owns planning and the tool loop; Python is an I/O boundary only. */
@@ -184,6 +194,29 @@ export class PiAgentRuntime implements AgentRuntime {
   prepareTurn(request: AgentTurnRequest): PreparedAgentTurn {
     const identity = createTurnIdentity(request);
     return {request, payload: {identity} satisfies PiPreparedPayload};
+  }
+
+  /**
+   * Resolve long-term memory context for the current turn. Best-effort: failures
+   * degrade to an empty context and never block the turn. Fork re-resolves memory
+   * (new request text); Regenerate snapshots are handled at the caller layer.
+   */
+  private async resolveMemoryContext(
+    turn: PreparedAgentTurn,
+    signal?: AbortSignal,
+  ): Promise<PiMemoryContext | null> {
+    if (!this.transport.memoryContext) return null;
+    try {
+      const response = await this.transport.memoryContext({
+        query: turn.request.message,
+        maxItems: 8,
+        maxTokens: 800,
+      });
+      if (!response?.ok) return null;
+      return response.context ?? null;
+    } catch {
+      return null; // memory is auxiliary; never fail the turn on it
+    }
   }
 
   async *query(turn: PreparedAgentTurn, signal?: AbortSignal): AsyncGenerator<AgentChunk> {
@@ -556,8 +589,9 @@ export class PiAgentRuntime implements AgentRuntime {
         focus: session.inheritedContext?.focus ?? {},
         completedActionIds: session.inheritedContext?.completedActionIds ?? [],
       };
+      const memoryContext = await this.resolveMemoryContext(turn, signal);
       running = session.agent
-        .prompt(promptWithContext(turn.request, identity, session.inheritedContext))
+        .prompt(promptWithContext(turn.request, identity, session.inheritedContext, memoryContext))
       .then(async () => {
           if (session.suspended) return;
           if (cancelled || signal?.aborted) await emit(adapter.cancelled());

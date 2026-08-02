@@ -792,6 +792,7 @@ class StateStore:
         self._migrate_agent_runtime_v3()
         self._migrate_pi_runtime()
         self._migrate_dashboard()
+        self._migrate_memory()
         self._record_schema_version()
         self.connection.commit()
 
@@ -855,6 +856,10 @@ class StateStore:
                 self.connection.execute(
                     f"ALTER TABLE pi_agent_runs ADD COLUMN {name} TEXT"
                 )
+        if "memory_snapshot_json" not in run_columns:
+            self.connection.execute(
+                "ALTER TABLE pi_agent_runs ADD COLUMN memory_snapshot_json TEXT"
+            )
         runs = self.connection.execute(
             "SELECT run_id FROM pi_agent_runs WHERE current_leaf_id IS NULL"
         ).fetchall()
@@ -967,6 +972,50 @@ class StateStore:
                 computed_at TEXT NOT NULL,
                 schema_version INTEGER NOT NULL DEFAULT 1
             )"""
+        )
+        self.connection.commit()
+
+    def _migrate_memory(self) -> None:
+        self.connection.execute(
+            """CREATE TABLE IF NOT EXISTS memory_items (
+                id              TEXT PRIMARY KEY,
+                memory_type     TEXT NOT NULL,
+                scope_type      TEXT NOT NULL,
+                scope_id        TEXT,
+                memory_key      TEXT NOT NULL,
+                value_json      TEXT NOT NULL,
+                source_type     TEXT NOT NULL,
+                evidence_level  TEXT NOT NULL,
+                confidence      REAL NOT NULL,
+                status          TEXT NOT NULL,
+                created_at      TEXT NOT NULL,
+                updated_at      TEXT NOT NULL,
+                expires_at      TEXT,
+                supersedes_id   TEXT
+            )"""
+        )
+        self.connection.execute(
+            """CREATE INDEX IF NOT EXISTS idx_memory_active
+               ON memory_items(memory_type, scope_type, scope_id, status)"""
+        )
+        self.connection.execute(
+            """CREATE INDEX IF NOT EXISTS idx_memory_key
+               ON memory_items(memory_key, status)"""
+        )
+        self.connection.execute(
+            """CREATE TABLE IF NOT EXISTS memory_evidence (
+                id              TEXT PRIMARY KEY,
+                memory_id       TEXT NOT NULL,
+                evidence_type   TEXT NOT NULL,
+                evidence_id     TEXT NOT NULL,
+                weight          REAL NOT NULL,
+                created_at      TEXT NOT NULL,
+                FOREIGN KEY(memory_id) REFERENCES memory_items(id) ON DELETE CASCADE
+            )"""
+        )
+        self.connection.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_evidence_unique
+               ON memory_evidence(memory_id, evidence_type, evidence_id)"""
         )
         self.connection.commit()
 

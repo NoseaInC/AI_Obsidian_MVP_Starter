@@ -35,6 +35,11 @@ def scan_reviewed(vault: Path) -> list[KnowledgeItem]:
         for path in folder.glob("*.md"):
             meta = ingest_pdf.parse_frontmatter(path.read_text(encoding="utf-8", errors="replace"))
             if str(meta.get("status", "")) not in ingest_pdf.READ_ONLY_STATUSES: continue
+            # 复习单元判定：review_unit=true AND status∈{reviewed,core}
+            # 兼容：旧笔记无 review_unit 字段 → 默认视为 true（不破坏现有调度）
+            review_unit = str(meta.get("review_unit", "true")).strip().lower()
+            if review_unit in {"false", "no", "0", "off"}:
+                continue
             weak = meta.get("weak_points", []); weak = weak if isinstance(weak, list) else ([str(weak)] if weak else [])
             try: mastery = int(meta.get("mastery", 0)); importance = int(meta.get("importance", 3))
             except (TypeError, ValueError): mastery, importance = 0, 3

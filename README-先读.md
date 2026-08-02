@@ -134,6 +134,22 @@ export DEEPSEEK_API_KEY="你的密钥"
 
 如果使用 Obsidian Sync，请在首次同步前把 `90-Local-Only` 加入 Excluded folders。
 
+## 六·五、知识目录语义（Workspace Policy）
+
+Agent 的写入规则由 `00-System/AI/` 下四份文档定义（`VAULT_CONSTITUTION`、
+`NOTE_TYPES`、`WRITING_POLICY`、`LINKING_POLICY`）。核心约定：
+
+- 笔记类型决定目录：`source→10-Sources`；`course/course-chapter→
+  20-Knowledge/Courses`；`topic→Topics`；`concept→Concepts`；
+  `project/project-note→40-Projects`；`learning-log→30-Learning`。
+- 先检索再新建：已有同一知识主体优先更新，不默认创建重复笔记。
+- 课程章节 `review_unit: false`，不进入今日复习；只有 Topic/Concept
+  是可复习单元（`review_unit=true` 且 `status∈{reviewed,core}`）。
+- 项目专属内容写入 `40-Projects`，不自动成为通用知识。
+- `reviewed/core` 笔记默认只读；Agent 只能生成更新建议。
+- Agent 具备跨会话长期记忆（目标、偏好、知识状态、项目决策），
+  通过「记住…/以后请…」等明确表达写入，可随时在对话中要求删除。
+
 ## 七、每日流程
 
 打开：

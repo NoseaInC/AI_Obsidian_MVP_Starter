@@ -205,6 +205,9 @@ class Handler(BaseHTTPRequestHandler):
             elif path.startswith("/materials/"): payload = {"material": self.service.get_material(self._identifier(path.removeprefix("/materials/")))}
             elif path == "/runtime/capabilities": payload = self.service.brain_capabilities()
             elif path == "/runtime/diagnostics": payload = self.service.brain_diagnostics()
+            elif path.startswith("/workspace/policy/"):
+                policy_name = self._identifier(path.removeprefix("/workspace/policy/"))
+                payload = self.service.workspace_policy(policy_name)
             elif path == "/research-bundles": payload = self.service.list_research_bundles(int(query.get("limit", [50])[0]), int(query.get("offset", [0])[0]))
             elif path == "/web/sources": payload = {"sources": self.service.store.list_web_sources(int(query.get("limit", [100])[0]))}
             elif path == "/web/capabilities": payload = self.service.web_capabilities()
@@ -282,6 +285,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, self.service.cancel_pi_run(run_id)); return
             if path == "/tools/call":
                 self._send(200, self.service.call_runtime_tool(body)); return
+            if path == "/memory/context":
+                self._send(200, self.service.memory_context(body)); return
+            if path == "/memory/search":
+                self._send(200, self.service.memory_search(body)); return
+            if path == "/memory/remember":
+                self._send(200, self.service.memory_remember(body)); return
+            if path == "/memory/forget":
+                self._send(200, self.service.memory_forget(body)); return
+            if path == "/memory/list":
+                self._send(200, self.service.memory_list(body)); return
+            if path == "/write-intent/validate":
+                self._send(200, self.service.validate_write_intent(body)); return
+            if path == "/workspace/profile":
+                self._send(200, self.service.workspace_profile()); return
             if path.startswith("/agent/runs/") and path.endswith("/pending-tool-calls/resolve"):
                 run_id = self._identifier(
                     path.removeprefix("/agent/runs/").removesuffix("/pending-tool-calls/resolve")

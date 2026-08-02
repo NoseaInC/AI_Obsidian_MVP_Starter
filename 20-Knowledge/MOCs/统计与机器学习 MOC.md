@@ -1,6 +1,6 @@
 ---
 type: moc
-status: ai-draft
+status: core
 domain: 统计与机器学习
 created:
 updated: 2026-08-02
