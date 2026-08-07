@@ -125,6 +125,12 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/reviews": payload = {"artifacts": self.service.list_reviews()}
             elif path == "/learning/today": payload = self.service.today_learning()
             elif path == "/learning/profile": payload = {"profile": self.service.learner_profile()}
+            elif path == "/learner/state": payload = self.service.learner_state()
+            elif path == "/learner/context": payload = self.service.learner_pi_context()
+            elif path == "/learner/rank-signals":
+                payload = self.service.learner_rank_signals(
+                    str(query.get("topic", [""])[0]), str(query.get("domain", [""])[0])
+                )
             elif path == "/learning/events": payload = {"items": self.service.store.list_learning_events(int(query.get("limit", [200])[0]), str(query.get("since", [""])[0])), "schemaVersion": 1}
             elif path == "/plans/current": payload = self.service.current_plan()
             elif path == "/model-profiles": payload = {"profiles": self.service.list_model_profiles()}

@@ -17,6 +17,10 @@ export interface Recommendation {
   behaviorBasis?: string[]; learningOutcomes?: string[]; verification?: Record<string, unknown>;
   gapScore?: number; behaviorScore?: number; difficultyScore?: number; dailyScore?: number;
   conversationScore?: number;
+  /** Deterministic ranking explanation — factors with scores and real reasons. */
+  topFactors?: Array<{factor: string; score: number; reason: string}>;
+  /** Backend-computed learner signals (goal_alignment / knowledge_gap / … 0..1). */
+  learnerSignals?: Record<string, number>;
   direction?: boolean;
   horizon?: "near" | "route" | "exploration";
   priority?: "高优先级" | "中优先级" | "探索性";

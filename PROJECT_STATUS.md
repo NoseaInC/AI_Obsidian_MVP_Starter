@@ -2,6 +2,45 @@
 
 Last updated: 2026-08-02
 
+## Current phase — Unified Learner State V1
+
+Branch: `workspace-memory-v1`.
+
+Implemented:
+
+- `agent/core/learner_state/` (models/builder/features): rebuildable
+  LearnerState projection over memory_items, learning_events, quiz/mastery,
+  feedback. Four unified signals: goal_alignment / knowledge_gap /
+  behavior_fit / interest.
+- Confidence shrinkage: `effective = neutral + (raw-neutral)*confidence*maturity`
+  with `maturity = sqrt(min(1,e/40)*min(1,d/14))`. Explicit signals bypass
+  shrinkage; negative feedback treated as explicit.
+- Knowledge gap: deterministic rules over mastery, quiz correctness,
+  hint usage, abandonment, memory knowledge_state, prerequisite gap.
+- Goal alignment: explicit > inferred, topic direct > domain coarse, with
+  Chinese-friendly overlap matching.
+- Ranking (daily-intelligence.ts): weights
+  `due .18 / route .17 / gap .18 / goal .12 / behavior .12 / prerequisite .10 /
+  timeFit .06 / interest .04 / novelty .03`; `conversation` removed;
+  `behaviorWeight()` dead code deleted; `topFactors` deterministic
+  explanations added.
+- Python fills `learnerSignals` + `gapScore`/`behaviorScore` per
+  recommendation; `learner_profile` now emits `domain_interest`.
+- Pi context: `/memory/context` merges compact learner signals
+  (top knowledge gaps, behavior pattern) into `<zhixu_memory_context>`.
+- Memory candidates: `run_behavior_memory_extraction` (conservative,
+  candidate-only) from repeated quiz failure + hints and cross-day completion.
+- WriteIntent contract enforcement at service layer: `plan_vault_change`
+  rejects invalid intents; targets without intent must be under recognized
+  roots.
+- Endpoints: `GET /learner/state`, `/learner/context`, `/learner/rank-signals`.
+- Evals: `evals/learner_personalization/` (memory ablation, ranking ablation,
+  confidence/maturity) — 8/8 checks pass.
+- Tests: `test_learner_state.py` (16) — journey E2E included. Full gates:
+  292 Python + 195 plugin + typecheck + build pass.
+
+Full design: `docs/architecture/LEARNER_STATE_V1.md`.
+
 ## Current phase — Workspace Policy + Long-term Memory V1
 
 Branch: `workspace-memory-v1` (based on `9f3c071`).

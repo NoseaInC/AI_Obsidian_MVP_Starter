@@ -34,12 +34,12 @@ test("daily ranking is deterministic, due-first and enforces weekday knowledge q
   assert.equal(mod.categoryOf(candidates[3]), "explore");
 });
 
-test("cold start behavior weight and explicit preference priority stay bounded", async () => {
+test("cold start behavior maturity and explicit preference priority stay bounded", async () => {
   const mod = await moduleUnderTest();
-  assert.equal(mod.behaviorWeight(0, 0), 0);
-  assert.ok(mod.behaviorWeight(19, 2) <= .05);
-  assert.ok(mod.behaviorWeight(80, 3) <= .10);
-  assert.equal(mod.behaviorWeight(101, 7), .15);
+  assert.equal(mod.behaviorMaturity(0, 0), 0);
+  assert.ok(mod.behaviorMaturity(19, 2) < 0.5);
+  assert.ok(mod.behaviorMaturity(80, 3) < 0.7);
+  assert.ok(mod.behaviorMaturity(101, 7) > 0.7);
   const profile = {schemaVersion: 1, eventCount: 50, coveredDays: 3, behaviorWeight: .08, features: [
     {key: "domain_interest", scope: "因果推断", value: 0, confidence: .8, evidenceCount: 50, windowStart: "2026-07-01", windowEnd: "2026-07-14", updatedAt: "2026-07-14", source: "inferred"},
     {key: "domain_interest", scope: "因果推断", value: 100, confidence: 1, evidenceCount: 1, windowStart: "2026-07-14", windowEnd: "2026-07-14", updatedAt: "2026-07-14", source: "explicit"},
@@ -48,13 +48,14 @@ test("cold start behavior weight and explicit preference priority stay bounded",
   assert.ok(score > 50);
 });
 
-test("conversation evidence has a fixed twelve-percent contribution and Today plan owns visible order", async () => {
+test("goal alignment contributes a fixed twelve-percent and Today plan owns visible order", async () => {
   const mod = await moduleUnderTest();
-  const profile = {schemaVersion: 1, eventCount: 0, coveredDays: 0, behaviorWeight: 0, features: []};
+  const profile = {schemaVersion: 1, eventCount: 0, coveredDays: 0, behaviorWeight: 0, features: [], explicitGoals: ["数据分析秋招统计复习"]};
   const context = {date: "2026-07-14", budgetMinutes: 25, learnerProfile: profile};
-  const low = mod.scoreRecommendation({...base, id: "low", title: "低对话证据", kind: "learn", conversationScore: 0}, context);
-  const high = mod.scoreRecommendation({...base, id: "high", title: "高对话证据", kind: "learn", conversationScore: 100}, context);
-  assert.equal(high - low, 12);
+  const low = mod.scoreRecommendationDetailed({...base, id: "low", title: "无关内容", kind: "learn", learnerSignals: {goal_alignment: 0}}, context);
+  const high = mod.scoreRecommendationDetailed({...base, id: "high", title: "统计复习相关", kind: "learn", learnerSignals: {goal_alignment: 1}}, context);
+  assert.equal(Math.round(high.score - low.score), 12);
+  assert.ok(high.topFactors.some(f => f.factor === "goal_alignment"));
   const engine = new mod.LocalDailyIntelligenceEngine({get: async () => ({profile}), post: async () => ({})}, false);
   const dashboard = await engine.getDashboard({dashboard: {
     date: "2026-07-14", recommendations: [

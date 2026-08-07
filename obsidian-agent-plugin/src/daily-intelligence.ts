@@ -64,6 +64,8 @@ export interface LearnerProfile {
   behaviorWeight: number;
   features: LearnerFeature[];
   explicitPreferences?: Record<string, unknown>;
+  /** Active long-term goals (titles) — injected by the backend from memory. */
+  explicitGoals?: string[];
   lastRebuiltAt?: string;
 }
 
@@ -123,12 +125,6 @@ export function categoryOf(item: Recommendation): DailyCategory {
   return "learn";
 }
 
-export function behaviorWeight(eventCount: number, coveredDays: number): number {
-  if (eventCount < 20) return Math.min(.05, eventCount / 400);
-  if (eventCount <= 100 || coveredDays < 7) return Math.min(.10, .05 + (eventCount - 20) / 1600);
-  return .15;
-}
-
 function featureNumber(profile: LearnerProfile, key: string, scope = "global"): number | undefined {
   const inferred = profile.features.find(item => item.key === key && item.scope === scope && item.source === "inferred");
   const explicit = profile.features.find(item => item.key === key && item.scope === scope && item.source === "explicit");
@@ -136,13 +132,65 @@ function featureNumber(profile: LearnerProfile, key: string, scope = "global"): 
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+export interface RankingFactor {
+  factor: string;
+  score: number;   // 0..100
+  reason: string;
+}
+
+export interface ScoreDetail {
+  score: number;
+  topFactors: RankingFactor[];
+}
+
+/**
+ * Confidence-shrunk personalization feature.
+ * raw is 0..1; explicit preferences bypass shrinkage (confidence=1, maturity=1).
+ */
+export function shrinkFeature(raw: number, confidence: number, maturity: number): number {
+  const neutral = 0.5;
+  return neutral + (raw - neutral) * confidence * maturity;
+}
+
+export function behaviorMaturity(eventCount: number, coveredDays: number): number {
+  const countFactor = Math.min(1, eventCount / 40);
+  const dayFactor = Math.min(1, coveredDays / 14);
+  return Math.sqrt(countFactor * dayFactor);
+}
+
+/**
+ * goal_alignment from explicit memory goals. Topic direct > domain coarse.
+ * item.learnerSignals (when provided by the backend) wins; local fallback is neutral.
+ */
+function goalAlignment(item: Recommendation, context: DailyRankingContext): {score: number; reason: string} {
+  const signals = (item as any).learnerSignals;
+  if (signals && typeof signals.goal_alignment === "number") {
+    return {score: Math.round(signals.goal_alignment * 100), reason: "基于当前长期目标匹配"};
+  }
+  const goals = context.learnerProfile.explicitGoals ?? [];
+  if (!goals.length) return {score: 50, reason: "暂无长期目标"};
+  const topic = (item.title || "").toLowerCase();
+  const domain = (item.domain || "").toLowerCase();
+  let best = 0;
+  for (const goal of goals) {
+    const title = String(goal).toLowerCase();
+    if (topic && (topic.includes(title) || title.includes(topic))) best = Math.max(best, 100);
+    else if (domain && (domain.includes(title) || title.includes(domain))) best = Math.max(best, 60);
+  }
+  return {score: best || 50, reason: best ? "与长期目标相关" : "未匹配到长期目标"};
+}
+
 export function scoreRecommendation(item: Recommendation, context: DailyRankingContext): number {
+  return scoreRecommendationDetailed(item, context).score;
+}
+
+export function scoreRecommendationDetailed(item: Recommendation, context: DailyRankingContext): ScoreDetail {
   const due = item.kind === "review" ? (item.dueState === "overdue" ? 100 : 82) : 15;
   const route = item.route === "mainline" ? 100 : 55;
   const gap = item.gapScore ?? (item.candidate ? 88 : item.mastery === undefined ? 50 : Math.max(10, 100 - item.mastery * 22));
   const domainCompletion = featureNumber(context.learnerProfile, "topic_completion_rate", item.domain);
   const behavior = item.behaviorScore ?? (domainCompletion === undefined ? 50 : Math.max(0, 100 - domainCompletion * 100));
-  const conversation = item.conversationScore ?? 50;
+  const goal = goalAlignment(item, context);
   const prerequisite = item.prerequisites.length === 0 ? 85 : item.mastery !== undefined && item.mastery >= 2 ? 90 : 70;
   const timeFit = item.estimatedMinutes <= context.budgetMinutes ? 100 : Math.max(15, context.budgetMinutes / Math.max(1, item.estimatedMinutes) * 100);
   const interest = item.favorite ? 100 : featureNumber(context.learnerProfile, "domain_interest", item.domain) ?? 55;
@@ -153,17 +201,28 @@ export function scoreRecommendation(item: Recommendation, context: DailyRankingC
     due: .18,
     route: .17,
     gap: .18,
-    conversation: .12,
+    goal: .12,
     behavior: .12,
     prerequisite: .10,
     timeFit: .06,
     interest: .04,
     novelty: .03,
   };
-  return Math.round((
-    due * weights.due + route * weights.route + gap * weights.gap + conversation * weights.conversation + behavior * weights.behavior +
+  const score = Math.round((
+    due * weights.due + route * weights.route + gap * weights.gap + goal.score * weights.goal + behavior * weights.behavior +
     prerequisite * weights.prerequisite + timeFit * weights.timeFit + interest * weights.interest + novelty * weights.novelty
   ) * 100) / 100;
+  const topFactors: RankingFactor[] = [
+    {factor: "due", score: due, reason: item.kind === "review" ? (item.dueState === "overdue" ? "已逾期，优先复习" : "已到复习时间") : "非复习项"},
+    {factor: "knowledge_gap", score: gap, reason: item.gapScore !== undefined ? "基于掌握度与近期测验计算的知识缺口" : item.mastery === undefined ? "新知识，缺口未知" : `掌握度 ${item.mastery}/4`},
+    {factor: "goal_alignment", score: goal.score, reason: goal.reason},
+    {factor: "behavior_fit", score: behavior, reason: domainCompletion !== undefined ? `该领域历史完成率 ${Math.round(domainCompletion * 100)}%` : "行为数据不足，取中性"},
+    {factor: "time_fit", score: timeFit, reason: item.estimatedMinutes <= context.budgetMinutes ? `${item.estimatedMinutes} 分钟在预算内` : `超出今日预算 ${context.budgetMinutes} 分钟`},
+  ]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3)
+    .map(f => ({...f, score: Math.round(f.score)}));
+  return {score, topFactors};
 }
 
 export function rankDailyRecommendations(candidates: Recommendation[], context: DailyRankingContext, sort: DailySort = "recommendation"): Recommendation[] {
@@ -171,7 +230,10 @@ export function rankDailyRecommendations(candidates: Recommendation[], context: 
   const weekend = today.getDay() === 0 || today.getDay() === 6;
   const dailyQuota = Math.max(0, Math.min(weekend ? 2 : 1, context.dailyKnowledgeQuota ?? (weekend ? 2 : 1)));
   const exploreQuota = weekend ? 2 : 1;
-  const enriched = candidates.map(item => ({...item, dailyScore: scoreRecommendation(item, context)}));
+  const enriched = candidates.map(item => {
+    const detail = scoreRecommendationDetailed(item, context);
+    return {...item, dailyScore: detail.score, topFactors: detail.topFactors};
+  });
   enriched.sort((a, b) => {
     if (sort === "due") return Number(b.dueState === "overdue") - Number(a.dueState === "overdue") || b.dailyScore! - a.dailyScore!;
     if (sort === "mainline") return Number(b.route === "mainline") - Number(a.route === "mainline") || b.dailyScore! - a.dailyScore!;

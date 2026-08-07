@@ -310,3 +310,33 @@ Before the model issues any write plan, the Task Authorization's `resourceScope.
   Today review; only topic/concept may be review units.
 - Directories remain safe boundaries but are no longer the sole learning
   semantic. Legacy notes without `review_unit` default to `true`.
+
+## D-061 — Learner State is a derived projection, not a new authority
+
+- `agent/core/learner_state/` derives a rebuildable LearnerState from raw
+  evidence: `memory_items`, `learning_events`, quiz/mastery, feedback.
+- No new persistent user-profile table. `learner_features` remains a
+  rebuildable cache only.
+- Four unified ranking signals (goal_alignment / knowledge_gap /
+  behavior_fit / interest) are computed once and consumed by both Pi context
+  and the Today Ranking.
+
+## D-062 — Inferred features are confidence-shrunk; explicit signals are not
+
+- `effective = neutral + (raw - neutral) * confidence * maturity`, with
+  `maturity = sqrt(min(1, evidence/40) * min(1, days/14))`.
+- Explicit user preferences bypass shrinkage (confidence=1, maturity=1).
+- Negative feedback is treated as an explicit signal and is not shrunk.
+- Legacy TS `behaviorWeight()` dead code was removed; the Python
+  `learner_state.features` module is the single maturity authority.
+
+## D-063 — Ranking explanations come from real factors
+
+- `scoreRecommendationDetailed` returns `topFactors` (factor / score / real
+  reason) for every candidate. LLM may rephrase but never invent reasons.
+- `conversation` is removed as a standalone ranking feature; it is replaced by
+  `goal_alignment` (weight 0.12). Conversation relevance may feed goal
+  evidence in future, not a fuzzy long-term ranking input.
+- WriteIntent validation is enforced at the service layer: `plan_vault_change`
+  rejects invalid intents, and write targets without an intent still must
+  live under a recognized note-type root.

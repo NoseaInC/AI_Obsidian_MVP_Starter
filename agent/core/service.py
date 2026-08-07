@@ -39,6 +39,7 @@ from agent.tools.change_set import ChangeSetTools
 from agent.core.explicit_workflow_service import ExplicitWorkflowService
 from agent.core.dashboard import DashboardAggregator, TZ, _today, _date_str, _now_iso
 from agent.core.memory import MemoryService, extract_candidates
+from agent.core.learner_state import LearnerStateBuilder
 from agent.core.workspace_policy import WorkspacePolicyLoader, validate_intent
 from agent.materials import PreparedPdfService
 from agent.tools.vault_access import read_model_visible_note, safe_read_note
@@ -75,6 +76,7 @@ class AgentService:
         self.materials = PreparedPdfService(self.vault)
         self.memory = MemoryService(self.store)
         self.workspace = WorkspacePolicyLoader(self.vault)
+        self.learner = LearnerStateBuilder(self.store, self.memory)
         self.store.recover_interrupted()
         self.log_path = self.vault / "90-Local-Only/Agent/logs/events.jsonl"
         self.sync_indexes()
@@ -915,6 +917,14 @@ class AgentService:
             starts = sum(item["event_type"] == "study_session_started" for item in relevant)
             completed = sum(item["event_type"] == "study_session_completed" for item in relevant)
             feature_rows.append(("topic_completion_rate", domain, completed / max(1, starts), max(1, starts)))
+            # domain_interest: repeated active study + clicks > single exposure
+            active = sum(item["event_type"] in {"study_session_started", "recommendation_started"} for item in relevant)
+            clicks = sum(item["event_type"] == "recommendation_clicked" for item in relevant)
+            exposures = sum(item["event_type"] == "recommendation_exposed" for item in relevant)
+            negative = sum(item["event_type"] in {"recommendation_feedback", "recommendation_dismissed"} for item in relevant)
+            if active or clicks or exposures or negative:
+                interest = min(1.0, 0.5 + 0.08 * active + 0.05 * clicks - 0.15 * negative)
+                feature_rows.append(("domain_interest", domain, max(0.0, interest), max(1, active + clicks + negative)))
         window_start = dates[0] if dates else now[:10]
         features = [{
             "key": key, "scope": scope, "value": round(value, 4),
@@ -923,6 +933,21 @@ class AgentService:
         } for key, scope, value, evidence in feature_rows]
         if rebuild or events: self.store.replace_inferred_features(features)
         return {"schemaVersion": 1, "eventCount": count, "coveredDays": days, "behaviorWeight": round(weight, 4), "features": self.store.list_learner_features(), "lastRebuiltAt": now}
+
+    # ── Unified Learner State ─────────────────────────────
+
+    def learner_state(self) -> dict[str, Any]:
+        """Derived / rebuildable projection over memory + learning evidence."""
+        return {"ok": True, "learnerState": self.learner.build().to_dict()}
+
+    def learner_pi_context(self) -> dict[str, Any]:
+        """Bounded learner context for Pi (≤8 items, ≤800 tokens)."""
+        return {"ok": True, "learnerContext": self.learner.pi_learner_context()}
+
+    def learner_rank_signals(self, topic: str, domain: str) -> dict[str, Any]:
+        """Four unified ranking signals for one candidate (0..1 each)."""
+        state = self.learner.build()
+        return {"ok": True, "signals": state.signals_for_ranking(topic, domain)}
 
     def clear_learning_data(self, scope: str) -> dict[str, Any]:
         if scope not in {"recent-7-days", "all"}: raise ValueError("learning_data_scope_invalid")
@@ -961,6 +986,7 @@ class AgentService:
             "runtime": {"ranking": "typescript-domain-v1", "persistence": "python-sqlite-adapter-v1", "modelConfigured": bool(profile and profile.get("configured")), "provider": profile.get("displayName") if profile else None},
         }
     def list_recommendations(self) -> list[dict[str, Any]]:
+        learner_state = self.learner.build()
         items = recommendations.build(self.vault, self.store, self.list_prepared())
         generated_ids = {str(item["id"]) for item in items}
         for persisted in self.store.list_persisted_recommendations("active"):
@@ -1016,6 +1042,16 @@ class AgentService:
                 "isNewKnowledge": bool(direction.get("isNewKnowledge")), "sourceQuality": direction.get("sourceQuality"),
                 "conversationScore": min(100, float(direction.get("confidence", 0)) * 100),
             })
+        # 统一填充 Learner Signals（goal_alignment / knowledge_gap / behavior_fit / interest）
+        for item in items:
+            signals = learner_state.signals_for_ranking(
+                str(item.get("title") or ""), str(item.get("domain") or "")
+            )
+            item["learnerSignals"] = signals
+            if "gapScore" not in item and signals["knowledge_gap"] > 0:
+                item["gapScore"] = round(signals["knowledge_gap"] * 100, 2)
+            if "behaviorScore" not in item and signals["behavior_fit"] > 0:
+                item["behaviorScore"] = round(signals["behavior_fit"] * 100, 2)
         return sorted(items, key=lambda item: (-float(item.get("score", 0)), int(item.get("estimatedMinutes", 10)), str(item.get("title", ""))))
 
     def add_artifact_to_today(self, artifact_id: str) -> dict[str, Any]:
@@ -1745,6 +1781,25 @@ class AgentService:
             }
         return None
 
+    def _enforce_write_targets(self, writes: list[dict[str, Any]]) -> None:
+        """Minimal contract enforcement: every write target must live under a
+        recognized note-type directory (or a draft/inbox root). Without this,
+        the WriteIntent validator could be bypassed by simply omitting the
+        intent field from plan_vault_change."""
+        from agent.core.workspace_policy.models import NOTE_TYPE_DIRECTORY
+        allowed_roots = {
+            "01-Inbox",
+            "20-Knowledge/Drafts",
+            "00-System",
+            *(NOTE_TYPE_DIRECTORY.values()),
+        }
+        for write in writes:
+            target = str(write.get("path") or "").replace("\\", "/").lstrip("/")
+            if not target:
+                raise PermissionError("write_target_required")
+            if not any(target == root or target.startswith(root + "/") for root in allowed_roots):
+                raise PermissionError(f"write_target_outside_policy:{target}")
+
     def _auto_bind_and_plan(
         self,
         authorization_id: str,
@@ -2155,7 +2210,8 @@ class AgentService:
     # ── Long-term memory ──────────────────────────────────
 
     def memory_context(self, body: dict[str, Any]) -> dict[str, Any]:
-        """每轮 Pi Turn 前的记忆上下文：≤8 条 / ≤800 tokens，只返回 active 记忆。"""
+        """每轮 Pi Turn 前的记忆上下文：≤8 条 / ≤800 tokens，只返回 active 记忆。
+        合并 Unified Learner State 的紧凑信号（目标/缺口/行为模式）。"""
         query = str(body.get("query") or "")
         types = body.get("memoryTypes")
         limit = int(body.get("maxItems") or 8)
@@ -2166,6 +2222,27 @@ class AgentService:
             max_items=limit,
             max_tokens=tokens,
         )
+        # 追加紧凑 learner 信号（不重复目标——memory context 已有 activeGoals）
+        try:
+            learner_ctx = self.learner.pi_learner_context()
+            gap_items = learner_ctx.get("topKnowledgeGaps", [])
+            behavior = learner_ctx.get("recentBehaviorPattern", {})
+            if gap_items:
+                existing = context.get("relevantKnowledgeStates", [])
+                gap_entries = [
+                    {"id": f"gap:{g['topic']}", "key": f"知识缺口：{g['topic']}",
+                     "value": {"gapScore": g.get("gapScore"), "source": "learner_state"}}
+                    for g in gap_items
+                ]
+                context["relevantKnowledgeStates"] = existing + gap_entries
+            if behavior:
+                context["recentBehaviorPattern"] = {
+                    "maturity": behavior.get("maturity"),
+                    "completionRate": behavior.get("completionRate"),
+                    "preferredDurationMin": behavior.get("preferredDurationMin"),
+                }
+        except Exception:
+            pass  # learner state 是辅助信号，失败不影响主流程
         return {"ok": True, "context": context}
 
     def memory_search(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -2230,7 +2307,8 @@ class AgentService:
         return {"ok": True, "items": items}
 
     def run_memory_extraction(self, *, user_message: str, run_id: str = "") -> None:
-        """Pi Run 完成后受控候选提取：仅显式意图 → candidate，Policy 决定激活。"""
+        """Pi Run 完成后受控候选提取：显式意图 → candidate，Policy 决定激活。
+        V2 增加行为/学习派生 candidate（保守：只生成 candidate，绝不直接 active）。"""
         try:
             candidates = extract_candidates(user_message)
             for candidate in candidates:
@@ -2242,6 +2320,68 @@ class AgentService:
                 )
         except Exception:
             pass  # 宁可少记，不可错误记忆；提取失败不影响主流程
+
+    def run_behavior_memory_extraction(self) -> None:
+        """从学习行为生成保守的 memory candidate（不激活）。
+
+        - knowledge_state candidate: 同一 topic 多次 quiz 错误 + 连续 hint
+        - preference candidate: 多次日期反复完成的领域
+        单次行为不会产生长期记忆候选。
+        """
+        try:
+            events = self.store.list_learning_events(5000)
+            if len(events) < 3:
+                return
+            days = {str(e.get("created_at"))[:10] for e in events if e.get("created_at")}
+            # knowledge_state: topic-level quiz 失败
+            quiz_by_topic: dict[str, list[float]] = {}
+            hint_by_topic: dict[str, int] = {}
+            for event in events:
+                event_type = str(event.get("event_type") or "")
+                topic = str(event.get("topic") or "")
+                if not topic:
+                    continue
+                if event_type == "quiz_completed":
+                    payload = event.get("payload") or {}
+                    if isinstance(payload, str):
+                        try:
+                            import json
+                            payload = json.loads(payload)
+                        except Exception:
+                            payload = {}
+                    try:
+                        quiz_by_topic.setdefault(topic, []).append(float(payload.get("correctness", 0) or 0))
+                    except (TypeError, ValueError):
+                        pass
+                elif event_type == "hint_opened":
+                    hint_by_topic[topic] = hint_by_topic.get(topic, 0) + 1
+            for topic, scores in quiz_by_topic.items():
+                if len(scores) >= 2 and sum(scores) / len(scores) < 0.6 and hint_by_topic.get(topic, 0) >= 2 and len(days) >= 2:
+                    self.memory.create_candidate(
+                        "knowledge_state", f"{topic}存在知识缺口",
+                        {"level": "observed", "summary": f"多次测验正确率不足并频繁使用提示（{topic}）"},
+                        evidence=[("quiz", f"{topic}:quiz"), ("learning_event", f"{topic}:hint")],
+                    )
+            # preference: 跨日反复完成的领域（>=3 完成且 >=2 天）
+            completed_by_domain: dict[str, int] = {}
+            day_by_domain: dict[str, set[str]] = {}
+            for event in events:
+                if str(event.get("event_type") or "") != "study_session_completed":
+                    continue
+                domain = str(event.get("domain") or "")
+                if not domain:
+                    continue
+                completed_by_domain[domain] = completed_by_domain.get(domain, 0) + 1
+                day_by_domain.setdefault(domain, set()).add(str(event.get("created_at"))[:10])
+            for domain, count in completed_by_domain.items():
+                if count >= 3 and len(day_by_domain.get(domain, set())) >= 2:
+                    self.memory.create_candidate(
+                        "preference", f"偏好持续学习{domain}",
+                        {"summary": f"多个日期反复完成{domain}内容的学习"},
+                        evidence=[("learning_event", f"{domain}:completed")],
+                    )
+        except Exception:
+            pass  # 保守失败：不影响主流程
 
     # ── Workspace policy ──────────────────────────────────
 
@@ -2314,11 +2454,27 @@ class AgentService:
         try:
             authorization_id = str(body.get("taskAuthorizationId") or "")
             if tool_name == "plan_vault_change":
+                # WriteIntent contract enforcement: if the model supplies an
+                # intent, it MUST pass policy validation. Without an intent,
+                # every write target is still checked against note-type
+                # directory mapping so the validator cannot be bypassed.
+                raw_writes = list(arguments.get("writes") or [])
+                intent = arguments.get("writeIntent")
+                if intent is not None:
+                    validation = validate_intent(self.vault, intent, authorization_paths=None)
+                    if not validation["ok"]:
+                        raise PermissionError(
+                            "write_intent_rejected:" + ";".join(
+                                issue["code"] for issue in validation["issues"] if issue["severity"] == "error"
+                            )
+                        )
+                else:
+                    self._enforce_write_targets(raw_writes)
                 result = self.brain_change_sets.create({
                     "run_id": run_id,
                     "task_authorization_id": authorization_id,
                     "title": str(arguments.get("title") or "Agent 写入计划"),
-                    "writes": list(arguments.get("writes") or []),
+                    "writes": raw_writes,
                 })
                 _, bundle = self.brain_change_sets.prepared(str(result["id"]))
                 try:
