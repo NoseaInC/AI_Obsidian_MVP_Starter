@@ -141,33 +141,9 @@ Prepared Bundle
 
 ## 架构
 
-```mermaid
-flowchart TB
-    subgraph Plugin["Obsidian Plugin (TypeScript)"]
-        UI["今日 · 计划 · 看板 · 助手"]
-        Pi["Pi Agent Core + Pi AI<br/>唯一 Agent Loop<br/>Model ↔ Tool ↔ Observation"]
-    end
-
-    subgraph Runtime["Python Secure Runtime"]
-        Proxy["Model Proxy<br/>Keychain · Redaction"]
-        Policy["Workspace Policy<br/>WriteIntent 校验"]
-        Memory["Memory Service<br/>目标/偏好/知识状态/项目决策"]
-        Tools["受控工具执行<br/>检索 · 事务 · 持久化"]
-    end
-
-    subgraph Vault["本地存储"]
-        MD["Markdown 知识真相"]
-        SQL["SQLite 运行时状态"]
-    end
-
-    UI --> Pi
-    Pi -->|typed tool requests| Proxy
-    Proxy --> Policy
-    Policy --> Memory
-    Policy --> Tools
-    Tools --> MD
-    Tools --> SQL
-```
+<p align="center">
+  <img src="docs/assets/architecture.svg" alt="知序 系统架构图" width="100%" />
+</p>
 
 **语言边界是安全边界**：TypeScript 拥有交互与 Agent 决策；Python 拥有密钥、策略、事务与持久化。互不越界，架构测试强制。
 
